@@ -32,7 +32,12 @@ def build_output(original: pymupdf.Document, translated: pymupdf.Document, mode:
 
 def finalize(doc: pymupdf.Document) -> bytes:
     """フォントをサブセット化して保存用のバイト列にする。"""
-    # サブセット化に失敗してもファイルサイズが増えるだけなので続行する
-    with contextlib.suppress(Exception):
-        doc.subset_fonts()
+    # 既にサブセット化したフォントの再処理で出る MuPDF の警告は表示しない
+    pymupdf.TOOLS.mupdf_display_errors(False)
+    try:
+        # サブセット化に失敗してもファイルサイズが増えるだけなので続行する
+        with contextlib.suppress(Exception):
+            doc.subset_fonts()
+    finally:
+        pymupdf.TOOLS.mupdf_display_errors(True)
     return doc.tobytes(**SAVE_OPTIONS)

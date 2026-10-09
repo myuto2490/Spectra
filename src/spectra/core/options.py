@@ -35,6 +35,7 @@ class RenderOptions:
     """訳文の組版設定。"""
 
     font_path: str | None = None  # None なら内蔵フォント
+    bold_font_path: str | None = None  # 見出し用の太字（無ければ擬似ボールド）
     font_is_serif: bool = False
     text_scale: float = 0.95  # 原文サイズに対する和文の基準倍率
     min_scale: float = 0.45  # これ以上は縮小しない（それでも収まらなければ末尾を省略せず更に縮小）

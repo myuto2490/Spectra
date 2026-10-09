@@ -55,6 +55,15 @@ def _color(rgb: int) -> tuple[float, float, float]:
     return ((rgb >> 16 & 255) / 255, (rgb >> 8 & 255) / 255, (rgb & 255) / 255)
 
 
+def _used_text(segments: list[Segment]) -> str:
+    chars: set[str] = set()
+    for seg in segments:
+        chars.update(seg.translated or "")
+        for run in seg.runs.values():
+            chars.update(run.text)
+    return "".join(sorted(chars))
+
+
 class PageGeometry:
     """領域拡張の判定に使う、ページ上の障害物（他のテキスト・図・表・罫線）。"""
 
@@ -116,7 +125,7 @@ class Renderer:
         self.doc = doc
         self.analysis = analysis
         self.options = options
-        self.fonts = FontBook(options.font_path, serif=options.font_is_serif)
+        self.fonts = FontBook(options.font_path, serif=options.font_is_serif, jp_bold_path=options.bold_font_path)
         self._geo: dict[int, PageGeometry] = {}
         self._pa = {pa.page: pa for pa in analysis.pages}
 
@@ -165,6 +174,7 @@ class Renderer:
         erase: dict[int, list[Rect]] = defaultdict(list)
         moves: list[tuple[InlineRun, PlacedRun]] = []
         segments = [s for s in self.analysis.segments if s.translated]
+        self.fonts.prepare(_used_text(segments))
         total = len(segments) + len(self._pa)
         done = 0
         for seg in segments:

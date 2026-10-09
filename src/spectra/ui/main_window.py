@@ -13,6 +13,7 @@ import pymupdf
 from PySide6.QtCore import QByteArray, QSize, Qt, QTimer, QUrl
 from PySide6.QtGui import QAction, QDesktopServices, QKeySequence
 from PySide6.QtWidgets import (
+    QDialog,
     QFileDialog,
     QHBoxLayout,
     QLabel,
@@ -39,6 +40,7 @@ from ..translate.service import PartialTranslationError
 from . import theme, worker
 from .about import AboutDialog
 from .drop_zone import DropZone
+from .export_dialog import ExportDialog, suffix_for
 from .inspector import Inspector
 from .pdf_view import PreviewPair
 from .settings_dialog import SettingsDialog
@@ -133,9 +135,9 @@ class MainWindow(QMainWindow):
     def _build_toolbar(self) -> QWidget:
         bar = QWidget()
         bar.setObjectName("Toolbar")
-        bar.setFixedHeight(56)
+        bar.setFixedHeight(60)
         h = QHBoxLayout(bar)
-        h.setContentsMargins(14, 8, 14, 8)
+        h.setContentsMargins(16, 10, 16, 10)
         h.setSpacing(8)
         self.open_btn = tool_button("folder", "PDF を開く（⌘O）" if theme.IS_MAC else "PDF を開く（Ctrl+O）")
         self.open_btn.clicked.connect(self.open_dialog)
@@ -143,8 +145,8 @@ class MainWindow(QMainWindow):
 
         titles = QVBoxLayout()
         titles.setSpacing(0)
-        self.doc_title = label(APP_NAME, "headline")
-        self.doc_subtitle = label("論文 PDF を日本語に翻訳", "caption")
+        self.doc_title = label("", "headline")
+        self.doc_subtitle = label("", "caption")
         titles.addWidget(self.doc_title)
         titles.addWidget(self.doc_subtitle)
         h.addSpacing(4)
@@ -160,7 +162,7 @@ class MainWindow(QMainWindow):
         self.secondary_btn.clicked.connect(self._on_secondary)
         h.addWidget(self.secondary_btn)
         self.primary_btn = button("翻訳", primary=True)
-        self.primary_btn.setMinimumWidth(96)
+        self.primary_btn.setMinimumWidth(112)
         self.primary_btn.clicked.connect(self._on_primary)
         h.addWidget(self.primary_btn)
         h.addSpacing(4)
@@ -222,7 +224,7 @@ class MainWindow(QMainWindow):
 
         file_menu = mb.addMenu("ファイル")
         self.act_open = act("開く…", self.open_dialog, QKeySequence.StandardKey.Open)
-        self.act_save = act("保存…", self.save_dialog, QKeySequence.StandardKey.Save)
+        self.act_save = act("PDF を書き出す…", self.save_dialog, QKeySequence.StandardKey.Save)
         self.act_close = act("閉じる", self.close_document, QKeySequence.StandardKey.Close)
         file_menu.addActions([self.act_open, self.act_save])
         file_menu.addSeparator()
@@ -288,7 +290,7 @@ class MainWindow(QMainWindow):
             self.secondary_btn.setText("キャンセル")
             self.secondary_btn.setVisible(True)
         elif has_result:
-            self.primary_btn.setText("保存…")
+            self.primary_btn.setText("書き出す…")
             self.primary_btn.setEnabled(True)
             self.secondary_btn.setText("再翻訳")
             self.secondary_btn.setVisible(True)
@@ -301,8 +303,8 @@ class MainWindow(QMainWindow):
             self.doc_title.setText(self.source_path.name)
             self.doc_subtitle.setText(f"{self.original_doc.page_count} ページ")
         else:
-            self.doc_title.setText(APP_NAME)
-            self.doc_subtitle.setText("論文 PDF を日本語に翻訳")
+            self.doc_title.setText("")
+            self.doc_subtitle.setText("")
 
     def refresh_engine_status(self) -> None:
         engine = self.settings.engine
@@ -500,9 +502,14 @@ class MainWindow(QMainWindow):
         took = f"{minutes} 分 {seconds} 秒" if minutes else f"{seconds} 秒"
         self.status.setText(f"{result.segments} 段落 · {result.translated_chars:,} 文字 · {took}")
         if result.warnings:
-            self._show_banner("warning", "翻訳が完了しました", "\n".join(result.warnings), "保存…")
+            self._show_banner("warning", "翻訳が完了しました", "\n".join(result.warnings), "書き出す…")
         else:
-            self._show_banner("success", "翻訳が完了しました", "図表とレイアウトの検査に合格しました。" if result.qa.pages_checked else "", "保存…")
+            self._show_banner(
+                "success",
+                "翻訳が完了しました",
+                "図表とレイアウトが元のままであることを確認しました。" if result.qa.pages_checked else "",
+                "書き出す…",
+            )
         self._update_state()
         self._start_estimate()
         self.refresh_engine_status()
@@ -551,30 +558,40 @@ class MainWindow(QMainWindow):
     # -- 保存 --------------------------------------------------------------
 
     def save_dialog(self) -> None:
+        """書き出す形式を選んでから保存先を決める。"""
         if self.result is None or self.source_path is None:
             return
+        first, last = self.inspector.page_range()
+        pages = (last if last is not None else self.original_doc.page_count - 1) - first + 1
+        dlg = ExportDialog(OutputMode(self.settings.output_mode), pages, self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        mode = dlg.selected()
+        self.settings.output_mode = mode.value
+        self.settings.save()
         directory = Path(self.settings.last_save_dir or self.source_path.parent)
-        suggested = directory / f"{self.source_path.stem}_ja.pdf"
-        path, _ = QFileDialog.getSaveFileName(self, "翻訳した PDF を保存", str(suggested), "PDF (*.pdf)")
+        suggested = directory / f"{self.source_path.stem}{suffix_for(mode)}.pdf"
+        path, _ = QFileDialog.getSaveFileName(self, "PDF を書き出す", str(suggested), "PDF (*.pdf)")
         if not path:
             return
         target = Path(path)
         if target.suffix.lower() != ".pdf":
             target = target.with_suffix(".pdf")
         try:
-            target.write_bytes(self._output_bytes())
+            target.write_bytes(self._output_bytes(mode))
         except OSError as e:
-            self._alert("保存できませんでした", str(e))
+            self._alert("書き出せませんでした", str(e))
             return
         self.settings.last_save_dir = str(target.parent)
         self.settings.save()
         self._saved_path = target
-        self._show_banner("success", "保存しました", str(target), "フォルダを開く")
+        folder = "Finder で表示" if theme.IS_MAC else "フォルダを開く"
+        self._show_banner("success", "PDF を書き出しました", str(target), folder)
 
-    def _output_bytes(self) -> bytes:
-        """現在の出力形式の PDF。翻訳後に形式だけを変えた場合は作り直す（再翻訳は不要）。"""
+    def _output_bytes(self, mode: OutputMode | None = None) -> bytes:
+        """指定した形式の PDF。翻訳結果から作り直すだけなので再翻訳は不要。"""
         assert self.result is not None and self.source_bytes is not None
-        mode = OutputMode(self.settings.output_mode)
+        mode = mode or OutputMode(self.settings.output_mode)
         if mode == OutputMode.TRANSLATED:
             return self.result.translated_pdf
         original = pymupdf.open(stream=self.source_bytes, filetype="pdf")
@@ -584,7 +601,7 @@ class MainWindow(QMainWindow):
         return finalize(build_output(original, translated, mode, pages))
 
     def _on_banner_action(self) -> None:
-        if self.banner._action.text() == "保存…":
+        if self.banner._action.text() == "書き出す…":
             self.save_dialog()
         elif getattr(self, "_saved_path", None):
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(self._saved_path.parent)))

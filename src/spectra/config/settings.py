@@ -29,7 +29,6 @@ class Settings:
     skip_references: bool = True
     font: str = "builtin"  # builtin / noto-serif / noto-sans / custom
     custom_font_path: str = ""
-    text_scale: float = 0.95
     verify_layout: bool = True
     use_cache: bool = True
     appearance: str = "auto"  # auto / light / dark
@@ -90,7 +89,6 @@ class Settings:
             self.gemini_model = DEFAULT_MODEL
         if self.appearance not in ("auto", "light", "dark"):
             self.appearance = "auto"
-        self.text_scale = min(max(self.text_scale, 0.7), 1.1)
         self.schema = SCHEMA_VERSION
 
     def save(self, path: Path | None = None) -> None:
@@ -129,6 +127,5 @@ class Settings:
             font_path=font.regular,
             bold_font_path=font.bold,
             font_is_serif=font.serif,
-            text_scale=self.text_scale,
             output_mode=OutputMode(self.output_mode),
         )

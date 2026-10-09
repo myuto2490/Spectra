@@ -28,7 +28,7 @@ ENGINES: dict[str, EngineInfo] = {
         description="Google の生成 AI による翻訳。論文の文体や専門用語を自然に訳します。",
         key_url="https://aistudio.google.com/apikey",
         key_label="API キー",
-        free_quota="無料（クレジットカード不要。1 分・1 日あたりの回数に上限あり）",
+        free_quota="",
     ),
     "dummy": EngineInfo(
         engine_id="dummy",

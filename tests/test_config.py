@@ -26,11 +26,11 @@ def test_paths_follow_spectra_home(isolated_home):
 
 
 def test_settings_roundtrip():
-    s = Settings(engine="dummy", output_mode="side_by_side", skip_references=False, text_scale=0.9)
+    s = Settings(engine="dummy", output_mode="side_by_side", skip_references=False)
     s.save()
     loaded = Settings.load()
     assert loaded.engine == "dummy" and loaded.output_mode == "side_by_side"
-    assert loaded.skip_references is False and loaded.text_scale == 0.9
+    assert loaded.skip_references is False
 
 
 def test_settings_tolerates_broken_values():
@@ -41,7 +41,8 @@ def test_settings_tolerates_broken_values():
     )
     s = Settings.load()
     assert s.engine == "gemini" and s.output_mode == "translated"
-    assert s.text_scale == 1.1 and s.skip_references is True
+    assert s.skip_references is True
+    assert not hasattr(s, "text_scale")  # 文字の大きさは自動（設定項目なし）
 
 
 def test_settings_tolerates_corrupt_file():

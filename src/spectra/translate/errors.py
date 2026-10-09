@@ -2,25 +2,12 @@
 
 from __future__ import annotations
 
+from ..errors import SpectraError
 
-class TranslatorError(Exception):
+
+class TranslatorError(SpectraError):
     title = "翻訳に失敗しました"
-    hint = ""
     retryable = False
-
-    def __init__(self, detail: str = "", *, hint: str | None = None):
-        super().__init__(detail or self.title)
-        self.detail = detail
-        if hint is not None:
-            self.hint = hint
-
-    def user_message(self) -> str:
-        parts = [self.title]
-        if self.detail and self.detail != self.title:
-            parts.append(self.detail)
-        if self.hint:
-            parts.append(self.hint)
-        return "\n".join(parts)
 
 
 class MissingKeyError(TranslatorError):

@@ -7,7 +7,7 @@ import statistics
 
 import pymupdf
 
-from .models import Line, Rect, Span, TextBlock, rect_area, rect_union
+from .models import Line, Rect, Span, TextBlock, overlap_ratio, rect_area, rect_union
 
 log = logging.getLogger(__name__)
 
@@ -50,11 +50,43 @@ def extract_blocks(page: pymupdf.Page) -> list[TextBlock]:
         if not lines:
             continue
         for part in _split_block(_merge_visual_lines(lines)):
-            bbox = part[0].bbox
-            for ln in part[1:]:
-                bbox = rect_union(bbox, ln.bbox)
-            blocks.append(TextBlock(page=page.number, index=len(blocks), bbox=bbox, lines=part))
+            blocks.append(_make_block(page.number, len(blocks), part))
+    blocks = _absorb_fragments(blocks)
+    for i, b in enumerate(blocks):
+        b.index = i
     return blocks
+
+
+def _make_block(page: int, index: int, lines: list[Line]) -> TextBlock:
+    bbox = lines[0].bbox
+    for ln in lines[1:]:
+        bbox = rect_union(bbox, ln.bbox)
+    return TextBlock(page=page, index=index, bbox=bbox, lines=lines)
+
+
+def _absorb_fragments(blocks: list[TextBlock]) -> list[TextBlock]:
+    """段落の矩形の内側にある小さな断片ブロック（分数・根号・総和記号など）を段落に取り込む。
+
+    取り込まないと、段落を訳文に置き換えたときに断片だけが取り残されて訳文と重なる。
+    """
+    absorbed: set[int] = set()
+    for frag in blocks:
+        if any(abs(ln.direction[1]) > 1e-3 for ln in frag.lines):
+            continue
+        area = rect_area(frag.bbox)
+        best = None
+        for host in blocks:
+            if host is frag or id(host) in absorbed or rect_area(host.bbox) < area * 2:
+                continue
+            inside = overlap_ratio(frag.bbox, host.bbox) >= 0.6
+            if inside and (best is None or rect_area(host.bbox) < rect_area(best.bbox)):
+                best = host
+        if best is not None:
+            merged = _merge_visual_lines(best.lines + [Line(list(ln.spans), ln.bbox, ln.direction) for ln in frag.lines])
+            best.lines = merged
+            best.bbox = rect_union(best.bbox, frag.bbox)
+            absorbed.add(id(frag))
+    return [b for b in blocks if id(b) not in absorbed]
 
 
 def _merge_visual_lines(lines: list[Line]) -> list[Line]:

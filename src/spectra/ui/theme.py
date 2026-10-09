@@ -16,10 +16,14 @@ from PySide6.QtWidgets import QApplication
 IS_MAC = sys.platform == "darwin"
 IS_WIN = sys.platform == "win32"
 
+# ブランドのグラデーション（アプリアイコンと同じ紫 → 青）
+BRAND_START = "#6E5BFF"
+BRAND_END = "#2F80FF"
+
 # 角丸と余白（4 の倍数）
-RADIUS_CONTROL = 6
-RADIUS_CARD = 10
-RADIUS_DROP = 14
+RADIUS_CONTROL = 8
+RADIUS_CARD = 14
+RADIUS_DROP = 22
 SPACE = (4, 8, 12, 16, 20, 24)
 
 # 文字サイズ（px）。macOS の 13pt を基準に、他 OS は表示密度に合わせて 1px 大きくする
@@ -63,23 +67,23 @@ class Tokens:
 
 LIGHT = Tokens(
     dark=False,
-    accent="#007AFF",
-    accent_hover="#0A6FE6",
-    accent_pressed="#0062CC",
+    accent="#4A6CFF",
+    accent_hover="#5B7BFF",
+    accent_pressed="#3B5BEB",
     on_accent="#FFFFFF",
-    window="#F5F5F7",
+    window="#F4F5F9",
     surface="#FFFFFF",
-    surface_alt="#FAFAFC",
+    surface_alt="#FAFBFD",
     control="#FFFFFF",
-    control_hover="#F2F2F5",
-    control_pressed="#E5E5EA",
-    canvas="#E8E8ED",
-    label="#1D1D1F",
-    secondary="#6E6E73",
-    tertiary="#AEAEB2",
-    separator="#E3E3E8",
-    border="#D2D2D7",
-    fill="#ECECF0",
+    control_hover="#F3F4F8",
+    control_pressed="#E7E9F0",
+    canvas="#E9EBF1",
+    label="#14151A",
+    secondary="#6B6F7B",
+    tertiary="#A9ADB8",
+    separator="#E6E8EE",
+    border="#D6D9E1",
+    fill="#EEF0F5",
     success="#28A745",
     warning="#C77700",
     danger="#E5352B",
@@ -89,23 +93,23 @@ LIGHT = Tokens(
 
 DARK = Tokens(
     dark=True,
-    accent="#0A84FF",
-    accent_hover="#3395FF",
-    accent_pressed="#0070E0",
+    accent="#7C8CFF",
+    accent_hover="#8E9BFF",
+    accent_pressed="#6A7AF0",
     on_accent="#FFFFFF",
-    window="#1E1E1E",
-    surface="#2A2A2C",
-    surface_alt="#262628",
-    control="#3A3A3C",
-    control_hover="#444446",
-    control_pressed="#4E4E50",
-    canvas="#141414",
-    label="#F5F5F7",
-    secondary="#A1A1A6",
-    tertiary="#6C6C70",
-    separator="#38383A",
-    border="#4A4A4D",
-    fill="#323234",
+    window="#121317",
+    surface="#1B1D23",
+    surface_alt="#171920",
+    control="#252831",
+    control_hover="#2D313B",
+    control_pressed="#363A46",
+    canvas="#0C0D10",
+    label="#F2F3F7",
+    secondary="#9CA0AD",
+    tertiary="#5F6370",
+    separator="#262932",
+    border="#333744",
+    fill="#21242C",
     success="#30D158",
     warning="#FFD60A",
     danger="#FF453A",
@@ -184,15 +188,23 @@ QLabel[role="title"] {{ font-size: {ty['title']}px; font-weight: 600; }}
 QLabel[role="headline"] {{ font-size: {ty['headline']}px; font-weight: 600; }}
 QLabel[role="secondary"] {{ color: {t.secondary}; }}
 QLabel[role="caption"] {{ color: {t.secondary}; font-size: {ty['caption']}px; }}
-QLabel[role="section"] {{ color: {t.secondary}; font-size: {ty['caption']}px; font-weight: 600; padding-left: 4px; }}
+QLabel[role="section"] {{
+    color: {t.secondary}; font-size: {ty['caption']}px; font-weight: 700; padding-left: 4px; letter-spacing: 0.6px;
+}}
+QLabel[role="metric"] {{ font-weight: 600; font-size: {ty['body'] + 1}px; }}
+QLabel[role="hero"] {{ font-size: 34px; font-weight: 800; letter-spacing: -0.5px; }}
+QLabel[role="chip"] {{
+    color: {t.secondary}; background: {t.surface}; border: 1px solid {t.separator};
+    border-radius: 12px; padding: 4px 12px; font-size: {ty['caption']}px; font-weight: 600;
+}}
 QLabel[tone="danger"] {{ color: {t.danger}; }}
 QLabel[tone="warning"] {{ color: {t.warning}; }}
 QLabel[tone="success"] {{ color: {t.success}; }}
 QLabel a {{ color: {t.accent}; }}
 
 /* ---- ツールバー・ステータスバー ---- */
-#Toolbar {{ background: {t.surface}; border-bottom: 1px solid {t.separator}; }}
-#Footer {{ background: {t.surface}; border-top: 1px solid {t.separator}; }}
+#Toolbar {{ background: {t.window}; border-bottom: 1px solid {t.separator}; }}
+#Footer {{ background: {t.window}; border-top: 1px solid {t.separator}; }}
 #Inspector {{ background: {t.window}; border-left: 1px solid {t.separator}; }}
 #Canvas, #Canvas > QWidget > QWidget {{ background: {t.canvas}; }}
 #PaneHeader {{ background: {t.surface_alt}; border-bottom: 1px solid {t.separator}; }}
@@ -216,14 +228,19 @@ QPushButton:pressed {{ background: {t.control_pressed}; }}
 QPushButton:focus {{ border: 2px solid {t.focus}; padding: 4px 13px; }}
 QPushButton:disabled {{ color: {t.tertiary}; background: {t.fill}; border-color: {t.separator}; }}
 QPushButton[primary="true"] {{
-    background: {t.accent}; color: {t.on_accent}; border: 1px solid {t.accent}; font-weight: 600;
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 {BRAND_START}, stop:1 {BRAND_END});
+    color: #FFFFFF; border: none; font-weight: 700; padding: 6px 18px;
 }}
-QPushButton[primary="true"]:hover {{ background: {t.accent_hover}; border-color: {t.accent_hover}; }}
-QPushButton[primary="true"]:pressed {{ background: {t.accent_pressed}; }}
-QPushButton[primary="true"]:focus {{ border: 2px solid {t.focus}; }}
+QPushButton[primary="true"]:hover {{
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #7D6CFF, stop:1 #4A90FF);
+}}
+QPushButton[primary="true"]:pressed {{
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #5E4BEF, stop:1 #2370EF);
+}}
+QPushButton[primary="true"]:focus {{ border: 2px solid {t.focus}; padding: 4px 16px; }}
 QPushButton[primary="true"]:disabled {{ background: {t.fill}; color: {t.tertiary}; border-color: {t.fill}; }}
 QPushButton[destructive="true"] {{ color: {t.danger}; }}
-QPushButton[large="true"] {{ padding: 8px 22px; font-size: {ty['body'] + 1}px; border-radius: 8px; }}
+QPushButton[large="true"] {{ padding: 10px 28px; font-size: {ty['body'] + 2}px; border-radius: 12px; }}
 QPushButton[link="true"] {{
     background: transparent; border: none; color: {t.accent}; padding: 2px 0; text-align: left;
 }}
@@ -237,14 +254,14 @@ QToolButton:focus {{ border: 2px solid {t.focus}; padding: 3px; }}
 QToolButton:disabled {{ background: transparent; }}
 
 /* ---- セグメントコントロール ---- */
-#Segmented {{ background: {t.fill}; border-radius: 7px; }}
+#Segmented {{ background: {t.fill}; border-radius: 10px; }}
 #Segmented QPushButton {{
-    background: transparent; border: none; border-radius: 5px; padding: 3px 12px;
-    color: {t.label}; min-height: 16px;
+    background: transparent; border: none; border-radius: 8px; padding: 4px 14px;
+    color: {t.secondary}; min-height: 18px; font-weight: 600;
 }}
 #Segmented QPushButton:hover {{ background: {t.control_hover if not t.dark else t.control}; }}
 #Segmented QPushButton:checked {{
-    background: {t.surface if not t.dark else t.control_pressed}; font-weight: 600;
+    background: {t.surface if not t.dark else t.control_pressed}; color: {t.label};
     border: 1px solid {t.separator};
 }}
 #Segmented QPushButton:disabled {{ color: {t.tertiary}; background: transparent; }}
@@ -276,7 +293,9 @@ QProgressBar {{
     background: {t.fill}; border: none; border-radius: 3px; max-height: 6px; min-height: 6px;
     text-align: center; color: transparent;
 }}
-QProgressBar::chunk {{ background: {t.accent}; border-radius: 3px; }}
+QProgressBar::chunk {{
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 {BRAND_START}, stop:1 {BRAND_END}); border-radius: 3px;
+}}
 QProgressBar[tone="warning"]::chunk {{ background: {t.warning}; }}
 QProgressBar[tone="danger"]::chunk {{ background: {t.danger}; }}
 

@@ -1,4 +1,7 @@
-"""インスペクタ：翻訳エンジン・出力・翻訳対象の設定と、翻訳前の見積もり。"""
+"""インスペクタ：翻訳の設定（モデル・文体・ページ）と翻訳対象、翻訳前の見積もり。
+
+出力形式は翻訳後の「書き出す」で選ぶ（翻訳し直さずに形式だけを変えられるため）。
+"""
 
 from __future__ import annotations
 
@@ -7,7 +10,6 @@ from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
     QLabel,
-    QProgressBar,
     QScrollArea,
     QSpinBox,
     QVBoxLayout,
@@ -15,18 +17,13 @@ from PySide6.QtWidgets import (
 )
 
 from ..config.settings import Settings
-from ..core.options import Formality, OutputMode
+from ..core.options import Formality
 from ..core.pipeline import Estimate
 from ..translate.base import Usage
 from ..translate.gemini import MODELS
 from ..translate.registry import ENGINES, public_engines
 from .widgets import FormGroup, Switch, label, link_button, set_prop
 
-OUTPUT_MODES = [
-    (OutputMode.TRANSLATED.value, "翻訳のみ"),
-    (OutputMode.SIDE_BY_SIDE.value, "左右に対訳"),
-    (OutputMode.INTERLEAVE.value, "ページごとに対訳"),
-]
 FORMALITIES = [
     (Formality.DEFAULT.value, "である調"),
     (Formality.POLITE.value, "です・ます調"),
@@ -37,9 +34,8 @@ def _combo(items: list[tuple[str, str]], current: str) -> QComboBox:
     c = QComboBox()
     for key, text in items:
         c.addItem(text, key)
-    idx = c.findData(current)
-    c.setCurrentIndex(max(0, idx))
-    c.setMinimumWidth(150)
+    c.setCurrentIndex(max(0, c.findData(current)))
+    c.setMinimumWidth(156)
     c.setCursor(Qt.CursorShape.PointingHandCursor)
     return c
 
@@ -54,54 +50,32 @@ class Inspector(QScrollArea):
         self.setObjectName("Inspector")
         self.setWidgetResizable(True)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.setFixedWidth(320)
+        self.setFixedWidth(324)
         body = QWidget()
         body.setObjectName("Inspector")
         lay = QVBoxLayout(body)
-        lay.setContentsMargins(16, 16, 16, 16)
-        lay.setSpacing(20)
+        lay.setContentsMargins(18, 20, 18, 20)
+        lay.setSpacing(22)
         self.setWidget(body)
         self._page_count = 0
+        self._usage: Usage | None = None
+        self._estimate: Estimate | None = None
 
-        # 翻訳エンジン
-        self.engine_group = FormGroup("翻訳エンジン")
+        # 翻訳
+        group = FormGroup("翻訳")
         self.engine = _combo([(e.engine_id, e.name) for e in public_engines()], settings.engine)
         self.engine.currentIndexChanged.connect(self._on_engine)
-        engine_row = self.engine_group.add_row("エンジン", self.engine)
-        engine_row.setVisible(len(public_engines()) > 1)  # 通常は Gemini のみ
+        engine_row = group.add_row("エンジン", self.engine)
+        engine_row.setVisible(len(public_engines()) > 1)  # 通常は Gemini のみ（開発時は擬似翻訳も選べる）
         self.model = _combo(
-            [(mid, info.name + ("（非推奨）" if info.caution else "")) for mid, info in MODELS.items()], settings.gemini_model
+            [(mid, info.name + ("（非推奨）" if info.caution else "")) for mid, info in MODELS.items()],
+            settings.gemini_model,
         )
         self.model.currentIndexChanged.connect(self._on_model)
-        self.model_row = self.engine_group.add_row("モデル", self.model)
-        usage = QWidget()
-        ul = QVBoxLayout(usage)
-        ul.setContentsMargins(0, 0, 0, 0)
-        ul.setSpacing(6)
-        top = QHBoxLayout()
-        self.usage_title = label("今月の使用量", "secondary")
-        self.usage_value = label("—", "secondary")
-        top.addWidget(self.usage_title)
-        top.addStretch(1)
-        top.addWidget(self.usage_value)
-        ul.addLayout(top)
-        self.usage_bar = QProgressBar()
-        self.usage_bar.setRange(0, 1000)
-        self.usage_bar.setAccessibleName("今月の使用量")
-        ul.addWidget(self.usage_bar)
-        self.key_status = label("", "caption", wrap=True)
-        ul.addWidget(self.key_status)
-        self.key_button = link_button("API キーを設定…")
-        self.key_button.clicked.connect(lambda: self.openSettings.emit("engines"))
-        ul.addWidget(self.key_button, 0, Qt.AlignmentFlag.AlignLeft)
-        self.engine_group.add_widget(usage)
-        lay.addWidget(self.engine_group)
-
-        # 出力
-        out = FormGroup("出力")
-        self.output = _combo(OUTPUT_MODES, settings.output_mode)
-        self.output.currentIndexChanged.connect(self._on_output)
-        out.add_row("形式", self.output)
+        self.model_row = group.add_row("モデル", self.model)
+        self.formality = _combo(FORMALITIES, settings.formality)
+        self.formality.currentIndexChanged.connect(self._on_formality)
+        group.add_row("文体", self.formality)
         pages = QWidget()
         pl = QHBoxLayout(pages)
         pl.setContentsMargins(0, 0, 0, 0)
@@ -110,18 +84,27 @@ class Inspector(QScrollArea):
         self.page_to = QSpinBox()
         for sb, name in ((self.page_from, "開始ページ"), (self.page_to, "終了ページ")):
             sb.setRange(1, 1)
-            sb.setFixedWidth(56)
+            sb.setFixedWidth(60)
             sb.setAlignment(Qt.AlignmentFlag.AlignCenter)
             sb.setAccessibleName(name)
             sb.valueChanged.connect(self._on_pages)
         pl.addWidget(self.page_from)
-        pl.addWidget(label("〜", "secondary"))
+        pl.addWidget(label("–", "secondary"))
         pl.addWidget(self.page_to)
-        out.add_row("ページ", pages)
-        self.formality = _combo(FORMALITIES, settings.formality)
-        self.formality.currentIndexChanged.connect(self._on_formality)
-        self.formality_row = out.add_row("文体", self.formality)
-        lay.addWidget(out)
+        group.add_row("ページ", pages)
+
+        status = QWidget()
+        sl = QVBoxLayout(status)
+        sl.setContentsMargins(0, 0, 0, 0)
+        sl.setSpacing(4)
+        self.key_status = label("", "caption", wrap=True)
+        self.key_button = link_button("API キーを設定…")
+        self.key_button.clicked.connect(lambda: self.openSettings.emit("engines"))
+        sl.addWidget(self.key_status)
+        sl.addWidget(self.key_button, 0, Qt.AlignmentFlag.AlignLeft)
+        self.status_row = status
+        group.add_widget(status)
+        lay.addWidget(group)
 
         # 翻訳する内容
         content = FormGroup("翻訳する内容", "図の中の文字・数式・表・著者名はそのまま残します。")
@@ -130,7 +113,7 @@ class Inspector(QScrollArea):
         self.references = Switch(not settings.skip_references)
         content.add_row("図表のキャプション", self.captions)
         content.add_row("脚注", self.footnotes)
-        content.add_row("参考文献", self.references, "書誌情報は通常は訳さずに残します")
+        content.add_row("参考文献", self.references)
         for sw in (self.captions, self.footnotes, self.references):
             sw.toggled.connect(self._on_content)
         lay.addWidget(content)
@@ -142,14 +125,13 @@ class Inspector(QScrollArea):
         self.est_cost = QLabel("—")
         for w in (self.est_paragraphs, self.est_chars, self.est_cost):
             w.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            w.setProperty("role", "metric")
         self.estimate_group.add_row("翻訳する段落", self.est_paragraphs)
         self.estimate_group.add_row("文字数", self.est_chars)
-        self.estimate_group.add_row("API に送る文字数", self.est_cost, "翻訳済みの段落はキャッシュを使います")
+        self.estimate_group.add_row("新たに翻訳する文字数", self.est_cost)
         lay.addWidget(self.estimate_group)
         lay.addStretch(1)
 
-        self._usage: Usage | None = None
-        self._estimate: Estimate | None = None
         self._update_engine_state(has_key=False)
 
     # -- 外部からの更新 ------------------------------------------------------
@@ -179,28 +161,17 @@ class Inspector(QScrollArea):
     def _update_engine_state(self, has_key: bool, message: str = "", tone: str | None = None) -> None:
         info = ENGINES.get(self.settings.engine)
         needs_key = info.needs_key if info else True
-        u = self._usage
-        show_usage = u is not None and u.limit is not None
-        self.usage_title.setVisible(show_usage)
-        self.usage_value.setVisible(show_usage)
-        self.usage_bar.setVisible(show_usage)
-        if show_usage:
-            ratio = u.used / u.limit if u.limit else 0
-            self.usage_bar.setValue(int(ratio * 1000))
-            self.usage_value.setText(f"{u.used:,} / {u.limit:,} 文字")
-            set_prop(self.usage_bar, "tone", "danger" if ratio > 0.95 else "warning" if ratio > 0.8 else None)
-        if not needs_key:
-            text, t = "API キーは不要です。", None
-        elif not has_key:
+        if needs_key and not has_key:
             text, t = "API キーが設定されていません。", "warning"
         elif self.settings.engine == "gemini" and MODELS[self.settings.gemini_model].caution:
             text, t = MODELS[self.settings.gemini_model].caution, "warning"
         else:
-            text, t = message or (info.free_quota if info else ""), tone
+            text, t = message, tone
         self.key_status.setText(text)
+        self.key_status.setVisible(bool(text))
         set_prop(self.key_status, "tone", t)
-        self.key_button.setVisible(needs_key)
-        self.key_button.setText("API キーを設定…" if not has_key else "API キーを管理…")
+        self.key_button.setVisible(needs_key and not has_key)
+        self.status_row.setVisible(bool(text) or self.key_button.isVisibleTo(self.status_row))
         self.model_row.setEnabled(self.settings.engine == "gemini")
 
     def set_estimate(self, est: Estimate | None) -> None:
@@ -217,18 +188,14 @@ class Inspector(QScrollArea):
 
     def set_estimating(self) -> None:
         for w in (self.est_paragraphs, self.est_chars, self.est_cost):
-            w.setText("計算中…")
+            w.setText("…")
 
     def _refresh_estimate_tone(self) -> None:
-        est, u = self._estimate, self._usage
+        est = self._estimate
         if est is None:
             return
-        if u is not None and u.remaining is not None and est.pending_chars > u.remaining:
-            self.estimate_group.set_footer(
-                f"今月の残り（{u.remaining:,} 文字）を超えています。ページを絞ってください。", "danger"
-            )
-        elif est.pending_chars == 0 and est.total_chars:
-            self.estimate_group.set_footer("すべてキャッシュ済みです。API は使いません。", "success")
+        if est.pending_chars == 0 and est.total_chars:
+            self.estimate_group.set_footer("すべて翻訳済みです。すぐに表示できます。", "success")
         else:
             self.estimate_group.set_footer("")
 
@@ -240,16 +207,11 @@ class Inspector(QScrollArea):
 
     def _on_engine(self) -> None:
         self.settings.engine = self.engine.currentData()
-        self._usage = None
         self._save(True)
 
     def _on_model(self) -> None:
         self.settings.gemini_model = self.model.currentData()
         self._save(True)
-
-    def _on_output(self) -> None:
-        self.settings.output_mode = self.output.currentData()
-        self._save(False)
 
     def _on_formality(self) -> None:
         self.settings.formality = self.formality.currentData()

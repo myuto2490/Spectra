@@ -1,4 +1,4 @@
-"""Gemini API による翻訳。Google AI Studio で発行した API キーで、クレジットカードの登録なしに無料枠で使える。
+"""Gemini API による翻訳。Google AI Studio で発行した API キーで、無料枠で使える。
 
 https://ai.google.dev/api/generate-content
 

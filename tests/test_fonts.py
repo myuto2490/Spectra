@@ -1,6 +1,13 @@
 import pytest
 
-from spectra.core.fonts import base_name, is_math_font, is_math_span, is_mono_font, is_sans_font
+from spectra.core.fonts import (
+    base_name,
+    decode_symbol_font,
+    is_math_font,
+    is_math_span,
+    is_mono_font,
+    is_sans_font,
+)
 
 
 @pytest.mark.parametrize("name", ["CMMI10", "ABCDEF+CMSY7", "CMEX10", "MSBM10", "Symbol", "STIXTwoMath-Regular", "CambriaMath", "LMMathItalic10-Regular"])
@@ -25,3 +32,10 @@ def test_cmr_is_math_only_when_body_is_not_cm():
 def test_mono_and_sans():
     assert is_mono_font("SFTT1000") and is_mono_font("Courier")
     assert is_sans_font("Helvetica-Bold") and not is_sans_font("Times-Roman")
+
+
+def test_symbol_font_decoding():
+    assert decode_symbol_font("Symbol", "a + b") == "α + β"
+    assert decode_symbol_font("ABCDEF+SymbolMT", "W") == "Ω"
+    assert decode_symbol_font("CMMI10", "a") == "a"
+    assert decode_symbol_font("Symbol", "∑") == "∑"

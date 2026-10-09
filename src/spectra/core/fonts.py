@@ -94,3 +94,18 @@ def is_math_span(font: str, text: str, body_font: str) -> bool:
 def _same_family(a: str, b: str) -> bool:
     strip = re.compile(r"\d+(\.\d+)?$")
     return strip.sub("", a).lower()[:5] == strip.sub("", base_name(b)).lower()[:5]
+
+
+# Adobe Symbol エンコーディング（ToUnicode の無い Symbol フォントは英字として取り出される）
+_SYMBOL_MAP = str.maketrans(
+    "abgdezhqiklmnxoprstufcywjvJVABGDEZHQIKLMNXOPRSTUFCYW",
+    "αβγδεζηθικλμνξοπρστυφχψωϕϖϑςΑΒΓΔΕΖΗΘΙΚΛΜΝΞΟΠΡΣΤΥΦΧΨΩ",
+)
+
+
+def decode_symbol_font(font: str, text: str) -> str:
+    """Symbol フォントのスパンで英字になってしまった文字をギリシャ文字に戻す。"""
+    name = base_name(font).lower()
+    if not name.startswith("symbol") or not text.isascii():
+        return text
+    return text.translate(_SYMBOL_MAP)

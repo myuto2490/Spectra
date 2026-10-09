@@ -28,11 +28,14 @@ from .options import AnalysisOptions
 _WORD = re.compile(r"[A-Za-z][A-Za-z'’\-]*[A-Za-z]")
 _CJK = re.compile(r"[぀-ヿ㐀-䶿一-鿿ｦ-ﾟ]")
 _URL_OR_MAIL = re.compile(r"(https?://\S+|www\.\S+|\S+@\S+\.\w+)")
+# 番号の後に区切り記号が続くものだけをキャプションとみなす（"Figure 1 shows ..." は本文）
 _CAPTION = re.compile(
     r"^\s*(figure|fig\.|table|tab\.|algorithm|listing|scheme|chart|plate|exhibit)\s*"
-    r"(s\d+|[a-z]?\d+|[ivxlc]+)\b",
+    r"(s\d+|[a-z]?\d+|[ivxlc]+)[a-z]?\s*[:.|\-–—]",
     re.IGNORECASE,
 )
+_EQUATION_SIGN = re.compile(r"[=≈≤≥<>∝≡]")
+_LONG_WORD = re.compile(r"[A-Za-z]{4,}")
 _ABSTRACT = re.compile(r"^\s*(abstract|summary)\b", re.IGNORECASE)
 _SENTENCE = re.compile(r"[a-z]{2,}[,;]?\s+[a-z]{2,}\s+[a-z]{2,}.*[.]\s*$")
 _REFERENCES = re.compile(
@@ -128,6 +131,16 @@ def has_column_gaps(block: TextBlock, size: float) -> bool:
         if gaps >= 1:
             gapped += 1
     return gapped >= len(block.lines) * 0.6
+
+
+def _looks_like_equation(block: TextBlock, st: BlockStats) -> bool:
+    """数式フォントを使わずに組まれた独立数式（Word の論文に多い）。
+
+    1 行で、等号などを含み、長い英単語がほとんど無いもの。例: "s = min(1, w / w0)   (1)"
+    """
+    if len(block.lines) != 1 or not _EQUATION_SIGN.search(st.text):
+        return False
+    return len(_LONG_WORD.findall(st.text)) <= 1 and st.words <= 4
 
 
 class DocumentClassifier:
@@ -243,6 +256,8 @@ class DocumentClassifier:
             return SkipReason.TABLE
 
         if st.chars and st.math_chars / st.chars > 0.5:
+            return SkipReason.MATH
+        if _looks_like_equation(b, st):
             return SkipReason.MATH
         if st.cjk > max(3, st.letters * 0.3):
             return SkipReason.ALREADY_JAPANESE

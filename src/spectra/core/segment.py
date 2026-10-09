@@ -7,7 +7,7 @@ import statistics
 from collections import Counter
 from dataclasses import dataclass, replace
 
-from .fonts import base_name, is_math_font, is_math_span, is_sans_font
+from .fonts import base_name, decode_symbol_font, is_math_font, is_math_span, is_sans_font
 from .markup import escape, placeholder, to_plain
 from .models import (
     Align,
@@ -86,7 +86,9 @@ def _detect_align(block: TextBlock, kind: BlockKind, page_width: float, size: fl
     center = (x0 + x1) / 2
     lines = block.lines
     if len(lines) == 1:
-        if kind in (BlockKind.TITLE, BlockKind.HEADING, BlockKind.CAPTION) and abs(center - page_width / 2) < page_width * 0.03 and (x1 - x0) < page_width * 0.6:
+        # ページ中央に置かれ、左余白より内側から始まる 1 行は中央揃え（タイトル・見出し・短いキャプション）
+        centered = abs(center - page_width / 2) < page_width * 0.03 and x0 > page_width * 0.12
+        if centered and kind in (BlockKind.TITLE, BlockKind.HEADING, BlockKind.CAPTION):
             return Align.CENTER
         return Align.LEFT
     centers = [(ln.bbox[0] + ln.bbox[2]) / 2 for ln in lines]
@@ -154,7 +156,7 @@ def _pieces_for_line(line: Line, base_size: float, body_font: str, has_math: boo
 def _inline_piece(p: _Piece, base_size: float) -> InlinePiece:
     s = p.span
     return InlinePiece(
-        text=p.text,
+        text=decode_symbol_font(s.font, p.text),
         size_ratio=s.size / base_size if base_size else 1.0,
         rise_ratio=(p.baseline - s.origin[1]) / base_size if base_size else 0.0,
         italic=bool(_MATH_ITALIC.search(base_name(s.font))) or s.is_italic,

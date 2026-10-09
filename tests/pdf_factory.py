@@ -144,3 +144,11 @@ def _page_three(page: pymupdf.Page) -> None:
         page.insert_text((56, 180 + i * 14), r, fontname=BODY, fontsize=9)
     page.insert_text((56, 240), "A Appendix", fontname=BOLD, fontsize=12)
     write_paragraph(page, (56, 539), 260, LOREM[3:] + LOREM, 2)
+    # 数式フォントを使わない独立数式（Word 製の論文に多い）
+    x = 240
+    for text, font in (("y", "tiit"), (" = max(0, ", BODY), ("x", "tiit"), (") + ", BODY), ("b", "tiit")):
+        page.insert_text((x, 320), text, fontname=font, fontsize=SIZE)
+        x += pymupdf.get_text_length(text, fontname=font, fontsize=SIZE)
+    page.insert_text((520, 320), "(2)", fontname=BODY, fontsize=SIZE)
+    # 「Figure 1 shows」で始まる本文（キャプションではない）
+    page.insert_text((56, 350), "Figure 1 shows that the loss decreases steadily during training.", fontname=BODY, fontsize=SIZE)

@@ -40,6 +40,9 @@ jobs:
       VERSION: ${{ needs.check.outputs.version }}
       QT_QPA_PLATFORM: offscreen
       PYTHONUTF8: "1"
+      # 署名の設定が Secrets にあるか（無ければ未署名・アドホック署名でビルドを続ける）
+      HAS_MACOS_CERT: ${{ secrets.MACOS_CERTIFICATE != '' }}
+      HAS_SIGNPATH: ${{ secrets.SIGNPATH_API_TOKEN != '' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -58,19 +61,65 @@ jobs:
         working-directory: packaging
         run: pyinstaller --noconfirm --clean spectra.spec
 
-      - name: Package (macOS)
-        if: runner.os == 'macOS'
+      # ---- macOS: Developer ID 署名 + 公証（証明書が無ければアドホック署名） ----
+      - name: Import signing certificate (macOS)
+        if: runner.os == 'macOS' && env.HAS_MACOS_CERT == 'true'
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
         run: |
-          mkdir -p out dmg
-          cp -R packaging/dist/Spectra.app dmg/
-          ln -s /Applications dmg/Applications
-          hdiutil create -volname "Spectra ${VERSION}" -srcfolder dmg -ov -format UDZO "out/Spectra-${VERSION}-${{ matrix.name }}.dmg"
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -base64 24)"
+          echo "$MACOS_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/cert.p12" -P "$MACOS_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN"
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          rm "$RUNNER_TEMP/cert.p12"
+          IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN" | grep 'Developer ID Application' | head -1 | sed -E 's/.*"(.+)"/\1/')"
+          echo "MACOS_SIGN_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+      - name: Sign, notarize and package (macOS)
+        if: runner.os == 'macOS'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          mkdir -p out
+          export MACOS_SIGN_IDENTITY="${MACOS_SIGN_IDENTITY:--}"
+          packaging/macos/sign_and_notarize.sh packaging/dist/Spectra.app \
+            "out/Spectra-${VERSION}-${{ matrix.name }}.dmg" "Spectra ${VERSION}"
+
+      # ---- Windows: SignPath Foundation で署名（設定が無ければ未署名） ----
+      - name: Upload unsigned build for signing (Windows)
+        id: unsigned
+        if: runner.os == 'Windows' && env.HAS_SIGNPATH == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Spectra-Windows-unsigned
+          path: packaging/dist/Spectra
+          if-no-files-found: error
+      - name: Sign with SignPath (Windows)
+        if: runner.os == 'Windows' && env.HAS_SIGNPATH == 'true'
+        uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          github-artifact-id: ${{ steps.unsigned.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: signed/Spectra
       - name: Package (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force out | Out-Null
-          Compress-Archive -Path packaging/dist/Spectra -DestinationPath "out/Spectra-$env:VERSION-${{ matrix.name }}.zip"
+          $src = if (Test-Path signed/Spectra) { "signed/Spectra" } else { "packaging/dist/Spectra" }
+          if ($src -eq "packaging/dist/Spectra") { Write-Host "::warning::Windows 版は未署名です" }
+          Compress-Archive -Path $src -DestinationPath "out/Spectra-$env:VERSION-${{ matrix.name }}.zip"
       - name: Package (Linux)
         if: runner.os == 'Linux'
         run: |

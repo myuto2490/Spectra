@@ -19,8 +19,8 @@ SCHEMA_VERSION = 1
 
 @dataclass
 class Settings:
-    engine: str = "google"
-    microsoft_region: str = ""  # Azure Translator のリソースのリージョン（例: japaneast）
+    engine: str = "gemini"
+    gemini_model: str = "gemini-3.8-flash"
     output_mode: str = OutputMode.TRANSLATED.value
     formality: str = Formality.DEFAULT.value
     translate_captions: bool = True
@@ -72,10 +72,17 @@ class Settings:
     def _sanitize(self) -> None:
         if self.output_mode not in {m.value for m in OutputMode}:
             self.output_mode = OutputMode.TRANSLATED.value
-        if self.formality not in {m.value for m in Formality}:
-            self.formality = Formality.DEFAULT.value
+        if self.formality not in (Formality.DEFAULT.value, Formality.POLITE.value):
+            self.formality = Formality.DEFAULT.value  # である調
         if self.font not in {"builtin", "noto-serif", "noto-sans", "custom"}:
             self.font = "builtin"
+        from ..translate.gemini import DEFAULT_MODEL, MODELS
+
+        # 以前のバージョンの設定（DeepL / Google / Microsoft）は Gemini に移行する
+        if self.engine not in ("gemini", "dummy"):
+            self.engine = "gemini"
+        if self.gemini_model not in MODELS:
+            self.gemini_model = DEFAULT_MODEL
         if self.appearance not in ("auto", "light", "dark"):
             self.appearance = "auto"
         self.text_scale = min(max(self.text_scale, 0.7), 1.1)

@@ -39,6 +39,7 @@ class Translator(ABC):
     max_items: ClassVar[int] = 50
     max_chars: ClassVar[int] = 20_000
     supports_formality: ClassVar[bool] = False
+    retry_delays: ClassVar[tuple[float, ...]] = RETRY_DELAYS
 
     def __init__(
         self,
@@ -57,8 +58,11 @@ class Translator(ABC):
     # -- サブクラスで実装 ----------------------------------------------------
 
     @abstractmethod
-    def _translate_batch(self, texts: list[str]) -> list[str]:
-        """1 リクエスト分を翻訳する。texts はマークアップ文字列。"""
+    def _translate_batch(self, texts: list[str]) -> list[str | None]:
+        """1 リクエスト分を翻訳する。texts はマークアップ文字列。
+
+        訳せなかった項目は None を返す（その段落は原文のまま一切変更しない）。
+        """
 
     def usage(self) -> Usage | None:
         return None
@@ -74,9 +78,9 @@ class Translator(ABC):
 
     # -- 公開 API --------------------------------------------------------
 
-    def translate(self, texts: list[str], on_batch: Callable[[int], None] | None = None) -> list[str]:
+    def translate(self, texts: list[str], on_batch: Callable[[int], None] | None = None) -> list[str | None]:
         """任意件数を翻訳する。on_batch は完了した件数を通知する。"""
-        out: list[str] = []
+        out: list[str | None] = []
         for batch in self.batches(texts):
             self._check_cancel()
             result = self._with_retry(lambda b=batch: self._translate_batch(b))
@@ -145,9 +149,9 @@ class Translator(ABC):
                     raise
                 err, cause = e, e
                 retry_after = getattr(e, "retry_after", None)
-            if attempt >= len(RETRY_DELAYS):
+            if attempt >= len(self.retry_delays):
                 raise err from cause
-            delay = min(retry_after, MAX_RETRY_AFTER) if retry_after else RETRY_DELAYS[attempt]
+            delay = min(retry_after, MAX_RETRY_AFTER) if retry_after else self.retry_delays[attempt]
             log.info("%s: retry %d after %.1fs (%s)", self.engine_id, attempt + 1, delay, type(err).__name__)
             self.sleep(delay)
             self._check_cancel()

@@ -67,7 +67,8 @@ def translate_texts(
     try:
         for batch in translator.batches(p.pending):
             translated = translator.translate(batch)
-            new = dict(zip(batch, translated))
+            # 訳せなかった項目（None）は結果にもキャッシュにも入れない
+            new = {s: t for s, t in zip(batch, translated) if t}
             results.update(new)
             if cache is not None:
                 cache.put_many({cache_key(namespace, s): t for s, t in new.items()})

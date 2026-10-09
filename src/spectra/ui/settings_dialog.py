@@ -9,6 +9,7 @@ from PySide6.QtCore import QSize, Qt, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QFont, QFontDatabase
 from PySide6.QtWidgets import (
     QButtonGroup,
+    QComboBox,
     QDialog,
     QFileDialog,
     QFrame,
@@ -31,6 +32,7 @@ from ..config.settings import Settings
 from ..translate import registry
 from ..translate.cache import TranslationCache
 from ..translate.errors import TranslatorError
+from ..translate.gemini import MODELS
 from . import icons, theme, worker
 from .widgets import (
     FormGroup,
@@ -96,17 +98,6 @@ class KeyField(QWidget):
         row.addWidget(self.delete_btn)
         lay.addLayout(row)
 
-        if engine_id == "microsoft":
-            region_row = QHBoxLayout()
-            region_row.setSpacing(6)
-            region_row.addWidget(label("リージョン", "secondary"))
-            self.region = QLineEdit(settings.microsoft_region)
-            self.region.setPlaceholderText("例: japaneast（グローバルの場合は空欄）")
-            self.region.setAccessibleName("Microsoft Translator のリージョン")
-            self.region.editingFinished.connect(self._save_region)
-            region_row.addWidget(self.region, 1)
-            lay.addLayout(region_row)
-
         status = QHBoxLayout()
         status.setSpacing(6)
         self.status_icon = QLabel()
@@ -121,13 +112,6 @@ class KeyField(QWidget):
             self._set_status(f"{src} の値が使われます。", "info")
         elif src:
             self._set_status(f"保存済み（{src}）", "success")
-
-    def _save_region(self) -> None:
-        value = self.region.text().strip()
-        if value != self.settings.microsoft_region:
-            self.settings.microsoft_region = value
-            self.settings.save()
-            self.changed.emit(self.engine_id)
 
     def _toggle_reveal(self, on: bool) -> None:
         self.edit.setEchoMode(QLineEdit.EchoMode.Normal if on else QLineEdit.EchoMode.Password)
@@ -175,12 +159,10 @@ class KeyField(QWidget):
         self.verify_btn.setEnabled(False)
         self._set_status("確認しています…", "busy")
 
-        if self.engine_id == "microsoft":
-            self._save_region()
-        region = self.settings.microsoft_region
+        model = self.settings.gemini_model
 
         def job(_report, _cancel):
-            with registry.create(self.engine_id, api_key=key, region=region) as t:
+            with registry.create(self.engine_id, api_key=key, model=model) as t:
                 return t.verify()
 
         def done(usage):
@@ -300,7 +282,7 @@ class SettingsDialog(QDialog):
         lay.setSpacing(16)
         group = FormGroup("API キー")
         self.key_fields: dict[str, KeyField] = {}
-        for eng in ("google", "microsoft", "deepl"):
+        for eng in ("gemini",):
             field = KeyField(eng, self.secrets, self.settings)
             field.changed.connect(lambda _e: self.keysChanged.emit())
             group.add_widget(field)
@@ -313,12 +295,33 @@ class SettingsDialog(QDialog):
                 "warning",
             )
         lay.addWidget(group)
+
+        model_group = FormGroup(
+            "モデル",
+            "無料枠（クレジットカード不要）では、送信した文章が Google の製品改善に使われる場合があります。"
+            "未公開の原稿など機密性の高い文書の翻訳には注意してください。",
+        )
+        self.model = QComboBox()
+        for model_id, (name, _desc) in MODELS.items():
+            self.model.addItem(name, model_id)
+        self.model.setCurrentIndex(max(0, self.model.findData(self.settings.gemini_model)))
+        self.model.currentIndexChanged.connect(self._on_model)
+        self.model_desc = label(MODELS[self.settings.gemini_model][1], "caption", wrap=True)
+        model_group.add_row("翻訳に使うモデル", self.model)
+        model_group.add_widget(self.model_desc)
+        lay.addWidget(model_group)
         lay.addStretch(1)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll.setWidget(page)
         return scroll
+
+    def _on_model(self) -> None:
+        self.settings.gemini_model = self.model.currentData()
+        self.model_desc.setText(MODELS[self.settings.gemini_model][1])
+        self.settings.save()
+        self.settingsChanged.emit()
 
     # -- フォント --------------------------------------------------------------
 

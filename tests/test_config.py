@@ -15,7 +15,7 @@ from spectra.core.options import Formality, OutputMode
 @pytest.fixture(autouse=True)
 def isolated_home(tmp_path, monkeypatch):
     monkeypatch.setenv("SPECTRA_HOME", str(tmp_path))
-    for var in ("SPECTRA_DEEPL_API_KEY", "DEEPL_AUTH_KEY", "SPECTRA_GOOGLE_API_KEY", "GOOGLE_API_KEY"):
+    for var in ("SPECTRA_GEMINI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"):
         monkeypatch.delenv(var, raising=False)
     return tmp_path
 
@@ -26,10 +26,10 @@ def test_paths_follow_spectra_home(isolated_home):
 
 
 def test_settings_roundtrip():
-    s = Settings(engine="google", output_mode="side_by_side", skip_references=False, text_scale=0.9)
+    s = Settings(engine="dummy", output_mode="side_by_side", skip_references=False, text_scale=0.9)
     s.save()
     loaded = Settings.load()
-    assert loaded.engine == "google" and loaded.output_mode == "side_by_side"
+    assert loaded.engine == "dummy" and loaded.output_mode == "side_by_side"
     assert loaded.skip_references is False and loaded.text_scale == 0.9
 
 
@@ -40,7 +40,7 @@ def test_settings_tolerates_broken_values():
         encoding="utf-8",
     )
     s = Settings.load()
-    assert s.engine == "google" and s.output_mode == "translated"
+    assert s.engine == "gemini" and s.output_mode == "translated"
     assert s.text_scale == 1.1 and s.skip_references is True
 
 
@@ -52,6 +52,8 @@ def test_settings_tolerates_corrupt_file():
 
 def test_settings_to_core_options():
     s = Settings(formality="prefer_more", output_mode="interleave", translate_captions=False)
+    assert Settings.from_dict({"engine": "deepl", "gemini_model": "x"}).engine == "gemini"  # 旧設定の移行
+    assert Settings.from_dict({"gemini_model": "x"}).gemini_model == "gemini-3.8-flash"
     assert s.translate_options().formality == Formality.POLITE
     assert s.render_options().output_mode == OutputMode.INTERLEAVE
     assert s.analysis_options(1, 3).translate_captions is False
@@ -60,22 +62,22 @@ def test_settings_to_core_options():
 def test_secret_store_file_fallback(isolated_home):
     store = SecretStore(use_keyring=False)
     assert not store.secure
-    store.set("deepl", "  abc:fx  ")
-    assert store.get("deepl") == "abc:fx"
-    assert store.source("deepl") == "設定ファイル"
+    store.set("gemini", "  AIzaKey  ")
+    assert store.get("gemini") == "AIzaKey"
+    assert store.source("gemini") == "設定ファイル"
     if sys.platform != "win32":
         assert stat.S_IMODE(os.stat(store.fallback_file).st_mode) == 0o600
-    store.delete("deepl")
-    assert store.get("deepl") == "" and not store.fallback_file.exists()
+    store.delete("gemini")
+    assert store.get("gemini") == "" and not store.fallback_file.exists()
 
 
 def test_secret_store_env_has_priority(monkeypatch):
     store = SecretStore(use_keyring=False)
-    store.set("google", "stored")
-    monkeypatch.setenv("GOOGLE_API_KEY", "from-env")
-    assert store.get("google") == "from-env"
-    assert store.get("google", use_env=False) == "stored"
-    assert "環境変数" in store.source("google")
+    store.set("gemini", "stored")
+    monkeypatch.setenv("GEMINI_API_KEY", "from-env")
+    assert store.get("gemini") == "from-env"
+    assert store.get("gemini", use_env=False) == "stored"
+    assert "環境変数" in store.source("gemini")
 
 
 def test_resolve_font_falls_back_to_builtin(tmp_path):

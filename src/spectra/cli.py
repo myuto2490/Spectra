@@ -4,7 +4,7 @@
     spectra translate paper.pdf                    # paper_ja.pdf を作成
     spectra translate paper.pdf --mode side-by-side --pages 1-5
     spectra estimate paper.pdf                     # 翻訳する文字数を見積もる
-    spectra key set deepl                          # API キーを保存（入力は表示されない）
+    spectra key set gemini                         # API キーを保存（入力は表示されない）
 """
 
 from __future__ import annotations
@@ -22,9 +22,10 @@ from .config.secrets import SecretStore
 from .config.settings import Settings
 from .core.options import Formality, OutputMode
 from .errors import SpectraError
+from .translate.gemini import MODELS
 
 MODES = {"translated": OutputMode.TRANSLATED, "side-by-side": OutputMode.SIDE_BY_SIDE, "interleave": OutputMode.INTERLEAVE}
-FORMALITY = {"default": Formality.DEFAULT, "plain": Formality.PLAIN, "polite": Formality.POLITE}
+FORMALITY = {"plain": Formality.DEFAULT, "polite": Formality.POLITE}
 
 
 def parse_pages(spec: str | None, page_count: int | None = None) -> tuple[int, int | None]:
@@ -53,7 +54,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
     def job_args(sp: argparse.ArgumentParser) -> None:
         sp.add_argument("input", type=Path, help="翻訳する PDF")
-        sp.add_argument("--engine", choices=["google", "microsoft", "deepl", "dummy"], help="翻訳エンジン（既定: 設定値）")
+        sp.add_argument("--engine", choices=["gemini", "dummy"], help="翻訳エンジン（既定: gemini）")
+        sp.add_argument("--model", choices=list(MODELS), help="Gemini のモデル（既定: 設定値）")
         sp.add_argument("--pages", help="翻訳するページ（例: 3, 2-5, 4-）")
         sp.add_argument("--include-references", action="store_true", help="参考文献も翻訳する")
         sp.add_argument("--no-captions", action="store_true", help="図表のキャプションを翻訳しない")
@@ -64,7 +66,7 @@ def _build_parser() -> argparse.ArgumentParser:
     job_args(t)
     t.add_argument("-o", "--output", type=Path, help="出力先（既定: <入力名>_ja.pdf）")
     t.add_argument("--mode", choices=list(MODES), help="出力形式（既定: 設定値）")
-    t.add_argument("--formality", choices=list(FORMALITY), help="文体（DeepL のみ）: plain=である調, polite=です・ます調")
+    t.add_argument("--formality", choices=list(FORMALITY), help="文体: plain=である調（既定）, polite=です・ます調")
     t.add_argument("--font", help=f"和文フォント（{', '.join(k for k in FONT_CHOICES if k != 'custom')} またはフォントファイルのパス）")
     t.add_argument("--no-verify", action="store_true", help="レイアウト検査を省略する")
     t.add_argument("-f", "--force", action="store_true", help="出力先を上書きする")
@@ -74,8 +76,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     k = sub.add_parser("key", help="API キーを管理する")
     k.add_argument("action", choices=["set", "delete", "status"])
-    k.add_argument("engine", nargs="?", choices=["google", "microsoft", "deepl"])
-    k.add_argument("--region", help="Microsoft Translator のリージョン（例: japaneast。グローバルの場合は global）")
+    k.add_argument("engine", nargs="?", choices=["gemini"], default="gemini")
 
     sub.add_parser("gui", help="GUI を起動する")
     return p
@@ -88,7 +89,7 @@ def _translator(engine: str, settings: Settings, secrets: SecretStore):
     key = secrets.get(engine) if engine != "dummy" else ""
     if engine != "dummy" and not key:
         raise MissingKeyError(hint=f"`spectra key set {engine}` で API キーを保存するか、環境変数を設定してください。")
-    return registry.create(engine, api_key=key, options=settings.translate_options(), region=settings.microsoft_region)
+    return registry.create(engine, api_key=key, options=settings.translate_options(), model=settings.gemini_model)
 
 
 def _cache(args, settings: Settings):
@@ -103,6 +104,8 @@ def _cache(args, settings: Settings):
 def _apply_args(args, settings: Settings) -> None:
     if args.engine:
         settings.engine = args.engine
+    if getattr(args, "model", None):
+        settings.gemini_model = args.model
     if args.include_references:
         settings.skip_references = False
     if args.no_captions:
@@ -205,17 +208,12 @@ def _cmd_estimate(args) -> int:
 
 def _cmd_key(args) -> int:
     secrets = SecretStore()
-    engines = [args.engine] if args.engine else ["google", "microsoft", "deepl"]
     if args.action == "status":
-        for eng in engines:
-            src = secrets.source(eng)
-            print(f"{eng:9} {'設定済み（' + src + '）' if src else '未設定'}")
+        src = secrets.source(args.engine)
+        print(f"{args.engine}: {'設定済み（' + src + '）' if src else '未設定'}")
         if not secrets.secure:
             print("注意: OS の資格情報ストアが使えないため、キーは設定ファイルに保存されます。")
         return 0
-    if not args.engine:
-        print("エンジン（google / microsoft / deepl）を指定してください。", file=sys.stderr)
-        return 2
     if args.action == "delete":
         secrets.delete(args.engine)
         print(f"{args.engine} の API キーを削除しました。")
@@ -226,11 +224,6 @@ def _cmd_key(args) -> int:
         return 1
     secrets.set(args.engine, value)
     print(f"{args.engine} の API キーを保存しました（{secrets.backend_name}）。")
-    if args.engine == "microsoft":
-        settings = Settings.load()
-        region = args.region or input("リージョン（例: japaneast、グローバルの場合は空欄）: ").strip()
-        settings.microsoft_region = region
-        settings.save()
     return 0
 
 

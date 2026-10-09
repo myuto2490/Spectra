@@ -25,7 +25,7 @@
 - **図表・数式を壊さない** — 画像・グラフ・表の罫線・独立した数式・図の中の文字には一切手を加えません。翻訳後に自動検査を行い、図表の見た目が 1 ピクセルも変わっていないことを確認します。
 - **段落中の数式もそのまま** — 本文中の数式（例: 学習率 α、下付きの d<sub>k</sub>）は翻訳から保護し、訳文の中の自然な位置に元の形のまま配置します。
 - **読みやすい日本語の組版** — 禁則処理、和文と欧文の間の適切な空き、両端揃え、字下げに対応。2 段組で段をまたぐ段落も、原文と同じように流し込みます。明朝体（Noto Serif JP）も選べます。
-- **無料の翻訳 API で使える** — Google Cloud Translation（毎月 50 万文字まで無料）、Microsoft Translator（毎月 200 万文字まで無料）、DeepL API に対応。翻訳済みの文はキャッシュされるので、同じ論文を訳し直しても文字数を消費しません。
+- **無料で使える** — 翻訳には Google の生成 AI「Gemini」を使います。API キーは Google アカウントだけで発行でき、クレジットカードは不要です。論文の文体（である調 / です・ます調）や専門用語に合わせて自然に訳します。翻訳済みの文はキャッシュされるので、同じ論文を訳し直しても無料枠を消費しません。
 - **API キーは安全に保管** — macOS キーチェーン / Windows 資格情報マネージャー / Linux のキーリングに保存します。
 - **出力形式を選べる** — 翻訳のみ / 原文と訳文を左右に並べた対訳 / ページごとに交互の対訳。
 
@@ -54,11 +54,11 @@
 
 ## 使い方
 
-1. **API キーを設定する** — 初回は ⚙（設定）→「翻訳エンジン」で API キーを貼り付け、「接続を確認」を押します（取得方法は[下記](#api-キーの取得)）。
-2. **PDF を開く** — ウィンドウに PDF をドラッグ＆ドロップするか、「PDF を選択…」を押します。右側のインスペクタに、翻訳する文字数の見積もりと今月の残り文字数が表示されます。
+1. **API キーを設定する** — 初回は ⚙（設定）→「翻訳エンジン」で Gemini API キーを貼り付け、「接続を確認」を押します（取得方法は[下記](#api-キーの取得)。無料・カード不要）。
+2. **PDF を開く** — ウィンドウに PDF をドラッグ＆ドロップするか、「PDF を選択…」を押します。右側のインスペクタに、翻訳する段落数と文字数の見積もりが表示されます。
 3. **翻訳して保存** — 「翻訳」を押すと、原文と訳文が並んで表示されます。確認したら「保存…」で PDF を書き出します。
 
-インスペクタでは、翻訳エンジン・出力形式・翻訳するページの範囲・キャプションや脚注を訳すかどうか・文体（である調 / です・ます調、DeepL のみ）を変えられます。
+インスペクタでは、モデル・出力形式・翻訳するページの範囲・キャプションや脚注を訳すかどうか・文体（である調 / です・ます調）を変えられます。
 
 ### キーボードショートカット
 
@@ -74,34 +74,21 @@
 
 ## API キーの取得
 
-次のどれか 1 つのキーがあれば使えます。どれも利用者ご自身のアカウントで取得します。
+翻訳には Google の **Gemini API** を使います。**クレジットカードの登録は不要**で、無料で使えます。
 
-| エンジン | 無料で使える量 | 向いている使い方 |
-| --- | --- | --- |
-| Google Cloud Translation | 毎月 50 万文字 | まず試すならこれ（既定） |
-| Microsoft Translator | 毎月 200 万文字（無料プラン F0） | 長い論文や、たくさんの論文を訳す |
-| DeepL API | 既存の Free プランのみ毎月 50 万文字 | 既に DeepL のキーを持っている |
+1. [Google AI Studio の API キーのページ](https://aistudio.google.com/apikey) を開き、Google アカウントでログインします（初回は利用規約に同意します）。
+2. 「API キーを作成」を押し、表示されたキー（`AIza` で始まる文字列）をコピーします。
+3. Spectra の ⚙（設定）→「翻訳エンジン」に貼り付け、「接続を確認」を押します。
 
-### Google Cloud Translation
+| モデル | 特長 |
+| --- | --- |
+| Gemini 3.8 Flash（既定） | 高品質。専門用語や長い文も自然に訳します |
+| Gemini 3.5 Flash-Lite | 高速。速さと無料枠の回数を優先する場合に |
 
-1. [Google Cloud Console](https://console.cloud.google.com/) でプロジェクトを作成し、請求先アカウントを設定します（無料枠の範囲なら請求は発生しません）。
-2. [Cloud Translation API](https://console.cloud.google.com/apis/library/translate.googleapis.com) を「有効にする」。
-3. 「API とサービス」→「認証情報」→「認証情報を作成」→「API キー」でキーを作成します。安全のため、キーの「API の制限」で Cloud Translation API のみに制限することをおすすめします。
-
-### Microsoft Translator
-
-1. [Azure ポータル](https://portal.azure.com/) にサインインし（アカウントの作成時に本人確認が必要です）、[Translator リソースの作成](https://portal.azure.com/#create/Microsoft.CognitiveServicesTextTranslation) を開きます。
-2. リージョン（例: **Japan East**）を選び、価格レベルで **Free F0** を選んで作成します。
-3. 作成したリソースの「キーとエンドポイント」で、**キー 1** と **場所/リージョン**（例: `japaneast`）を確認します。
-4. Spectra の設定画面で、キーとリージョンを入力します。
-
-### DeepL API
-
-DeepL API の Free プランは新規の受付を終了しています。既に Free プランの認証キー（末尾が `:fx`）をお持ちの場合や、
-有料のプランを契約している場合は、[アカウント → API キー](https://www.deepl.com/your-account/keys) のキーをそのまま使えます。
-
-> [!TIP]
-> 翻訳前にインスペクタの「見積もり」で消費する文字数を確認できます。今月の残りを超える場合は警告が表示されます。途中で無料枠を使い切った場合も、翻訳できた段落だけで PDF を作成でき、残りは翌月にキャッシュの続きから翻訳できます。
+> [!IMPORTANT]
+> - 無料枠では、送信した文章が Google の製品改善に使われる場合があります。未公開の原稿など機密性の高い文書を翻訳する場合はご注意ください。
+> - 無料枠には 1 分あたり・1 日あたりの回数の上限があります。上限に達すると Spectra は自動で待ってから再開し、1 日の上限に達した場合は、翻訳できた段落だけで PDF を作成するか選べます（上限は日本時間の 16 時ごろ、夏時間は 17 時ごろに戻ります）。現在の上限は [AI Studio](https://aistudio.google.com/) で確認できます。
+> - 翻訳済みの文はキャッシュされるので、同じ論文を訳し直しても回数を消費しません。
 
 ## 仕組み
 
@@ -109,7 +96,7 @@ Spectra は PDF を作り直すのではなく、**元の PDF の本文の文字
 
 1. **解析** — 文字ごとのフォント・大きさ・位置を読み取り、本文・見出し・キャプション・脚注を判別します。図（画像やまとまったベクター図形）・表・数式・著者名・参考文献・回転した文字は「翻訳しない領域」として除外します。迷ったときは訳さないのが基本方針です。
 2. **数式の保護** — 段落中の数式や引用番号 `[12]` はタグに置き換えて翻訳 API に送り、訳文の中で元の書体・上付き/下付きの位置関係のまま組み直します。根号や分数の線も一緒に移動します。
-3. **翻訳** — キャッシュにない文だけを、選んだ翻訳 API にまとめて送ります。
+3. **翻訳** — キャッシュにない段落だけを、論文翻訳用の指示とともに Gemini API へまとめて送ります。数式のタグを 1 つずつ残すよう指示し、応答は件数と順序を確かめられる JSON で受け取ります。
 4. **組版** — 日本語の組版規則に従って、訳文を元の段落の枠に流し込みます。収まらない場合は文字を少しずつ小さくし、枠からはみ出すことはありません。
 5. **置き換え** — 原文の文字だけを消し（画像・図形・背景はそのまま）、訳文を書き込みます。フォントは使った文字だけを埋め込むので、ファイルサイズはほとんど増えません。
 6. **検査** — 翻訳前後を比較し、画像と図形の数、翻訳対象外の文字、図表の見た目（画素）が変わっていないことを自動で確かめます。
@@ -127,7 +114,7 @@ Spectra は PDF を作り直すのではなく、**元の PDF の本文の文字
 <details>
 <summary>論文の内容はどこかに送信されますか？</summary>
 
-翻訳する本文が、選んだ翻訳サービス（Google・Microsoft・DeepL のいずれか）にのみ送信されます。Spectra 自体は利用状況などのデータを一切送信しません。各サービスでの送信データの扱いは、それぞれの利用規約・プライバシーポリシーを確認してください。未公開の原稿など機密性の高い文書を訳す場合は特にご注意ください。
+翻訳する本文が Google の Gemini API にのみ送信されます。Spectra 自体は利用状況などのデータを一切送信しません。Gemini API の無料枠では、送信した文章が Google の製品改善に使われる場合があります（[Gemini API の利用規約](https://ai.google.dev/gemini-api/terms)）。未公開の原稿など機密性の高い文書を訳す場合はご注意ください。
 </details>
 
 <details>
@@ -149,15 +136,14 @@ Spectra は PDF を作り直すのではなく、**元の PDF の本文の文字
 ```sh
 pip install git+https://github.com/myuto2490/Spectra.git
 
-spectra key set google                      # API キーを保存（入力は表示されません）
-spectra estimate paper.pdf                  # 翻訳する文字数の見積もり
+spectra key set gemini                      # API キーを保存（入力は表示されません）
+spectra estimate paper.pdf                  # 翻訳する文字数の見積もり（API は使いません）
 spectra translate paper.pdf                 # paper_ja.pdf を作成
-spectra translate paper.pdf --mode side-by-side --pages 1-8 --font noto-serif
+spectra translate paper.pdf --mode side-by-side --pages 1-8 --font noto-serif --model gemini-3.5-flash-lite
 spectra --help
 ```
 
-環境変数 `GOOGLE_API_KEY` / `AZURE_TRANSLATOR_KEY` / `DEEPL_AUTH_KEY` が設定されていれば、それを優先して使います。
-Microsoft Translator のリージョンは `spectra key set microsoft --region japaneast` で保存できます。
+環境変数 `GEMINI_API_KEY` が設定されていれば、それを優先して使います。
 
 ## 開発
 
@@ -182,12 +168,12 @@ Spectra は [GNU Affero General Public License v3.0](LICENSE)（AGPL-3.0-or-late
 
 主な依存ソフトウェア: [PyMuPDF](https://github.com/pymupdf/PyMuPDF)（AGPL-3.0）、[Qt for Python / PySide6](https://www.qt.io/qt-for-python)（LGPL-3.0）、[fontTools](https://github.com/fonttools/fonttools)（MIT）。任意でダウンロードできる Noto Serif JP / Noto Sans JP は SIL Open Font License 1.1 です。
 
-DeepL は DeepL SE の、Google Cloud は Google LLC の、Microsoft と Azure は Microsoft Corporation の商標です。Spectra はこれらの企業とは関係のない個人開発のソフトウェアです。
+Google および Gemini は Google LLC の商標です。Spectra は Google とは関係のない個人開発のソフトウェアです。
 
 ---
 
 <details>
 <summary>English</summary>
 
-**Spectra** is a free, open-source desktop app (Windows, macOS, Linux) that translates academic PDFs from English into Japanese **while keeping the original layout intact**. Figures, tables, equations and author names are left untouched; only the running text, headings, captions and footnotes are replaced with Japanese text typeset into the original boxes. Inline math is protected during translation and re-placed with its original geometry. It works with the free tiers of Google Cloud Translation and Microsoft Translator (and with DeepL API keys), caches translations to save quota, and verifies after each run that figures and untranslated text have not changed. Licensed under AGPL-3.0.
+**Spectra** is a free, open-source desktop app (Windows, macOS, Linux) that translates academic PDFs from English into Japanese **while keeping the original layout intact**. Figures, tables, equations and author names are left untouched; only the running text, headings, captions and footnotes are replaced with Japanese text typeset into the original boxes. Inline math is protected during translation and re-placed with its original geometry. It uses the Google Gemini API, whose free tier needs no credit card, caches translations to save quota, and verifies after each run that figures and untranslated text have not changed. Licensed under AGPL-3.0.
 </details>

@@ -83,15 +83,14 @@ def test_settings_dialog_opens(window, monkeypatch):
     monkeypatch.setattr(KeyField, "verify", lambda self: verified.append(self.engine_id))  # ネットワークに出ない
 
     d = SettingsDialog(w.settings, w.secrets, w.cache, w)
-    assert set(d.key_fields) == {"google", "microsoft", "deepl"}
-    d.key_fields["microsoft"].region.setText("japaneast")
-    d.key_fields["microsoft"]._save_region()
-    assert w.settings.microsoft_region == "japaneast"
+    assert set(d.key_fields) == {"gemini"}
+    d.model.setCurrentIndex(d.model.findData("gemini-3.5-flash-lite"))
+    assert w.settings.gemini_model == "gemini-3.5-flash-lite"
     for tab in ("engines", "fonts", "advanced"):
         d.show_tab(tab)
         pump(app, 0.05)
-    d.key_fields["deepl"].edit.setText("abc:fx")
-    d.key_fields["deepl"]._save()
-    assert w.secrets.get("deepl", use_env=False) == "abc:fx"
-    assert verified == ["deepl"]
+    d.key_fields["gemini"].edit.setText("AIzaTestKey")
+    d.key_fields["gemini"]._save()
+    assert w.secrets.get("gemini", use_env=False) == "AIzaTestKey"
+    assert verified == ["gemini"]
     d.close()

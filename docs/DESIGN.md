@@ -4,8 +4,11 @@
 
 - 対象 OS: Windows 10/11, macOS 12+, Linux (X11 / Wayland)
 - ライセンス: AGPL-3.0（依存する PyMuPDF のライセンスに合わせる）
-- 翻訳エンジン: Google Cloud Translation (Basic, 無料枠) / Microsoft Translator (無料プラン F0) / DeepL API
-  - DeepL API Free は 2026 年に新規受付を終了したため、既定は Google とし、無料枠の大きい Microsoft Translator を追加した
+- 翻訳エンジン: Gemini API（Google AI Studio の無料枠。クレジットカード不要）
+  - 当初は DeepL API Free / Google Cloud Translation を想定していたが、DeepL API Free の新規受付終了と、
+    Google Cloud / Azure がいずれもカード登録を必要とすることから、Gemini API に一本化した
+  - 既定モデルは `gemini-3.8-flash`（無料枠で使える最も高性能な Flash モデル）。思考レベルは `low` にして速度と回数を節約する。
+    速度優先の選択肢として `gemini-3.5-flash-lite`（思考 `minimal`）を用意する
 
 ---
 
@@ -79,7 +82,7 @@
 │   7. export    : 翻訳のみ / 左右対訳 / 交互対訳 で保存            │
 └───────────────┬───────────────────────────────────────────────┘
 ┌───────────────▼─────────── translate ─────────────────────────┐
-│ Translator (抽象) ← DeepLTranslator / GoogleTranslator / Dummy │
+│ Translator (抽象) ← GeminiTranslator / DummyTranslator         │
 │ TranslationCache (SQLite)  ─ 同じ文の再翻訳で無料枠を消費しない  │
 └───────────────────────────────────────────────────────────────┘
 ┌────────────────────────── config ─────────────────────────────┐
@@ -107,7 +110,7 @@ src/spectra/
     export.py          出力形式
     pipeline.py        全体制御・進捗・キャンセル
   translate/
-    base.py  deepl.py  google.py  dummy.py  cache.py  errors.py  registry.py
+    base.py  gemini.py  dummy.py  cache.py  service.py  errors.py  registry.py
   config/
     settings.py  secrets.py  paths.py
   ui/
@@ -145,7 +148,7 @@ packaging/             PyInstaller 設定・アイコン生成
 ### 4.3 セグメント化 (segment)
 
 - **行の結合**: 行末ハイフンの後に小文字が続く場合はハイフンを除去して連結。それ以外は空白で連結。
-- **インライン数式**: 数式フォントのスパンと、その前後に隣接する短い記号・数字スパン（CMR の `=` `6` 等）をひとまとまりの `InlineRun` とし、訳文中では `<x id="0"/>` のような空タグで表す。DeepL の XML タグ処理 / Google の HTML モードはタグを保持したまま語順に応じて移動させるため、日本語の語順に合った位置に数式が配置される。
+- **インライン数式**: 数式フォントのスパンと、その前後に隣接する短い記号・数字スパン（CMR の `=` `6` 等）をひとまとまりの `InlineRun` とし、訳文中では `<x id="0"/>` のような空タグで表す。Gemini にはタグを一字一句変えずに残し、日本語の語順に合う位置へ置くよう指示する。タグの表記ゆれは受信側で正規化し、欠落したタグは段落末に補うため、数式が失われることはない。
 - **上付き・下付き**: 本文より小さいスパン（脚注記号など）も同様に保護し、相対サイズ・ベースラインのずれを記録して再現する。
 - **引用番号** `[12]` `[3, 5–7]`: 保護対象とし、色（hyperref の緑色など）も保持する。
 - **段・ページ跨ぎの段落結合**: 文末記号で終わらないブロックと、小文字で始まる次のブロック（同じ文字サイズ）を 1 つの翻訳単位にまとめる。訳文は元の文字数比で各領域に配分し、分割点は句読点を優先する。
@@ -153,11 +156,12 @@ packaging/             PyInstaller 設定・アイコン生成
 ### 4.4 翻訳 (translate)
 
 - 未訳テキストのみを API に送る（SQLite キャッシュ: `sha256(engine, source_lang, target_lang, options, text)`）。
-- バッチ: DeepL 50 件 / 約 100KB、Google 100 件 / 約 25,000 文字ごと。
+- バッチ: 25 段落 / 約 12,000 文字ごとに JSON の配列で送り、構造化出力（`responseSchema`）で同じ件数・順序の配列を受け取る。件数が合わない場合は分割して送り直し、安全フィルタで訳せない段落は原文のまま残す。
 - リトライ: 429・5xx・タイムアウトは指数バックオフ（`Retry-After` を尊重）で最大 5 回。
 - エラーは種類別の例外（認証・無料枠超過・レート制限・ネットワーク）にし、UI は日本語で原因と対処を提示。
-- 事前見積もり: 翻訳前に「対象文字数」「キャッシュ済み文字数」「DeepL の今月の残り文字数」を表示し、無料枠超過を未然に防ぐ。
-- DeepL の文体指定（である調 / です・ます調）に対応。
+- 事前見積もり: 翻訳前に「対象段落数」「文字数」「キャッシュ済み文字数」を表示する。
+- 文体（である調 / です・ます調）は指示文で指定する。思考レベルはモデルごとの最小（3.8 Flash: `low`、3.5 Flash-Lite: `minimal`）にし、温度は Gemini 3 の推奨どおり既定値のままにする。
+- 無料枠の回数制限: 1 分あたりの上限（429 + RetryInfo）は指定時間だけ待って再試行し、1 日あたりの上限は「無料枠超過」として扱い、翻訳できた分だけで PDF を作れるようにする。
 
 ### 4.5 日本語組版 (layout)
 
@@ -208,7 +212,7 @@ packaging/             PyInstaller 設定・アイコン生成
 │ [開く]   attention.pdf · 15ページ        [原文|対訳|翻訳] [翻訳] ⚙ ▥│ ← ツールバー
 ├───────────────────────────────────────────────┬─────────────────┤
 │                                               │ 翻訳エンジン      │
-│      原文              │        翻訳           │  Google Cloud… ▾  │
+│      原文              │        翻訳           │  Gemini 3.8 Flash▾│
 │  ┌──────────┐          │   ┌──────────┐        │  ▓▓▓▓░░ 残り 41万字│
 │  │          │          │   │          │        │ 出力              │
 │  │  page 1  │          │   │  page 1  │        │  形式  翻訳のみ ▾  │
@@ -299,7 +303,7 @@ packaging/             PyInstaller 設定・アイコン生成
 | 1 | `feature/project-setup` | pyproject、ライセンス、README 雛形、パッケージ骨格 |
 | 1.5 | `chore/versioning` | バージョン管理（CHANGELOG、bump / check スクリプト） |
 | 2 | `feature/core-extraction` | models / fonts / extract / classify / segment / markup + テスト |
-| 3 | `feature/translators` | DeepL / Google / Dummy / キャッシュ / エラー + モックテスト |
+| 3 | `feature/translators` | 翻訳エンジン基盤 / キャッシュ / エラー + モックテスト（後に `feature/gemini-only` で Gemini に一本化） |
 | 4 | `feature/layout-render` | 日本語組版・描画・出力形式・品質検査・パイプライン・CLI + テスト |
 | 5 | `feature/settings` | 設定・API キー保管 |
 | 6 | `feature/gui` | テーマ、アイコン、メインウィンドウ、プレビュー、インスペクタ、設定画面 |

@@ -34,7 +34,7 @@ from ..core.pipeline import JobResult, Progress, TranslationJob, open_document
 from ..errors import SpectraError
 from ..translate import registry
 from ..translate.cache import TranslationCache
-from ..translate.errors import AuthenticationError, CancelledError, MissingKeyError, TranslatorError
+from ..translate.errors import AuthenticationError, CancelledError, MissingKeyError
 from ..translate.service import PartialTranslationError
 from . import theme, worker
 from .about import AboutDialog
@@ -68,7 +68,6 @@ class MainWindow(QMainWindow):
         self.result_stale = False
         self._job_task: worker.Task | None = None
         self._estimate_gen = 0
-        self._usage_gen = 0
 
         self._build_ui()
         self._build_actions()
@@ -313,28 +312,12 @@ class MainWindow(QMainWindow):
             has_key = bool(self.secrets.get(engine))
         self.inspector.set_engine_status(has_key)
         if has_key:
-            self.drop_zone.set_engine_notice(f"{info.name} で翻訳します", warning=False)
+            from ..translate.gemini import MODELS
+
+            name = MODELS[self.settings.gemini_model][0] if engine == "gemini" else info.name
+            self.drop_zone.set_engine_notice(f"{name} で翻訳します", warning=False)
         else:
             self.drop_zone.set_engine_notice(f"{info.name if info else engine} の API キーが設定されていません", warning=True)
-        if has_key and engine == "deepl":
-            self._usage_gen += 1
-            gen = self._usage_gen
-            key = self.secrets.get(engine)
-
-            def job(_r, _c):
-                with registry.create(engine, api_key=key) as t:
-                    return t.usage()
-
-            def done(usage):
-                if gen == self._usage_gen:
-                    self.inspector.set_engine_status(True, usage)
-
-            def failed(err):
-                if gen == self._usage_gen:
-                    msg = err.title if isinstance(err, TranslatorError) else "使用量を取得できませんでした"
-                    self.inspector.set_engine_status(True, None, msg, "danger" if isinstance(err, AuthenticationError) else None)
-
-            worker.start(job, done, failed)
 
     # ======================================================================
     # 文書
@@ -389,7 +372,7 @@ class MainWindow(QMainWindow):
     def _make_job(self, translator=None, progress=None) -> TranslationJob:
         first, last = self.inspector.page_range()
         translator = translator or registry.create(
-            self.settings.engine, api_key="", options=self.settings.translate_options(), region=self.settings.microsoft_region
+            self.settings.engine, api_key="", options=self.settings.translate_options(), model=self.settings.gemini_model
         )
         return TranslationJob(
             self.source_bytes,
@@ -462,7 +445,7 @@ class MainWindow(QMainWindow):
             return
 
         translator = registry.create(
-            engine, api_key=key, options=self.settings.translate_options(), region=self.settings.microsoft_region
+            engine, api_key=key, options=self.settings.translate_options(), model=self.settings.gemini_model
         )
         job = self._make_job(translator)
         self.banner_wrap.hide()

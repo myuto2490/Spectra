@@ -49,8 +49,8 @@ body:
   - type: dropdown
     id: engine
     attributes:
-      label: 翻訳エンジン
-      options: [Google Cloud Translation, Microsoft Translator, DeepL API, その他]
+      label: モデル
+      options: [Gemini 3.8 Flash, Gemini 3.5 Flash-Lite]
   - type: textarea
     id: logs
     attributes:

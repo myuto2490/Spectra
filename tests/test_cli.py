@@ -30,7 +30,7 @@ def test_translate_with_dummy(paper_path, capsys):
 
 
 def test_missing_key_message(paper_path, capsys):
-    assert main(["translate", str(paper_path), "--engine", "deepl", "-o", str(paper_path.with_name("x.pdf"))]) == 1
+    assert main(["translate", str(paper_path), "--engine", "gemini", "-o", str(paper_path.with_name("x.pdf"))]) == 1
     assert "API キーが設定されていません" in capsys.readouterr().err
 
 

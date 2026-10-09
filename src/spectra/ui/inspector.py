@@ -18,6 +18,7 @@ from ..config.settings import Settings
 from ..core.options import Formality, OutputMode
 from ..core.pipeline import Estimate
 from ..translate.base import Usage
+from ..translate.gemini import MODELS
 from ..translate.registry import ENGINES, public_engines
 from .widgets import FormGroup, Switch, label, link_button, set_prop
 
@@ -27,8 +28,7 @@ OUTPUT_MODES = [
     (OutputMode.INTERLEAVE.value, "ページごとに対訳"),
 ]
 FORMALITIES = [
-    (Formality.DEFAULT.value, "自動"),
-    (Formality.PLAIN.value, "である調"),
+    (Formality.DEFAULT.value, "である調"),
     (Formality.POLITE.value, "です・ます調"),
 ]
 
@@ -67,7 +67,11 @@ class Inspector(QScrollArea):
         self.engine_group = FormGroup("翻訳エンジン")
         self.engine = _combo([(e.engine_id, e.name) for e in public_engines()], settings.engine)
         self.engine.currentIndexChanged.connect(self._on_engine)
-        self.engine_group.add_row("エンジン", self.engine)
+        engine_row = self.engine_group.add_row("エンジン", self.engine)
+        engine_row.setVisible(len(public_engines()) > 1)  # 通常は Gemini のみ
+        self.model = _combo([(mid, name) for mid, (name, _d) in MODELS.items()], settings.gemini_model)
+        self.model.currentIndexChanged.connect(self._on_model)
+        self.model_row = self.engine_group.add_row("モデル", self.model)
         usage = QWidget()
         ul = QVBoxLayout(usage)
         ul.setContentsMargins(0, 0, 0, 0)
@@ -138,7 +142,7 @@ class Inspector(QScrollArea):
             w.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self.estimate_group.add_row("翻訳する段落", self.est_paragraphs)
         self.estimate_group.add_row("文字数", self.est_chars)
-        self.estimate_group.add_row("API で消費する文字数", self.est_cost, "翻訳済みの文は消費しません")
+        self.estimate_group.add_row("API に送る文字数", self.est_cost, "翻訳済みの段落はキャッシュを使います")
         lay.addWidget(self.estimate_group)
         lay.addStretch(1)
 
@@ -193,8 +197,7 @@ class Inspector(QScrollArea):
         set_prop(self.key_status, "tone", t)
         self.key_button.setVisible(needs_key)
         self.key_button.setText("API キーを設定…" if not has_key else "API キーを管理…")
-        self.formality_row.setEnabled(self.settings.engine == "deepl")
-        self.formality.setToolTip("" if self.settings.engine == "deepl" else "文体の指定は DeepL でのみ使えます")
+        self.model_row.setEnabled(self.settings.engine == "gemini")
 
     def set_estimate(self, est: Estimate | None) -> None:
         self._estimate = est
@@ -218,10 +221,10 @@ class Inspector(QScrollArea):
             return
         if u is not None and u.remaining is not None and est.pending_chars > u.remaining:
             self.estimate_group.set_footer(
-                f"今月の残り（{u.remaining:,} 文字）を超えています。ページを絞るか、別のエンジンを使ってください。", "danger"
+                f"今月の残り（{u.remaining:,} 文字）を超えています。ページを絞ってください。", "danger"
             )
         elif est.pending_chars == 0 and est.total_chars:
-            self.estimate_group.set_footer("すべてキャッシュ済みです。API の文字数は消費しません。", "success")
+            self.estimate_group.set_footer("すべてキャッシュ済みです。API は使いません。", "success")
         else:
             self.estimate_group.set_footer("")
 
@@ -234,6 +237,10 @@ class Inspector(QScrollArea):
     def _on_engine(self) -> None:
         self.settings.engine = self.engine.currentData()
         self._usage = None
+        self._save(True)
+
+    def _on_model(self) -> None:
+        self.settings.gemini_model = self.model.currentData()
         self._save(True)
 
     def _on_output(self) -> None:

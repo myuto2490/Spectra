@@ -19,9 +19,7 @@ from . import paths
 log = logging.getLogger(__name__)
 
 ENV_VARS = {
-    "deepl": ("SPECTRA_DEEPL_API_KEY", "DEEPL_AUTH_KEY"),
-    "google": ("SPECTRA_GOOGLE_API_KEY", "GOOGLE_API_KEY"),
-    "microsoft": ("SPECTRA_MICROSOFT_API_KEY", "AZURE_TRANSLATOR_KEY"),
+    "gemini": ("SPECTRA_GEMINI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"),
 }
 
 

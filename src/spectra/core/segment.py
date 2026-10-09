@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 import statistics
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from .fonts import base_name, is_math_font, is_math_span, is_sans_font
 from .markup import escape, placeholder, to_plain
@@ -38,6 +38,7 @@ class _Piece:
     text: str
     protected: bool
     baseline: float
+    exact: bool = True  # span の bbox がこの text の範囲と一致するか（部分文字列なら False）
 
 
 # ---- 書式の推定 ------------------------------------------------------------
@@ -113,7 +114,7 @@ def _pieces_for_line(line: Line, base_size: float, body_font: str, has_math: boo
             and not prev.text[-1:].isspace()
             and not span.text[:1].isspace()
         ):
-            pieces.append(_Piece(span, " ", False, baseline))
+            pieces.append(_Piece(span, " ", False, baseline, exact=False))
         prev = span
         raised = abs(span.origin[1] - baseline) > base_size * 0.15
         small = span.size < base_size * 0.8
@@ -125,13 +126,14 @@ def _pieces_for_line(line: Line, base_size: float, body_font: str, has_math: boo
             continue
         # 引用番号は保護（色と表記を保つ）
         pos = 0
+        whole = not _CITATION.search(span.text)
         for m in _CITATION.finditer(span.text):
             if m.start() > pos:
-                pieces.append(_Piece(span, span.text[pos : m.start()], False, baseline))
-            pieces.append(_Piece(span, m.group(0), True, baseline))
+                pieces.append(_Piece(span, span.text[pos : m.start()], False, baseline, exact=False))
+            pieces.append(_Piece(span, m.group(0), True, baseline, exact=False))
             pos = m.end()
         if pos < len(span.text):
-            pieces.append(_Piece(span, span.text[pos:], False, baseline))
+            pieces.append(_Piece(span, span.text[pos:], False, baseline, exact=whole))
 
     # 数式に隣接する記号・数字だけのスパン（CMR10 の "= 6" など）を数式に取り込む
     changed = True
@@ -191,7 +193,7 @@ def build_unit(decision: BlockDecision, page_width: float, body_font: str = "") 
     runs: dict[int, InlineRun] = {}
     markup = ""
     has_math = any(is_math_font(s.font) for s in block.spans)
-    pending: list[InlinePiece] = []
+    pending: list[_Piece] = []
 
     def flush() -> str:
         """溜めた保護要素を 1 つのプレースホルダにして返す。"""
@@ -199,7 +201,7 @@ def build_unit(decision: BlockDecision, page_width: float, body_font: str = "") 
             return ""
         rid = len(runs)
         trailing_space = pending[-1].text[-1:].isspace()
-        runs[rid] = InlineRun(tuple(pending))
+        runs[rid] = _make_run(pending, style.size, block.page)
         pending.clear()
         return placeholder(rid) + (" " if trailing_space else "")
 
@@ -210,17 +212,16 @@ def build_unit(decision: BlockDecision, page_width: float, body_font: str = "") 
                 # 空白は数式の一部として保持しつつ、前後の空白は外へ出す
                 if not pending and p.text[:1].isspace():
                     line_markup += " "
-                pending.append(_inline_piece(p, style.size))
+                pending.append(p)
                 continue
             if pending and not p.text.strip():
-                pending.append(_inline_piece(p, style.size))
+                pending.append(p)
                 continue
             line_markup += flush() + escape(p.text)
         line_markup += flush()
         markup = _join(markup, re.sub(r"\s+", " ", line_markup).strip())
 
     markup = re.sub(r"\s+", " ", markup).strip()
-    runs = {rid: InlineRun(_strip_run(r.pieces)) for rid, r in runs.items()}
     if not to_plain(markup).strip():
         return None
     region = Region(
@@ -230,27 +231,44 @@ def build_unit(decision: BlockDecision, page_width: float, body_font: str = "") 
         style=style,
         source_chars=len(to_plain(markup)),
         block_index=block.index,
+        first_baseline=block.lines[0].baseline,
     )
     return _Unit(decision, markup, runs, region)
 
 
-def _strip_run(pieces: tuple[InlinePiece, ...]) -> tuple[InlinePiece, ...]:
-    """保護要素の先頭・末尾の空白を落とす（訳文側で適切な間隔を入れ直すため）。"""
+def _make_run(pieces: list[_Piece], base_size: float, page: int) -> InlineRun:
+    """保護要素を作る。前後の空白は落とし（訳文側で間隔を入れ直す）、可能なら原文の横位置を記録する。"""
     items = list(pieces)
     while items and not items[0].text.strip():
         items.pop(0)
     while items and not items[-1].text.strip():
         items.pop()
-    if items:
-        first, last = items[0], items[-1]
-        items[0] = InlinePiece(first.text.lstrip(), *_rest(first))
-        last = items[-1]
-        items[-1] = InlinePiece(last.text.rstrip(), *_rest(last))
-    return tuple(items)
-
-
-def _rest(p: InlinePiece) -> tuple:
-    return (p.size_ratio, p.rise_ratio, p.italic, p.bold, p.color, p.math)
+    if not items:
+        return InlineRun(())
+    inline = [_inline_piece(p, base_size) for p in items]
+    inline[0] = replace(inline[0], text=inline[0].text.lstrip())
+    inline[-1] = replace(inline[-1], text=inline[-1].text.rstrip())
+    if all(p.exact for p in items) and base_size > 0:
+        visible = [p for p in items if p.text.strip()]
+        x0 = min(p.span.bbox[0] for p in visible)
+        x1 = max(p.span.bbox[2] for p in visible)
+        inline = [
+            replace(ip, dx_ratio=(p.span.bbox[0] - x0) / base_size) if p.text.strip() else ip
+            for ip, p in zip(inline, items)
+        ]
+        # 空白だけの要素は位置を持たないので除く
+        inline = [ip for ip in inline if ip.text.strip()]
+        y0 = min(p.span.bbox[1] for p in visible)
+        y1 = max(p.span.bbox[3] for p in visible)
+        return InlineRun(
+            tuple(inline),
+            width_ratio=(x1 - x0) / base_size,
+            page=page,
+            bbox=(x0, y0, x1, y1),
+            origin=(x0, items[0].baseline),
+            base_size=base_size,
+        )
+    return InlineRun(tuple(inline))
 
 
 # ---- 段・ページを跨ぐ段落の結合 -----------------------------------------------

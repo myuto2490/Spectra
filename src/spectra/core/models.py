@@ -139,6 +139,7 @@ class InlinePiece:
     bold: bool
     color: int
     math: bool
+    dx_ratio: float | None = None  # 塊の左端からの横位置 / 基本サイズ（分数など 2 次元配置の再現用）
 
 
 @dataclass(frozen=True)
@@ -146,6 +147,12 @@ class InlineRun:
     """訳文中で 1 つのプレースホルダとして扱う、分割不可の塊。"""
 
     pieces: tuple[InlinePiece, ...]
+    width_ratio: float | None = None  # 原文での塊の幅 / 基本サイズ。None なら順に並べる
+    # 原文での位置（根号の上線や分数の横線などのベクター線を一緒に移動するため）
+    page: int | None = None
+    bbox: Rect | None = None
+    origin: Point | None = None  # (左端 x, ベースライン y)
+    base_size: float | None = None
 
     @property
     def text(self) -> str:
@@ -160,8 +167,9 @@ class Region:
     rect: Rect
     line_rects: list[Rect]
     style: TextStyle
-    source_chars: int  # 配分比の算出に使う原文の文字数
+    source_chars: int  # 原文の文字数
     block_index: int
+    first_baseline: float | None = None  # 原文 1 行目のベースライン
 
 
 @dataclass

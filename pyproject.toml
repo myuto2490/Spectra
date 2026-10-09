@@ -54,6 +54,7 @@ packages = ["src/spectra"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+filterwarnings = ["ignore:builtin type .* has no __module__:DeprecationWarning"]
 
 [tool.ruff]
 line-length = 100
@@ -61,4 +62,4 @@ target-version = "py310"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "SIM"]
-ignore = ["E501"]
+ignore = ["E501", "B905"]

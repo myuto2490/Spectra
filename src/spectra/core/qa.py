@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 
 import pymupdf
 
+from .extract import TEXT_FLAGS
 from .models import DocumentAnalysis, Rect, inflate, rect_area, rect_intersect
 
 log = logging.getLogger(__name__)
@@ -90,7 +91,7 @@ def check(
             if clip.is_empty:
                 continue
             want = _norm(d.block.text)
-            got = _norm(pf.get_text("text", clip=clip))
+            got = _norm(pf.get_text("text", clip=clip, flags=TEXT_FLAGS))
             missing = want - got
             if missing and sum(missing.values()) > max(1, sum(want.values()) * 0.02):
                 report.issues.append(

@@ -157,12 +157,12 @@ def _text_atoms(text: str, fonts: FontBook, latin_role: FontRole, bold: bool, ou
             i = j
             continue
         if is_cjk(ch):
-            role = fonts.resolve(ch, FontRole.JP)
+            role = fonts.resolve(ch, fonts.jp_role(bold))
             w = fonts.width(ch, role, 1.0)
             out.append(
                 Atom(
                     AtomKind.CJK,
-                    [Glyphs(ch, role, bold=bold, unit_width=w)],
+                    [Glyphs(ch, role, bold=bold and role == FontRole.JP, unit_width=w)],
                     w,
                     no_break_before=ch in NO_START,
                     no_break_after=ch in NO_END,

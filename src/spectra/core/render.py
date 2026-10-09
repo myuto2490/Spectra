@@ -29,6 +29,7 @@ from .models import (
     rect_intersect,
 )
 from .options import RenderOptions
+from .redact import erase_text
 
 log = logging.getLogger(__name__)
 
@@ -65,6 +66,25 @@ def _used_text(segments: list[Segment]) -> str:
     return "".join(sorted(chars))
 
 
+def _merge_rects(rects: list[Rect], gap: float = 2.0) -> list[Rect]:
+    """同じ行で隣り合う範囲を 1 つにまとめる（消去の指定が多いと処理が非常に遅くなるため）。"""
+    rows: dict[tuple[int, int], list[Rect]] = defaultdict(list)
+    for r in rects:
+        rows[(round(r[1] * 2), round(r[3] * 2))].append(r)
+    merged: list[Rect] = []
+    for row in rows.values():
+        row.sort(key=lambda r: r[0])
+        cur = row[0]
+        for r in row[1:]:
+            if r[0] - cur[2] <= gap:
+                cur = (cur[0], min(cur[1], r[1]), max(cur[2], r[2]), max(cur[3], r[3]))
+            else:
+                merged.append(cur)
+                cur = r
+        merged.append(cur)
+    return merged
+
+
 class PageGeometry:
     """領域拡張の判定に使う、ページ上の障害物（他のテキスト・図・表・罫線）。"""
 
@@ -72,13 +92,8 @@ class PageGeometry:
         self.page_rect: Rect = tuple(page.rect)  # type: ignore[assignment]
         self.blocks: list[tuple[int, Rect]] = [(d.block.index, d.block.bbox) for d in pa.decisions]
         self.others: list[Rect] = list(pa.figure_rects) + list(pa.table_rects)
-        try:
-            for d in page.get_drawings():
-                r = tuple(d["rect"])
-                if rect_area(r) < page.rect.width * page.rect.height * 0.5:
-                    self.others.append(r)  # type: ignore[arg-type]
-        except Exception:
-            log.debug("page %d: drawings unavailable", page.number, exc_info=True)
+        page_area = page.rect.width * page.rect.height
+        self.others += [r for r in pa.drawing_rects if rect_area(r) < page_area * 0.5]
         xs = [b[1] for b in self.blocks if (b[1][2] - b[1][0]) > 0]
         if xs:
             self.content: Rect = (
@@ -128,6 +143,7 @@ class Renderer:
         self.options = options
         self.fonts = FontBook(options.font_path, serif=options.font_is_serif, jp_bold_path=options.bold_font_path)
         self._geo: dict[int, PageGeometry] = {}
+        self._kept: dict[int, list[Rect]] = {}
         self._pa = {pa.page: pa for pa in analysis.pages}
 
     def geometry(self, pno: int) -> PageGeometry:
@@ -151,6 +167,31 @@ class Renderer:
             offset = None if r.first_baseline is None else r.first_baseline - r.rect[1]
             frames.append(Frame(page=r.page, rect=rect, style=r.style, first_baseline_offset=offset))
         return frames
+
+    def _kept_spans(self, pno: int) -> list[Rect]:
+        """翻訳しない文字の範囲（消してはいけない）。"""
+        if pno not in self._kept:
+            self._kept[pno] = [
+                inflate(s.bbox, -0.5)
+                for d in self._pa[pno].decisions
+                if not d.translate
+                for s in d.block.spans
+                if s.text.strip()
+            ]
+        return self._kept[pno]
+
+    def _erase_rects_for(self, region: Region) -> list[Rect]:
+        """通常は行単位で消し、翻訳しない文字と重なる行だけスパン単位で消す（指定の数を抑えて高速にする）。"""
+        kept = self._kept_spans(region.page)
+        out: list[Rect] = []
+        spans_per_line = region.span_rects or [[r] for r in region.line_rects]
+        for line, spans in zip(region.line_rects, spans_per_line):
+            e = erase_rect(line)
+            if any(rect_area(rect_intersect(e, k)) > 0.5 for k in kept):
+                out.extend(spans)
+            else:
+                out.append(line)
+        return out
 
     def layout_segment(self, seg: Segment) -> LayoutResult:
         tokens = parse(seg.translated or "", set(seg.runs))
@@ -185,7 +226,7 @@ class Renderer:
             for g in result.placed:
                 by_page[g.page].append(g)
             for r in seg.regions:
-                erase[r.page].extend(r.erase_rects or r.line_rects)
+                erase[r.page].extend(self._erase_rects_for(r))
             for pr in result.runs:
                 run = seg.runs.get(pr.run_id)
                 if run is not None and run.bbox is not None and run.origin is not None:
@@ -288,16 +329,7 @@ class Renderer:
 
     @staticmethod
     def _erase(page: pymupdf.Page, rects: list[Rect]) -> None:
-        for r in rects:
-            rect = pymupdf.Rect(erase_rect(r))
-            if rect.is_empty:
-                continue
-            page.add_redact_annot(rect, fill=False, cross_out=False)
-        page.apply_redactions(
-            images=pymupdf.PDF_REDACT_IMAGE_NONE,
-            graphics=pymupdf.PDF_REDACT_LINE_ART_NONE,
-            text=pymupdf.PDF_REDACT_TEXT_REMOVE,
-        )
+        erase_text(page, _merge_rects(rects))
 
     def _write(self, page: pymupdf.Page, glyphs: list[PlacedGlyphs]) -> None:
         writers: dict[int, pymupdf.TextWriter] = {}

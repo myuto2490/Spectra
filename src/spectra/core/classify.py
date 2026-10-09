@@ -12,7 +12,13 @@ from collections.abc import Iterable
 
 import pymupdf
 
-from .extract import SECTION_NAME, extract_blocks, find_figure_rects, find_table_rects
+from .extract import (
+    SECTION_NAME,
+    extract_blocks,
+    find_figure_rects,
+    find_table_rects,
+    read_drawings,
+)
 from .fonts import base_name, is_math_font, is_math_span, is_mono_font, math_char_ratio
 from .models import (
     BlockDecision,
@@ -161,8 +167,9 @@ class DocumentClassifier:
 
     def analyze_page(self, page: pymupdf.Page, blocks: list[TextBlock] | None = None) -> PageAnalysis:
         blocks = extract_blocks(page) if blocks is None else blocks
-        figures = find_figure_rects(page)
-        tables = find_table_rects(page)
+        drawings = read_drawings(page)
+        figures = find_figure_rects(page, drawings)
+        tables = find_table_rects(page, drawings)
         stats = {b.index: BlockStats(b, self.body_font) for b in blocks}
         tabular = _tabular_blocks(blocks, stats)
         height = float(page.rect.height)
@@ -184,6 +191,7 @@ class DocumentClassifier:
             decisions=decisions,
             figure_rects=figures,
             table_rects=tables,
+            drawing_rects=[tuple(d["rect"]) for d in drawings],
         )
 
     def _front_matter(

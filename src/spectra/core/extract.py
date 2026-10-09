@@ -241,7 +241,16 @@ def _heading_first_line(lines: list[Line]) -> bool:
     return first_w < median * 0.5 and abs(first_c - rest_c) < size and not text.endswith((".", ","))
 
 
-def find_figure_rects(page: pymupdf.Page) -> list[Rect]:
+def read_drawings(page: pymupdf.Page) -> list[dict]:
+    """ページのベクター描画を読む（重い処理なので、ページごとに 1 回だけ呼んで使い回す）。"""
+    try:
+        return page.get_drawings()
+    except Exception:  # 壊れたコンテンツストリーム
+        log.warning("page %d: failed to read drawings", page.number, exc_info=True)
+        return []
+
+
+def find_figure_rects(page: pymupdf.Page, drawings: list[dict] | None = None) -> list[Rect]:
     """図とみなす領域（画像・まとまったベクター描画）を返す。"""
     page_area = rect_area(_to_rect(page.rect))
     rects: list[Rect] = []
@@ -253,11 +262,8 @@ def find_figure_rects(page: pymupdf.Page) -> list[Rect]:
             continue
         rects.append(r)
 
-    try:
-        drawings = page.get_drawings()
-    except Exception:  # 壊れたコンテンツストリーム
-        log.warning("page %d: failed to read drawings", page.number, exc_info=True)
-        return rects
+    if drawings is None:
+        drawings = read_drawings(page)
     if not drawings:
         return rects
     try:
@@ -292,7 +298,12 @@ def _is_plain_box(drawing: dict) -> bool:
     return kinds <= {"re", "qu"} or (kinds <= {"l"} and len(items) <= 4)
 
 
-def find_table_rects(page: pymupdf.Page) -> list[Rect]:
+def find_table_rects(page: pymupdf.Page, drawings: list[dict] | None = None) -> list[Rect]:
+    """罫線で囲まれた表の領域。罫線のほとんど無いページでは検出を省く（重い処理のため）。"""
+    if drawings is not None:
+        strokes = sum(1 for d in drawings for it in d.get("items", []) if it[0] in ("l", "re"))
+        if strokes < 4:
+            return []
     try:
         tables = page.find_tables()
     except Exception:

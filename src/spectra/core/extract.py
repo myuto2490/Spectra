@@ -226,7 +226,9 @@ def _heading_first_line(lines: list[Line]) -> bool:
     if len(lines) < 2:
         return False
     first, rest = lines[0], lines[1:]
-    text = first.text.strip()
+    from .classify import squeeze_letter_spacing
+
+    text = squeeze_letter_spacing(first.text.strip())
     if not text or len(text.split()) > 6:
         return False
     if SECTION_NAME.match(text):

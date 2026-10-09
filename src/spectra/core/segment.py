@@ -51,10 +51,31 @@ def _dominant(values: list[tuple[object, int]], default):
     return c.most_common(1)[0][0] if c else default
 
 
+def _is_neutral(rgb: int) -> bool:
+    r, g, b = rgb >> 16 & 255, rgb >> 8 & 255, rgb & 255
+    return max(r, g, b) - min(r, g, b) < 40
+
+
+def _body_color(spans: list[Span]) -> int:
+    """段落の文字色。リンク色（青など）の引用が多い段落でも、黒やグレーの本文があればそちらを使う。"""
+    weights: Counter = Counter()
+    for s in spans:
+        weights[s.color] += len(s.text.strip())
+    if not weights:
+        return 0
+    total = sum(weights.values())
+    neutral = [(c, w) for c, w in weights.items() if _is_neutral(c)]
+    if neutral:
+        c, w = max(neutral, key=lambda cw: cw[1])
+        if w >= total * 0.2:
+            return c
+    return weights.most_common(1)[0][0]
+
+
 def block_style(block: TextBlock, kind: BlockKind, page_width: float) -> TextStyle:
     plain = [s for s in block.spans if s.text.strip() and not is_math_font(s.font)] or block.spans
     size = _dominant([(round(s.size, 2), len(s.text.strip())) for s in plain], plain[0].size)
-    color = _dominant([(s.color, len(s.text.strip())) for s in plain], 0)
+    color = _body_color(plain)
     bold_chars = sum(len(s.text.strip()) for s in plain if s.is_bold)
     total = sum(len(s.text.strip()) for s in plain) or 1
     font = _dominant([(base_name(s.font), len(s.text.strip())) for s in plain], "")
@@ -224,6 +245,10 @@ def build_unit(decision: BlockDecision, page_width: float, body_font: str = "") 
         markup = _join(markup, re.sub(r"\s+", " ", line_markup).strip())
 
     markup = re.sub(r"\s+", " ", markup).strip()
+    if decision.kind in (BlockKind.HEADING, BlockKind.TITLE):
+        from .classify import squeeze_letter_spacing
+
+        markup = squeeze_letter_spacing(markup)  # "A B S T R A C T" → "ABSTRACT"
     if not to_plain(markup).strip():
         return None
     region = Region(

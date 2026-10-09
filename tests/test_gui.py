@@ -84,8 +84,11 @@ def test_settings_dialog_opens(window, monkeypatch):
 
     d = SettingsDialog(w.settings, w.secrets, w.cache, w)
     assert set(d.key_fields) == {"gemini"}
-    d.model.setCurrentIndex(d.model.findData("gemini-3.5-flash-lite"))
-    assert w.settings.gemini_model == "gemini-3.5-flash-lite"
+    assert d.model.count() == 6
+    d.model.setCurrentIndex(d.model.findData("gemini-3.8-flash"))
+    assert w.settings.gemini_model == "gemini-3.8-flash" and "混雑" in d.model_desc.text()
+    d.auto_fallback.setChecked(False)
+    assert w.settings.auto_fallback is False
     for tab in ("engines", "fonts", "advanced"):
         d.show_tab(tab)
         pump(app, 0.05)

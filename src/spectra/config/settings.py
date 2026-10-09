@@ -14,13 +14,14 @@ from . import paths
 
 log = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2  # 2: 既定モデルを 3.8 Flash から 3.5 Flash-Lite に変更
 
 
 @dataclass
 class Settings:
     engine: str = "gemini"
-    gemini_model: str = "gemini-3.8-flash"
+    gemini_model: str = "gemini-3.5-flash-lite"
+    auto_fallback: bool = True  # 混雑・上限時に他のモデルへ自動で切り替える
     output_mode: str = OutputMode.TRANSLATED.value
     formality: str = Formality.DEFAULT.value
     translate_captions: bool = True
@@ -65,6 +66,7 @@ class Settings:
                 value = float(value)
             if isinstance(value, expected) and not (expected is int and isinstance(value, bool)):
                 values[f.name] = value
+        values.setdefault("schema", 1)
         s = cls(**values)
         s._sanitize()
         return s
@@ -82,6 +84,9 @@ class Settings:
         if self.engine not in ("gemini", "dummy"):
             self.engine = "gemini"
         if self.gemini_model not in MODELS:
+            self.gemini_model = DEFAULT_MODEL
+        # 以前の既定（3.8 Flash）のままの設定は、新しい既定に移行する（自分で選び直した場合はそのまま）
+        if self.schema < 2 and self.gemini_model == "gemini-3.8-flash":
             self.gemini_model = DEFAULT_MODEL
         if self.appearance not in ("auto", "light", "dark"):
             self.appearance = "auto"

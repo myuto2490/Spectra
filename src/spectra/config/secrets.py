@@ -28,8 +28,12 @@ def _account(engine: str) -> str:
 
 
 class SecretStore:
-    def __init__(self, fallback_file: Path | None = None, use_keyring: bool = True):
+    def __init__(self, fallback_file: Path | None = None, use_keyring: bool | None = None):
         self.fallback_file = fallback_file or paths.config_dir() / "credentials.json"
+        if use_keyring is None:
+            # SPECTRA_HOME で保存先を切り替えているとき（テスト・ポータブル運用）は、
+            # OS の資格情報ストアにある普段のキーを読み書きしない
+            use_keyring = not os.environ.get("SPECTRA_HOME")
         self._keyring = self._init_keyring() if use_keyring else None
 
     @staticmethod

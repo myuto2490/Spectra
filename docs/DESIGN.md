@@ -7,8 +7,9 @@
 - 翻訳エンジン: Gemini API（Google AI Studio の無料枠。クレジットカード不要）
   - 当初は DeepL API Free / Google Cloud Translation を想定していたが、DeepL API Free の新規受付終了と、
     Google Cloud / Azure がいずれもカード登録を必要とすることから、Gemini API に一本化した
-  - 既定モデルは `gemini-3.8-flash`（無料枠で使える最も高性能な Flash モデル）。思考レベルは `low` にして速度と回数を節約する。
-    速度優先の選択肢として `gemini-3.5-flash-lite`（思考 `minimal`）を用意する
+  - 既定モデルは `gemini-3.5-flash-lite`（思考 `minimal`）。`gemini-3.1-flash-lite` / `gemini-3.5-flash` / `gemini-3.6-flash` /
+    `gemini-3.7-flash` を選択肢とし、`gemini-3.8-flash` は混雑と無料枠の消費が大きいため非推奨として最後に置く
+  - 混雑（503）・回数の上限（429）・モデルの提供終了（404）では、軽量なモデルから順に自動で切り替える（3.8 Flash は対象外）
 
 ---
 

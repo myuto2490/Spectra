@@ -53,7 +53,10 @@ def test_settings_tolerates_corrupt_file():
 def test_settings_to_core_options():
     s = Settings(formality="prefer_more", output_mode="interleave", translate_captions=False)
     assert Settings.from_dict({"engine": "deepl", "gemini_model": "x"}).engine == "gemini"  # 旧設定の移行
-    assert Settings.from_dict({"gemini_model": "x"}).gemini_model == "gemini-3.8-flash"
+    assert Settings.from_dict({"gemini_model": "x"}).gemini_model == "gemini-3.5-flash-lite"
+    # 以前の既定（3.8 Flash）のままの設定は移行し、新しい形式で自分で選んだ場合は尊重する
+    assert Settings.from_dict({"gemini_model": "gemini-3.8-flash"}).gemini_model == "gemini-3.5-flash-lite"
+    assert Settings.from_dict({"gemini_model": "gemini-3.8-flash", "schema": 2}).gemini_model == "gemini-3.8-flash"
     assert s.translate_options().formality == Formality.POLITE
     assert s.render_options().output_mode == OutputMode.INTERLEAVE
     assert s.analysis_options(1, 3).translate_captions is False
@@ -86,3 +89,7 @@ def test_resolve_font_falls_back_to_builtin(tmp_path):
     f.write_bytes(b"x")
     r = resolve_font("custom", str(f))
     assert r.regular == str(f) and r.serif
+
+
+def test_spectra_home_disables_os_keyring():
+    assert not SecretStore().secure  # SPECTRA_HOME が設定されている（conftest）

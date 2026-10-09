@@ -249,7 +249,7 @@ class TranslationJob:
             pdf = finalize(build_output(original, translated_doc, self.render_options.output_mode, pages))
         self._report(Stage.SAVE, 1, 1)
 
-        warnings = []
+        warnings = list(getattr(self.translator, "notices", []))
         if untranslated:
             warnings.append(f"{partial_note or '一部の段落を翻訳できませんでした'}。{untranslated} 個の段落は原文のままです。")
         if render_report.shrunk:

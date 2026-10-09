@@ -89,7 +89,13 @@ def _translator(engine: str, settings: Settings, secrets: SecretStore):
     key = secrets.get(engine) if engine != "dummy" else ""
     if engine != "dummy" and not key:
         raise MissingKeyError(hint=f"`spectra key set {engine}` で API キーを保存するか、環境変数を設定してください。")
-    return registry.create(engine, api_key=key, options=settings.translate_options(), model=settings.gemini_model)
+    return registry.create(
+        engine,
+        api_key=key,
+        options=settings.translate_options(),
+        model=settings.gemini_model,
+        auto_fallback=settings.auto_fallback,
+    )
 
 
 def _cache(args, settings: Settings):

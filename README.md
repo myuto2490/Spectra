@@ -82,8 +82,13 @@
 
 | モデル | 特長 |
 | --- | --- |
-| Gemini 3.8 Flash（既定） | 高品質。専門用語や長い文も自然に訳します |
-| Gemini 3.5 Flash-Lite | 高速。速さと無料枠の回数を優先する場合に |
+| Gemini 3.5 Flash-Lite（既定） | 標準。速く、無料枠の回数にも余裕があります |
+| Gemini 3.1 Flash-Lite | 軽量。最も軽く、混雑時の代わりに向いています |
+| Gemini 3.5 Flash | バランス型。訳文の自然さを少し重視する場合に |
+| Gemini 3.6 Flash / 3.7 Flash | 高品質。専門用語の多い論文や、長く複雑な文の多い論文に |
+| Gemini 3.8 Flash | 最高品質。ただし混雑しやすく、無料枠をすぐに使い切ることがあるため非推奨 |
+
+混雑や無料枠の上限で止まったときは、他の軽量なモデルに自動で切り替えて続きを翻訳します（3.8 Flash には切り替えません。設定でオフにできます）。
 
 > [!IMPORTANT]
 > - 無料枠では、送信した文章が Google の製品改善に使われる場合があります。未公開の原稿など機密性の高い文書を翻訳する場合はご注意ください。
@@ -139,7 +144,7 @@ pip install git+https://github.com/myuto2490/Spectra.git
 spectra key set gemini                      # API キーを保存（入力は表示されません）
 spectra estimate paper.pdf                  # 翻訳する文字数の見積もり（API は使いません）
 spectra translate paper.pdf                 # paper_ja.pdf を作成
-spectra translate paper.pdf --mode side-by-side --pages 1-8 --font noto-serif --model gemini-3.5-flash-lite
+spectra translate paper.pdf --mode side-by-side --pages 1-8 --font noto-serif --model gemini-3.6-flash
 spectra --help
 ```
 

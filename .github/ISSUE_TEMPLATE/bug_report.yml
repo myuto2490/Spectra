@@ -50,7 +50,7 @@ body:
     id: engine
     attributes:
       label: モデル
-      options: [Gemini 3.8 Flash, Gemini 3.5 Flash-Lite]
+      options: [Gemini 3.5 Flash-Lite, Gemini 3.1 Flash-Lite, Gemini 3.5 Flash, Gemini 3.6 Flash, Gemini 3.7 Flash, Gemini 3.8 Flash]
   - type: textarea
     id: logs
     attributes:

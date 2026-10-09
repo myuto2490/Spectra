@@ -23,6 +23,7 @@ from .models import (
     Rect,
     Region,
     Segment,
+    erase_rect,
     inflate,
     rect_area,
     rect_intersect,
@@ -184,7 +185,7 @@ class Renderer:
             for g in result.placed:
                 by_page[g.page].append(g)
             for r in seg.regions:
-                erase[r.page].extend(r.line_rects)
+                erase[r.page].extend(r.erase_rects or r.line_rects)
             for pr in result.runs:
                 run = seg.runs.get(pr.run_id)
                 if run is not None and run.bbox is not None and run.origin is not None:
@@ -288,10 +289,7 @@ class Renderer:
     @staticmethod
     def _erase(page: pymupdf.Page, rects: list[Rect]) -> None:
         for r in rects:
-            h = r[3] - r[1]
-            # 上下を少し縮めて、隣接する行（独立数式など）の文字を巻き込まないようにする
-            shrink = h * 0.18
-            rect = pymupdf.Rect(r[0] - 0.2, r[1] + shrink, r[2] + 0.2, r[3] - shrink)
+            rect = pymupdf.Rect(erase_rect(r))
             if rect.is_empty:
                 continue
             page.add_redact_annot(rect, fill=False, cross_out=False)

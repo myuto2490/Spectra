@@ -88,7 +88,7 @@ def _detect_align(block: TextBlock, kind: BlockKind, page_width: float, size: fl
     if len(lines) == 1:
         # ページ中央に置かれ、左余白より内側から始まる 1 行は中央揃え（タイトル・見出し・短いキャプション）
         centered = abs(center - page_width / 2) < page_width * 0.03 and x0 > page_width * 0.12
-        if centered and kind in (BlockKind.TITLE, BlockKind.HEADING, BlockKind.CAPTION):
+        if centered:
             return Align.CENTER
         return Align.LEFT
     centers = [(ln.bbox[0] + ln.bbox[2]) / 2 for ln in lines]
@@ -230,6 +230,7 @@ def build_unit(decision: BlockDecision, page_width: float, body_font: str = "") 
         page=block.page,
         rect=block.bbox,
         line_rects=[ln.bbox for ln in block.lines],
+        erase_rects=[s.bbox for s in block.spans if s.text.strip()],
         style=style,
         source_chars=len(to_plain(markup)),
         block_index=block.index,
@@ -295,6 +296,14 @@ def _continues(prev: _Unit, nxt: _Unit) -> bool:
     return abs(a - b) <= max(0.3, a * 0.05)
 
 
+def _title_continues(prev: _Unit, nxt: _Unit) -> bool:
+    a, b = prev.region, nxt.region
+    if a.page != b.page or abs(a.style.size - b.style.size) > 0.6:
+        return False
+    gap = b.rect[1] - a.rect[3]
+    return -a.style.size * 0.5 <= gap <= a.style.size * 1.5
+
+
 def _renumber(markup: str, runs: dict[int, InlineRun], offset: int) -> tuple[str, dict[int, InlineRun]]:
     if not offset:
         return markup, runs
@@ -323,7 +332,17 @@ def build_segments(
     segments: list[Segment] = []
     last_body: Segment | None = None
     last_unit: _Unit | None = None
+    last_title: tuple[Segment, _Unit] | None = None
     for u in units:
+        # 複数行のタイトルが行ごとに別のブロックになっている場合は 1 つの文として訳す
+        if u.decision.kind == BlockKind.TITLE and last_title is not None and _title_continues(last_title[1], u):
+            seg, _ = last_title
+            markup, runs = _renumber(u.markup, u.runs, len(seg.runs))
+            seg.source = _join(seg.source, markup)
+            seg.runs.update(runs)
+            seg.regions.append(u.region)
+            last_title = (seg, u)
+            continue
         if merge and last_body is not None and last_unit is not None and _continues(last_unit, u):
             markup, runs = _renumber(u.markup, u.runs, len(last_body.runs))
             last_body.source = _join(last_body.source, markup)
@@ -340,6 +359,7 @@ def build_segments(
             regions=[u.region],
         )
         segments.append(seg)
+        last_title = (seg, u) if u.decision.kind == BlockKind.TITLE else None
         if u.decision.kind == BlockKind.BODY:
             last_body, last_unit = seg, u
         elif u.decision.kind in (BlockKind.HEADING, BlockKind.TITLE):

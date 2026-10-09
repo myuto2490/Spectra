@@ -109,3 +109,10 @@ def test_equation_without_math_fonts_is_skipped(paper):
 def test_body_starting_with_figure_is_not_caption(paper):
     d = _find(analyze_document(paper), "Figure 1 shows")
     assert d.kind == BlockKind.BODY and d.translate
+
+
+def test_multi_line_title_is_one_segment(paper):
+    a = analyze_document(paper)
+    seg = next(s for s in a.segments if s.kind == BlockKind.TITLE)
+    assert "Learning Robust Representations for Testing with Synthetic Papers" in seg.source
+    assert len(seg.regions) == 2

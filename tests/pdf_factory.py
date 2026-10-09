@@ -61,7 +61,11 @@ def make_paper(path: str | None = None) -> pymupdf.Document:
 def _page_one(page: pymupdf.Page) -> None:
     title = "Learning Robust Representations for Testing"
     tw = pymupdf.get_text_length(title, fontname=BOLD, fontsize=17)
-    page.insert_text(((595 - tw) / 2, 90), title, fontname=BOLD, fontsize=17)
+    page.insert_text(((595 - tw) / 2, 72), title, fontname=BOLD, fontsize=17)
+    # 2 行目のタイトル（行ごとに別ブロックになる）
+    sub = "with Synthetic Papers"
+    sw = pymupdf.get_text_length(sub, fontname=BOLD, fontsize=17)
+    page.insert_text(((595 - sw) / 2, 92), sub, fontname=BOLD, fontsize=17)
     for i, name in enumerate(["Alice Example", "Bob Sample", "Carol Test"]):
         page.insert_text((110 + i * 140, 130), name, fontname=BODY, fontsize=SIZE)
         page.insert_text((110 + i * 140, 142), "Example University", fontname=BODY, fontsize=SIZE)

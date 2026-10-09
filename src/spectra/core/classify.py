@@ -12,7 +12,7 @@ from collections.abc import Iterable
 
 import pymupdf
 
-from .extract import extract_blocks, find_figure_rects, find_table_rects
+from .extract import SECTION_NAME, extract_blocks, find_figure_rects, find_table_rects
 from .fonts import base_name, is_math_font, is_math_span, is_mono_font, math_char_ratio
 from .models import (
     BlockDecision,
@@ -34,9 +34,12 @@ _CAPTION = re.compile(
     r"(s\d+|[a-z]?\d+|[ivxlc]+)[a-z]?\s*[:.|\-–—]",
     re.IGNORECASE,
 )
+# 擬似コード（アルゴリズムの枠）の行： "1:" "12:" や "Input:" "Require:" で始まる
+_PSEUDOCODE = re.compile(r"^\s*(\d{1,2}:|(input|output|require|ensure|return)\s*:)", re.IGNORECASE)
 _EQUATION_SIGN = re.compile(r"[=≈≤≥<>∝≡]")
 _LONG_WORD = re.compile(r"[A-Za-z]{4,}")
 _ABSTRACT = re.compile(r"^\s*(abstract|summary)\b", re.IGNORECASE)
+_ABSTRACT_HEADING = re.compile(r"^\s*(abstract|summary)\s*[.:—-]?\s*$", re.IGNORECASE)
 _SENTENCE = re.compile(r"[a-z]{2,}[,;]?\s+[a-z]{2,}\s+[a-z]{2,}.*[.]\s*$")
 _REFERENCES = re.compile(
     r"^\s*(\d+\.?|[ivx]+\.)?\s*(references|bibliography|literature\s+cited|works\s+cited|参考文献)\s*$",
@@ -154,6 +157,7 @@ class DocumentClassifier:
         # 1 ページ目のタイトル〜概要の間（著者・所属）
         self.seen_title = False
         self.seen_abstract = False
+        self._page_height = 842.0
 
     def analyze_page(self, page: pymupdf.Page, blocks: list[TextBlock] | None = None) -> PageAnalysis:
         blocks = extract_blocks(page) if blocks is None else blocks
@@ -162,11 +166,16 @@ class DocumentClassifier:
         stats = {b.index: BlockStats(b, self.body_font) for b in blocks}
         tabular = _tabular_blocks(blocks, stats)
         height = float(page.rect.height)
+        self._page_height = height
+        front = self._front_matter(page.number, blocks, stats)
         decisions = []
         for b in blocks:
             st = stats[b.index]
             kind = self._kind(b, st, height)
-            skip = self._skip(b, st, kind, figures, tables, b.index in tabular)
+            if b.index in front:
+                kind, skip = front[b.index]
+            else:
+                skip = self._skip(b, st, kind, figures, tables, b.index in tabular)
             decisions.append(BlockDecision(block=b, kind=kind, skip=skip))
         return PageAnalysis(
             page=page.number,
@@ -176,6 +185,32 @@ class DocumentClassifier:
             figure_rects=figures,
             table_rects=tables,
         )
+
+    def _front_matter(
+        self, pno: int, blocks: list[TextBlock], stats: dict[int, BlockStats]
+    ) -> dict[int, tuple[BlockKind, SkipReason | None]]:
+        """1 ページ目の Abstract 見出しより前（タイトル・著者・所属・日付）を判定する。
+
+        その範囲で最も大きい文字の行をタイトルとして訳し、それ以外（著者・所属など）は残す。
+        Abstract の見出しが見つからない論文では何もしない（従来の判定に任せる）。
+        """
+        if pno != 0 or self.options.first_page > 0:
+            return {}
+        idx = next((i for i, b in enumerate(blocks) if _ABSTRACT_HEADING.match(stats[b.index].text)), None)
+        if idx is None or idx == 0:
+            return {}
+        front = [b for b in blocks[:idx] if not stats[b.index].rotated and stats[b.index].words]
+        if not front:
+            return {}
+        title_size = max(stats[b.index].size for b in front)
+        result: dict[int, tuple[BlockKind, SkipReason | None]] = {}
+        for b in front:
+            if stats[b.index].size >= title_size - 0.5:
+                result[b.index] = (BlockKind.TITLE, None)
+            else:
+                result[b.index] = (BlockKind.BODY, SkipReason.AUTHORS)
+        self.seen_title = self.seen_abstract = True
+        return result
 
     # -- 種類 ------------------------------------------------------------
 
@@ -187,6 +222,8 @@ class DocumentClassifier:
             return BlockKind.TITLE
         if (st.all_bold or st.size >= body * 1.15) and st.words <= 18 and len(b.lines) <= 3:
             return BlockKind.HEADING
+        if len(b.lines) == 1 and SECTION_NAME.match(st.text):
+            return BlockKind.HEADING  # 太字でなくても "ABSTRACT" "References" などは見出し
         if st.size <= body * 0.9 and b.bbox[1] > page_height * 0.6:
             return BlockKind.FOOTNOTE
         return BlockKind.BODY
@@ -207,6 +244,9 @@ class DocumentClassifier:
             return SkipReason.OUT_OF_RANGE
         if st.rotated:
             return SkipReason.ROTATED
+        # ページ上端の柱（"Smith et al." や雑誌名など）
+        if b.bbox[3] < self._page_height * 0.07 and len(b.lines) == 1 and (st.words <= 4 or "et al" in st.text):
+            return SkipReason.RUNNING_HEADER
 
         if b.page == 0 and not self.seen_abstract:
             if _ABSTRACT.match(st.text):
@@ -264,6 +304,8 @@ class DocumentClassifier:
         if st.words == 0:
             return SkipReason.NO_WORDS
         if st.chars and st.mono_chars / st.chars > 0.5:
+            return SkipReason.CODE
+        if _PSEUDOCODE.match(st.text):
             return SkipReason.CODE
         if st.letters + st.digits and st.letters / (st.letters + st.digits) < 0.4 and st.words < 4:
             return SkipReason.NUMERIC

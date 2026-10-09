@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import statistics
 
 import pymupdf
@@ -52,6 +53,7 @@ def extract_blocks(page: pymupdf.Page) -> list[TextBlock]:
         for part in _split_block(_merge_visual_lines(lines)):
             blocks.append(_make_block(page.number, len(blocks), part))
     blocks = _absorb_fragments(blocks)
+    blocks = _merge_paragraph_lines(blocks)
     for i, b in enumerate(blocks):
         b.index = i
     return blocks
@@ -62,6 +64,56 @@ def _make_block(page: int, index: int, lines: list[Line]) -> TextBlock:
     for ln in lines[1:]:
         bbox = rect_union(bbox, ln.bbox)
     return TextBlock(page=page, index=index, bbox=bbox, lines=lines)
+
+
+def _is_rotated(b: TextBlock) -> bool:
+    return any(abs(ln.direction[1]) > 1e-3 or ln.direction[0] < 0 for ln in b.lines)
+
+
+def _merge_paragraph_lines(blocks: list[TextBlock]) -> list[TextBlock]:
+    """1 行ずつ別のブロックになっている段落（行間の広い原稿形式の論文など）を 1 つにまとめる。
+
+    左端・右端・文字サイズ・行送りがそろって続いている行だけを結合する。
+    前の行が短く終わっている（段落の最終行）場合や、見出しのような短い行の後は結合しない。
+    """
+    out: list[TextBlock] = []
+    for b in blocks:
+        prev = out[-1] if out else None
+        if prev is not None and _continues_paragraph(prev, b):
+            prev.lines = prev.lines + b.lines
+            prev.bbox = rect_union(prev.bbox, b.bbox)
+        else:
+            out.append(b)
+    return out
+
+
+def _continues_paragraph(a: TextBlock, b: TextBlock) -> bool:
+    if _is_rotated(a) or _is_rotated(b):
+        return False
+    size_a, size_b = _line_size(a.lines[-1]), _line_size(b.lines[0])
+    if abs(size_a - size_b) > max(0.6, size_a * 0.06):
+        return False
+    size = size_a
+    last, first = a.lines[-1], b.lines[0]
+    # 縦方向：すぐ下に続いていること。複数行あるなら行送りもそろっていること
+    gap = first.bbox[1] - last.bbox[3]
+    if gap < -1 or gap > size * 1.5:
+        return False
+    if len(a.lines) >= 2:
+        pitch = a.lines[-1].baseline - a.lines[-2].baseline
+        if abs((first.baseline - last.baseline) - pitch) > max(2.0, pitch * 0.25):
+            return False
+    # 横方向：同じ段の中で左右がそろっていること（1 行目の字下げは許す）
+    left = min(ln.bbox[0] for ln in a.lines[1:]) if len(a.lines) >= 2 else a.bbox[0]
+    if not (-size * 1.5 <= first.bbox[0] - left <= size * 1.5 or 0 <= a.bbox[0] - first.bbox[0] <= size * 3):
+        return False
+    right = a.bbox[2]
+    if first.bbox[2] > right + size * 1.5:
+        return False
+    # 前の行が右端まで届いていない＝段落の最終行（または見出し）
+    last_is_short = last.bbox[2] < right - size * 1.5
+    last_is_narrow = (last.bbox[2] - last.bbox[0]) < (first.bbox[2] - first.bbox[0]) * 0.6
+    return not (last_is_short or last_is_narrow)
 
 
 def _absorb_fragments(blocks: list[TextBlock]) -> list[TextBlock]:
@@ -143,6 +195,8 @@ def _split_block(lines: list[Line]) -> list[list[Line]]:
         return [lines]
     gaps = [lines[i + 1].bbox[1] - lines[i].bbox[3] for i in range(len(lines) - 1)]
     typical_gap = statistics.median(gaps) if gaps else 0.0
+    if _heading_first_line(lines):
+        return [[lines[0]], *_split_block(lines[1:])]
     parts: list[list[Line]] = [[lines[0]]]
     for prev, ln, gap in zip(lines, lines[1:], gaps):
         size_prev, size_cur = _line_size(prev), _line_size(ln)
@@ -155,6 +209,36 @@ def _split_block(lines: list[Line]) -> list[list[Line]]:
         else:
             parts[-1].append(ln)
     return parts
+
+
+SECTION_NAME = re.compile(
+    r"^\s*((\d+(\.\d+)*|[ivxIVX]+|[A-Z])\.?\s+)?"
+    r"(abstract|summary|introduction|related\s+works?|background|preliminaries|methods?|methodology|"
+    r"approach|experiments?|experimental\s+setup|evaluation|results?|discussion|conclusions?|"
+    r"limitations|future\s+work|acknowledge?ments?|references|bibliography|appendix|appendices|"
+    r"keywords?|index\s+terms|observations?|analysis|data)\b[\s.:—-]*$",
+    re.IGNORECASE,
+)
+
+
+def _heading_first_line(lines: list[Line]) -> bool:
+    """段落の 1 行目が独立した見出し（"Abstract" など）になっているか。"""
+    if len(lines) < 2:
+        return False
+    first, rest = lines[0], lines[1:]
+    text = first.text.strip()
+    if not text or len(text.split()) > 6:
+        return False
+    if SECTION_NAME.match(text):
+        return True
+    widths = sorted(ln.bbox[2] - ln.bbox[0] for ln in rest)
+    median = widths[len(widths) // 2]
+    first_w = first.bbox[2] - first.bbox[0]
+    first_c = (first.bbox[0] + first.bbox[2]) / 2
+    rest_c = (min(ln.bbox[0] for ln in rest) + max(ln.bbox[2] for ln in rest)) / 2
+    size = _line_size(first)
+    # 短く、段落の中央に置かれた行は見出し
+    return first_w < median * 0.5 and abs(first_c - rest_c) < size and not text.endswith((".", ","))
 
 
 def find_figure_rects(page: pymupdf.Page) -> list[Rect]:

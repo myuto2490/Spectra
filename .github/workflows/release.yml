@@ -1,0 +1,157 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Check tag, __version__ and CHANGELOG agree
+        if: startsWith(github.ref, 'refs/tags/')
+        run: python scripts/check_version.py "${GITHUB_REF_NAME}"
+      - id: v
+        run: echo "version=$(python -c 'import re;print(re.search(r"__version__ = \"(.+)\"", open("src/spectra/__init__.py").read()).group(1))')" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: check
+    name: build (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-14, name: macOS-arm64 }
+          - { os: macos-13, name: macOS-x86_64 }
+          - { os: windows-latest, name: Windows-x64 }
+          - { os: ubuntu-22.04, name: Linux-x86_64 }
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
+      QT_QPA_PLATFORM: offscreen
+      PYTHONUTF8: "1"
+      # 署名の設定が Secrets にあるか（無ければ未署名・アドホック署名でビルドを続ける）
+      HAS_MACOS_CERT: ${{ secrets.MACOS_CERTIFICATE != '' }}
+      HAS_SIGNPATH: ${{ secrets.SIGNPATH_API_TOKEN != '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Qt runtime libraries (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libegl1 libgl1 libxkbcommon0 libxkbcommon-x11-0 libfontconfig1 libdbus-1-3
+      - run: pip install -e ".[dev]"
+      - run: pytest
+      - name: Generate icons
+        run: python packaging/make_icons.py
+      - name: Build with PyInstaller
+        working-directory: packaging
+        run: pyinstaller --noconfirm --clean spectra.spec
+
+      # ---- macOS: Developer ID 署名 + 公証（証明書が無ければアドホック署名） ----
+      - name: Import signing certificate (macOS)
+        if: runner.os == 'macOS' && env.HAS_MACOS_CERT == 'true'
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -base64 24)"
+          echo "$MACOS_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/cert.p12" -P "$MACOS_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN"
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          rm "$RUNNER_TEMP/cert.p12"
+          IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN" | grep 'Developer ID Application' | head -1 | sed -E 's/.*"(.+)"/\1/')"
+          echo "MACOS_SIGN_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+      - name: Sign, notarize and package (macOS)
+        if: runner.os == 'macOS'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          mkdir -p out
+          export MACOS_SIGN_IDENTITY="${MACOS_SIGN_IDENTITY:--}"
+          packaging/macos/sign_and_notarize.sh packaging/dist/Spectra.app \
+            "out/Spectra-${VERSION}-${{ matrix.name }}.dmg" "Spectra ${VERSION}"
+
+      # ---- Windows: SignPath Foundation で署名（設定が無ければ未署名） ----
+      - name: Upload unsigned build for signing (Windows)
+        id: unsigned
+        if: runner.os == 'Windows' && env.HAS_SIGNPATH == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Spectra-Windows-unsigned
+          path: packaging/dist/Spectra
+          if-no-files-found: error
+      - name: Sign with SignPath (Windows)
+        if: runner.os == 'Windows' && env.HAS_SIGNPATH == 'true'
+        uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          github-artifact-id: ${{ steps.unsigned.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: signed/Spectra
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force out | Out-Null
+          $src = if (Test-Path signed/Spectra) { "signed/Spectra" } else { "packaging/dist/Spectra" }
+          if ($src -eq "packaging/dist/Spectra") { Write-Host "::warning::Windows 版は未署名です" }
+          Compress-Archive -Path $src -DestinationPath "out/Spectra-$env:VERSION-${{ matrix.name }}.zip"
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p out
+          cp packaging/linux/spectra.desktop packaging/dist/Spectra/
+          cp packaging/build/icon.png packaging/dist/Spectra/spectra.png
+          tar -C packaging/dist -czf "out/Spectra-${VERSION}-${{ matrix.name }}.tar.gz" Spectra
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Spectra-${{ matrix.name }}
+          path: out/*
+          if-no-files-found: error
+
+  release:
+    needs: [check, build]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python scripts/release_notes.py "${GITHUB_REF_NAME}" > notes.md
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Checksums
+        run: cd artifacts && sha256sum * > SHA256SUMS.txt
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: Spectra ${{ github.ref_name }}
+          body_path: notes.md
+          prerelease: ${{ contains(github.ref_name, 'a') || contains(github.ref_name, 'b') || contains(github.ref_name, 'rc') }}
+          files: artifacts/*

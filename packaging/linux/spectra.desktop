@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Spectra
+GenericName=PDF Translator
+Comment=論文 PDF をレイアウトを保ったまま日本語に翻訳
+Comment[en]=Translate academic PDFs into Japanese while preserving layout
+Exec=Spectra %f
+Icon=spectra
+Terminal=false
+Categories=Office;Education;Science;
+MimeType=application/pdf;
+Keywords=PDF;translate;翻訳;論文;DeepL;

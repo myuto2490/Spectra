@@ -388,7 +388,9 @@ class MainWindow(QMainWindow):
 
     def _make_job(self, translator=None, progress=None) -> TranslationJob:
         first, last = self.inspector.page_range()
-        translator = translator or registry.create(self.settings.engine, api_key="", options=self.settings.translate_options())
+        translator = translator or registry.create(
+            self.settings.engine, api_key="", options=self.settings.translate_options(), region=self.settings.microsoft_region
+        )
         return TranslationJob(
             self.source_bytes,
             translator,
@@ -459,7 +461,9 @@ class MainWindow(QMainWindow):
                 self.show_settings("engines")
             return
 
-        translator = registry.create(engine, api_key=key, options=self.settings.translate_options())
+        translator = registry.create(
+            engine, api_key=key, options=self.settings.translate_options(), region=self.settings.microsoft_region
+        )
         job = self._make_job(translator)
         self.banner_wrap.hide()
         self.progress.setValue(0)

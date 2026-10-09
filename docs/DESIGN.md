@@ -4,7 +4,8 @@
 
 - 対象 OS: Windows 10/11, macOS 12+, Linux (X11 / Wayland)
 - ライセンス: AGPL-3.0（依存する PyMuPDF のライセンスに合わせる）
-- 翻訳エンジン: DeepL API Free / Google Cloud Translation (Basic, 無料枠)
+- 翻訳エンジン: Google Cloud Translation (Basic, 無料枠) / Microsoft Translator (無料プラン F0) / DeepL API
+  - DeepL API Free は 2026 年に新規受付を終了したため、既定は Google とし、無料枠の大きい Microsoft Translator を追加した
 
 ---
 
@@ -207,7 +208,7 @@ packaging/             PyInstaller 設定・アイコン生成
 │ [開く]   attention.pdf · 15ページ        [原文|対訳|翻訳] [翻訳] ⚙ ▥│ ← ツールバー
 ├───────────────────────────────────────────────┬─────────────────┤
 │                                               │ 翻訳エンジン      │
-│      原文              │        翻訳           │  DeepL API Free ▾ │
+│      原文              │        翻訳           │  Google Cloud… ▾  │
 │  ┌──────────┐          │   ┌──────────┐        │  ▓▓▓▓░░ 残り 41万字│
 │  │          │          │   │          │        │ 出力              │
 │  │  page 1  │          │   │  page 1  │        │  形式  翻訳のみ ▾  │

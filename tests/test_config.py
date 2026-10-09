@@ -40,7 +40,7 @@ def test_settings_tolerates_broken_values():
         encoding="utf-8",
     )
     s = Settings.load()
-    assert s.engine == "deepl" and s.output_mode == "translated"
+    assert s.engine == "google" and s.output_mode == "translated"
     assert s.text_scale == 1.1 and s.skip_references is True
 
 

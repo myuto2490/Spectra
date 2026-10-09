@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QProgressBar,
     QRadioButton,
+    QScrollArea,
     QSlider,
     QStackedWidget,
     QVBoxLayout,
@@ -48,10 +49,11 @@ class KeyField(QWidget):
 
     changed = Signal(str)  # engine_id
 
-    def __init__(self, engine_id: str, secrets: SecretStore, parent: QWidget | None = None):
+    def __init__(self, engine_id: str, secrets: SecretStore, settings: Settings, parent: QWidget | None = None):
         super().__init__(parent)
         self.engine_id = engine_id
         self.secrets = secrets
+        self.settings = settings
         self.info = registry.ENGINES[engine_id]
         self._task: worker.Task | None = None
 
@@ -94,6 +96,17 @@ class KeyField(QWidget):
         row.addWidget(self.delete_btn)
         lay.addLayout(row)
 
+        if engine_id == "microsoft":
+            region_row = QHBoxLayout()
+            region_row.setSpacing(6)
+            region_row.addWidget(label("リージョン", "secondary"))
+            self.region = QLineEdit(settings.microsoft_region)
+            self.region.setPlaceholderText("例: japaneast（グローバルの場合は空欄）")
+            self.region.setAccessibleName("Microsoft Translator のリージョン")
+            self.region.editingFinished.connect(self._save_region)
+            region_row.addWidget(self.region, 1)
+            lay.addLayout(region_row)
+
         status = QHBoxLayout()
         status.setSpacing(6)
         self.status_icon = QLabel()
@@ -108,6 +121,13 @@ class KeyField(QWidget):
             self._set_status(f"{src} の値が使われます。", "info")
         elif src:
             self._set_status(f"保存済み（{src}）", "success")
+
+    def _save_region(self) -> None:
+        value = self.region.text().strip()
+        if value != self.settings.microsoft_region:
+            self.settings.microsoft_region = value
+            self.settings.save()
+            self.changed.emit(self.engine_id)
 
     def _toggle_reveal(self, on: bool) -> None:
         self.edit.setEchoMode(QLineEdit.EchoMode.Normal if on else QLineEdit.EchoMode.Password)
@@ -155,8 +175,12 @@ class KeyField(QWidget):
         self.verify_btn.setEnabled(False)
         self._set_status("確認しています…", "busy")
 
+        if self.engine_id == "microsoft":
+            self._save_region()
+        region = self.settings.microsoft_region
+
         def job(_report, _cancel):
-            with registry.create(self.engine_id, api_key=key) as t:
+            with registry.create(self.engine_id, api_key=key, region=region) as t:
                 return t.verify()
 
         def done(usage):
@@ -276,8 +300,8 @@ class SettingsDialog(QDialog):
         lay.setSpacing(16)
         group = FormGroup("API キー")
         self.key_fields: dict[str, KeyField] = {}
-        for eng in ("deepl", "google"):
-            field = KeyField(eng, self.secrets)
+        for eng in ("google", "microsoft", "deepl"):
+            field = KeyField(eng, self.secrets, self.settings)
             field.changed.connect(lambda _e: self.keysChanged.emit())
             group.add_widget(field)
             self.key_fields[eng] = field
@@ -290,7 +314,11 @@ class SettingsDialog(QDialog):
             )
         lay.addWidget(group)
         lay.addStretch(1)
-        return page
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setWidget(page)
+        return scroll
 
     # -- フォント --------------------------------------------------------------
 

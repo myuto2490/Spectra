@@ -53,7 +53,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     def job_args(sp: argparse.ArgumentParser) -> None:
         sp.add_argument("input", type=Path, help="翻訳する PDF")
-        sp.add_argument("--engine", choices=["deepl", "google", "dummy"], help="翻訳エンジン（既定: 設定値）")
+        sp.add_argument("--engine", choices=["google", "microsoft", "deepl", "dummy"], help="翻訳エンジン（既定: 設定値）")
         sp.add_argument("--pages", help="翻訳するページ（例: 3, 2-5, 4-）")
         sp.add_argument("--include-references", action="store_true", help="参考文献も翻訳する")
         sp.add_argument("--no-captions", action="store_true", help="図表のキャプションを翻訳しない")
@@ -74,7 +74,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
     k = sub.add_parser("key", help="API キーを管理する")
     k.add_argument("action", choices=["set", "delete", "status"])
-    k.add_argument("engine", nargs="?", choices=["deepl", "google"])
+    k.add_argument("engine", nargs="?", choices=["google", "microsoft", "deepl"])
+    k.add_argument("--region", help="Microsoft Translator のリージョン（例: japaneast。グローバルの場合は global）")
 
     sub.add_parser("gui", help="GUI を起動する")
     return p
@@ -87,7 +88,7 @@ def _translator(engine: str, settings: Settings, secrets: SecretStore):
     key = secrets.get(engine) if engine != "dummy" else ""
     if engine != "dummy" and not key:
         raise MissingKeyError(hint=f"`spectra key set {engine}` で API キーを保存するか、環境変数を設定してください。")
-    return registry.create(engine, api_key=key, options=settings.translate_options())
+    return registry.create(engine, api_key=key, options=settings.translate_options(), region=settings.microsoft_region)
 
 
 def _cache(args, settings: Settings):
@@ -204,16 +205,16 @@ def _cmd_estimate(args) -> int:
 
 def _cmd_key(args) -> int:
     secrets = SecretStore()
-    engines = [args.engine] if args.engine else ["deepl", "google"]
+    engines = [args.engine] if args.engine else ["google", "microsoft", "deepl"]
     if args.action == "status":
         for eng in engines:
             src = secrets.source(eng)
-            print(f"{eng:7} {'設定済み（' + src + '）' if src else '未設定'}")
+            print(f"{eng:9} {'設定済み（' + src + '）' if src else '未設定'}")
         if not secrets.secure:
             print("注意: OS の資格情報ストアが使えないため、キーは設定ファイルに保存されます。")
         return 0
     if not args.engine:
-        print("エンジン（deepl / google）を指定してください。", file=sys.stderr)
+        print("エンジン（google / microsoft / deepl）を指定してください。", file=sys.stderr)
         return 2
     if args.action == "delete":
         secrets.delete(args.engine)
@@ -225,6 +226,11 @@ def _cmd_key(args) -> int:
         return 1
     secrets.set(args.engine, value)
     print(f"{args.engine} の API キーを保存しました（{secrets.backend_name}）。")
+    if args.engine == "microsoft":
+        settings = Settings.load()
+        region = args.region or input("リージョン（例: japaneast、グローバルの場合は空欄）: ").strip()
+        settings.microsoft_region = region
+        settings.save()
     return 0
 
 

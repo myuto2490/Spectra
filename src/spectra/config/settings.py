@@ -19,7 +19,8 @@ SCHEMA_VERSION = 1
 
 @dataclass
 class Settings:
-    engine: str = "deepl"
+    engine: str = "google"
+    microsoft_region: str = ""  # Azure Translator のリソースのリージョン（例: japaneast）
     output_mode: str = OutputMode.TRANSLATED.value
     formality: str = Formality.DEFAULT.value
     translate_captions: bool = True

@@ -202,6 +202,56 @@ def test_partial_failure_keeps_finished_batches():
 
 def test_registry():
     assert isinstance(registry.create("deepl", api_key="x"), DeepLTranslator)
-    assert [e.engine_id for e in registry.public_engines()][:2] == ["deepl", "google"]
+    assert [e.engine_id for e in registry.public_engines()][:3] == ["google", "microsoft", "deepl"]
+    assert registry.create("microsoft", api_key="k", region="japaneast").region == "japaneast"
+    assert not hasattr(registry.create("google", api_key="k", region="x"), "region")
     with pytest.raises(ValueError):
         registry.create("nope")
+
+
+# ---- Microsoft -------------------------------------------------------------
+
+
+def test_microsoft_request_and_response():
+    from spectra.translate.microsoft import MicrosoftTranslator
+
+    seen = {}
+
+    def handler(req):
+        seen["params"] = dict(req.url.params)
+        seen["headers"] = req.headers
+        seen["body"] = json.loads(req.content)
+        return httpx.Response(200, json=[{"translations": [{"text": "訳 <x id=\"0\"></x>", "to": "ja"}]}])
+
+    t = MicrosoftTranslator("mkey", region="japaneast", client=client(handler))
+    assert t.translate(['a <x id="0"/>']) == ['訳 <x id="0"></x>']
+    assert seen["params"] == {"api-version": "3.0", "from": "en", "to": "ja", "textType": "html"}
+    assert seen["headers"]["Ocp-Apim-Subscription-Key"] == "mkey"
+    assert seen["headers"]["Ocp-Apim-Subscription-Region"] == "japaneast"
+    assert seen["body"] == [{"Text": 'a <x id="0"/>'}]
+
+
+def test_microsoft_global_resource_has_no_region_header():
+    from spectra.translate.microsoft import MicrosoftTranslator
+
+    seen = {}
+
+    def handler(req):
+        seen["headers"] = req.headers
+        return httpx.Response(200, json=[{"translations": [{"text": "x"}]}])
+
+    MicrosoftTranslator("k", region="global", client=client(handler)).translate(["a"])
+    assert "Ocp-Apim-Subscription-Region" not in seen["headers"]
+
+
+@pytest.mark.parametrize(
+    ("status", "code", "exc"),
+    [(401, 401000, AuthenticationError), (401, 401015, AuthenticationError), (403, 403001, QuotaExceededError)],
+)
+def test_microsoft_errors(status, code, exc):
+    from spectra.translate.microsoft import MicrosoftTranslator
+
+    body = {"error": {"code": code, "message": "error"}}
+    t = MicrosoftTranslator("k", client=client(lambda r: httpx.Response(status, json=body)))
+    with pytest.raises(exc):
+        t.verify()

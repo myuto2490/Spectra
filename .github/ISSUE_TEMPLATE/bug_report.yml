@@ -50,7 +50,7 @@ body:
     id: engine
     attributes:
       label: 翻訳エンジン
-      options: [DeepL API Free, Google Cloud Translation, その他]
+      options: [Google Cloud Translation, Microsoft Translator, DeepL API, その他]
   - type: textarea
     id: logs
     attributes:

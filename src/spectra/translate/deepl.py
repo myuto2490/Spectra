@@ -1,4 +1,4 @@
-"""DeepL API（Free / Pro）。
+"""DeepL API（Free / Developer / Pro）。Free プランは新規受付を終了している。
 
 https://developers.deepl.com/docs/api-reference/translate
 """
@@ -25,7 +25,7 @@ PRO_URL = "https://api.deepl.com"
 
 class DeepLTranslator(Translator):
     engine_id = "deepl"
-    display_name = "DeepL API Free"
+    display_name = "DeepL API"
     max_items = 50  # API の上限
     max_chars = 30_000  # リクエスト本文 128 KiB 未満に収める
     supports_formality = True

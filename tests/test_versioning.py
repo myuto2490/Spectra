@@ -45,3 +45,16 @@ def test_changelog_release_section():
 def test_changelog_requires_entries():
     with pytest.raises(SystemExit):
         update_changelog("## [Unreleased]\n\n## [0.1.0] - 2026-01-01\n- x\n", "0.1.0", "0.2.0", "2026-01-02")
+
+
+def test_release_notes_extracts_section(tmp_path, monkeypatch):
+    import release_notes
+
+    log = tmp_path / "CHANGELOG.md"
+    log.write_text(
+        "## [Unreleased]\n\n## [0.2.0] - 2026-01-01\n\n### 追加\n- B\n\n## [0.1.0] - 2025-12-01\n- A\n\n[0.2.0]: x\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(release_notes, "CHANGELOG", log)
+    assert release_notes.notes("v0.2.0") == "### 追加\n- B\n"
+    assert release_notes.notes("0.1.0") == "- A\n"

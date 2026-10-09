@@ -97,3 +97,28 @@ def test_settings_dialog_opens(window, monkeypatch):
     assert w.secrets.get("gemini", use_env=False) == "AIzaTestKey"
     assert verified == ["gemini"]
     d.close()
+
+
+def test_preview_height_matches_pages_after_reopening(window, paper_path, tmp_path):
+    """別の PDF を開き直しても、前の文書のページ分だけスクロールできてしまわないこと。"""
+    import pymupdf
+
+    app, w = window
+    one_page = tmp_path / "one.pdf"
+    doc = pymupdf.open()
+    doc.insert_pdf(pymupdf.open(paper_path), from_page=0, to_page=0)
+    doc.save(one_page)
+
+    def content_height(view):
+        pages = view._pages
+        return sum(p.height() for p in pages) + 16 * (len(pages) - 1) + 48
+
+    for path in (paper_path, one_page):
+        assert w.open_file(path)
+        pump(app, 0.5)
+        view = w.preview.original
+        assert len(view._pages) == pymupdf.open(path).page_count
+        assert view._container.height() == content_height(view)
+    view.set_zoom(0.5)
+    pump(app, 0.2)
+    assert view._container.height() == content_height(view)

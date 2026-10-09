@@ -71,7 +71,11 @@ class PdfView(QScrollArea):
     def set_document(self, doc: pymupdf.Document | None) -> None:
         self._doc = doc
         self._cache.clear()
+        # 古いページはその場でレイアウトから外す（deleteLater だけだと、
+        # 削除されるまでの間に計算した高さに前の文書のページが含まれてしまう）
         for w in self._pages:
+            self._layout.removeWidget(w)
+            w.setParent(None)
             w.deleteLater()
         self._pages = []
         if doc is not None:
@@ -134,7 +138,8 @@ class PdfView(QScrollArea):
         for w in self._pages:
             r = self._doc[w.index].rect
             w.setFixedSize(QSize(int(r.width * self._zoom) + 6, int(r.height * self._zoom) + 7))
-        self._container.adjustSize()
+        self._layout.activate()
+        self._container.resize(self._layout.sizeHint())
 
     # -- スクロール同期 ------------------------------------------------------
 

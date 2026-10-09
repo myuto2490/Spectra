@@ -53,12 +53,13 @@ def public_engines() -> list[EngineInfo]:
     return [ENGINES[i] for i in ids]
 
 
-def create(engine_id: str, model: str = DEFAULT_MODEL, **kwargs) -> Translator:
-    """翻訳エンジンを作る。model は Gemini でのみ使う。"""
+def create(engine_id: str, model: str = DEFAULT_MODEL, auto_fallback: bool = True, **kwargs) -> Translator:
+    """翻訳エンジンを作る。model と auto_fallback は Gemini でのみ使う。"""
     try:
         cls = _CLASSES[engine_id]
     except KeyError:
         raise ValueError(f"unknown engine: {engine_id}") from None
     if cls is GeminiTranslator:
         kwargs["model"] = model
+        kwargs["auto_fallback"] = auto_fallback
     return cls(**kwargs)

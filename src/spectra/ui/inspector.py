@@ -69,7 +69,9 @@ class Inspector(QScrollArea):
         self.engine.currentIndexChanged.connect(self._on_engine)
         engine_row = self.engine_group.add_row("エンジン", self.engine)
         engine_row.setVisible(len(public_engines()) > 1)  # 通常は Gemini のみ
-        self.model = _combo([(mid, name) for mid, (name, _d) in MODELS.items()], settings.gemini_model)
+        self.model = _combo(
+            [(mid, info.name + ("（非推奨）" if info.caution else "")) for mid, info in MODELS.items()], settings.gemini_model
+        )
         self.model.currentIndexChanged.connect(self._on_model)
         self.model_row = self.engine_group.add_row("モデル", self.model)
         usage = QWidget()
@@ -191,6 +193,8 @@ class Inspector(QScrollArea):
             text, t = "API キーは不要です。", None
         elif not has_key:
             text, t = "API キーが設定されていません。", "warning"
+        elif self.settings.engine == "gemini" and MODELS[self.settings.gemini_model].caution:
+            text, t = MODELS[self.settings.gemini_model].caution, "warning"
         else:
             text, t = message or (info.free_quota if info else ""), tone
         self.key_status.setText(text)

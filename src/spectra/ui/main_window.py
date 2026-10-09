@@ -314,7 +314,7 @@ class MainWindow(QMainWindow):
         if has_key:
             from ..translate.gemini import MODELS
 
-            name = MODELS[self.settings.gemini_model][0] if engine == "gemini" else info.name
+            name = MODELS[self.settings.gemini_model].name if engine == "gemini" else info.name
             self.drop_zone.set_engine_notice(f"{name} で翻訳します", warning=False)
         else:
             self.drop_zone.set_engine_notice(f"{info.name if info else engine} の API キーが設定されていません", warning=True)
@@ -445,7 +445,11 @@ class MainWindow(QMainWindow):
             return
 
         translator = registry.create(
-            engine, api_key=key, options=self.settings.translate_options(), model=self.settings.gemini_model
+            engine,
+            api_key=key,
+            options=self.settings.translate_options(),
+            model=self.settings.gemini_model,
+            auto_fallback=self.settings.auto_fallback,
         )
         job = self._make_job(translator)
         self.banner_wrap.hide()

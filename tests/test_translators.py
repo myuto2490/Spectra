@@ -15,8 +15,15 @@ from spectra.translate.errors import (
     NetworkError,
     QuotaExceededError,
     RateLimitError,
+    ServiceError,
 )
-from spectra.translate.gemini import API_BASE, DEFAULT_MODEL, GeminiTranslator, system_prompt
+from spectra.translate.gemini import (
+    API_BASE,
+    DEFAULT_MODEL,
+    MODELS,
+    GeminiTranslator,
+    system_prompt,
+)
 from spectra.translate.service import PartialTranslationError, plan, translate_texts
 
 
@@ -76,7 +83,7 @@ def test_request_shape():
     assert c["items"] == [{"id": 0, "text": 'a & b <x id="0"/>'}, {"id": 1, "text": "c"}]
     cfg = c["body"]["generationConfig"]
     assert cfg["responseMimeType"] == "application/json"
-    assert cfg["thinkingConfig"] == {"thinkingLevel": "low"}
+    assert cfg["thinkingConfig"] == {"thinkingLevel": "minimal"}
     assert "である調" in c["body"]["systemInstruction"]["parts"][0]["text"]
 
 
@@ -85,7 +92,7 @@ def test_polite_style_and_cache_namespace():
     polite = GeminiTranslator("k", TranslateOptions(formality=Formality.POLITE))
     assert "です・ます調" in system_prompt(polite.options)
     assert plain.cache_namespace() != polite.cache_namespace()
-    assert GeminiTranslator("k", model="gemini-3.5-flash-lite").cache_namespace() != plain.cache_namespace()
+    assert GeminiTranslator("k", model="gemini-3.6-flash").cache_namespace() != plain.cache_namespace()
 
 
 def test_unknown_model_falls_back_to_default():
@@ -187,7 +194,7 @@ def test_daily_quota_is_not_retried():
         return httpx.Response(429, json=_quota_body("GenerateRequestsPerDayPerProjectPerModel-FreeTier"))
 
     with pytest.raises(QuotaExceededError):
-        gemini(handler).translate(["a"])
+        gemini(handler, auto_fallback=False).translate(["a"])
     assert len(calls) == 1
 
 
@@ -201,14 +208,14 @@ def test_per_minute_limit_waits_retry_delay_then_succeeds():
         items = json.loads(json.loads(req.content)["contents"][0]["parts"][0]["text"])
         return gemini_reply([{"id": i["id"], "text": "訳"} for i in items])
 
-    t = GeminiTranslator("k", client=client(handler))
+    t = GeminiTranslator("k", client=client(handler), auto_fallback=False)
     t.sleep = waits.append
     assert t.translate(["a"]) == ["訳"]
     assert waits == [12.0]
 
 
 def test_rate_limit_gives_up():
-    t = gemini(lambda r: httpx.Response(429, json=_quota_body("PerMinute")))
+    t = gemini(lambda r: httpx.Response(429, json=_quota_body("PerMinute")), auto_fallback=False)
     with pytest.raises(RateLimitError):
         t.translate(["a"])
 
@@ -236,7 +243,8 @@ def test_cancel():
 def test_batching_respects_limits():
     t = GeminiTranslator("k")
     batches = list(t.batches(["x" * 10] * 60))
-    assert [len(b) for b in batches] == [25, 25, 10]
+    assert t.model == DEFAULT_MODEL == "gemini-3.5-flash-lite"
+    assert [len(b) for b in batches] == [30, 30]
     assert all(sum(map(len, b)) <= t.max_chars for b in t.batches(["y" * 3000] * 10))
 
 
@@ -285,15 +293,90 @@ def test_partial_failure_keeps_finished_batches():
 
     cache = TranslationCache(None)
     with pytest.raises(PartialTranslationError) as e:
-        translate_texts([f"t{i}" for i in range(30)], gemini(handler), cache)
-    assert len(e.value.results) == 25 and isinstance(e.value.cause, QuotaExceededError)
-    assert cache.count() == 25
+        translate_texts([f"t{i}" for i in range(40)], gemini(handler, auto_fallback=False), cache)
+    assert len(e.value.results) == 30 and isinstance(e.value.cause, QuotaExceededError)
+    assert cache.count() == 30
 
 
 def test_registry():
     assert [e.engine_id for e in registry.public_engines()][0] == "gemini"
-    t = registry.create("gemini", api_key="x", model="gemini-3.5-flash-lite")
-    assert isinstance(t, GeminiTranslator) and t.model == "gemini-3.5-flash-lite"
+    t = registry.create("gemini", api_key="x", model="gemini-3.6-flash", auto_fallback=False)
+    assert isinstance(t, GeminiTranslator) and t.model == "gemini-3.6-flash" and not t.auto_fallback
     assert isinstance(registry.create("dummy"), DummyTranslator)
     with pytest.raises(ValueError):
         registry.create("deepl")
+
+
+# ---- 自動切り替え -------------------------------------------------------------
+
+
+def _model_of(req: httpx.Request) -> str:
+    return str(req.url).split("/models/")[1].split(":")[0]
+
+
+def test_fallback_when_overloaded():
+    seen = []
+
+    def handler(req):
+        model = _model_of(req)
+        seen.append(model)
+        if model == "gemini-3.5-flash-lite":
+            return httpx.Response(503, json={"error": {"code": 503, "message": "The model is overloaded.", "status": "UNAVAILABLE"}})
+        return echo_handler()(req)
+
+    t = gemini(handler)
+    assert t.translate(["a"]) == ["訳:a"]
+    assert t.model == "gemini-3.1-flash-lite"
+    assert seen.count("gemini-3.5-flash-lite") == 3  # 2 回だけ再試行してから切り替える
+    assert t.notices and "混雑" in t.notices[0]
+
+
+def test_fallback_on_daily_quota_and_cache_namespace_is_stable():
+    def handler(req):
+        if _model_of(req) == "gemini-3.5-flash-lite":
+            return httpx.Response(429, json=_quota_body("GenerateRequestsPerDayPerProjectPerModel-FreeTier"))
+        return echo_handler()(req)
+
+    t = gemini(handler)
+    before = t.cache_namespace()
+    assert t.translate(["a"]) == ["訳:a"]
+    assert t.cache_namespace() == before
+
+
+def test_fallback_never_uses_38_flash():
+    seen = []
+
+    def handler(req):
+        seen.append(_model_of(req))
+        return httpx.Response(503, json={"error": {"code": 503, "status": "UNAVAILABLE"}})
+
+    with pytest.raises(ServiceError):
+        gemini(handler).translate(["a"])
+    assert "gemini-3.8-flash" not in seen
+    assert set(seen) == {m for m in MODELS if MODELS[m].fallback}
+
+
+def test_38_flash_can_still_be_chosen_explicitly():
+    seen = []
+
+    def handler(req):
+        seen.append(_model_of(req))
+        return echo_handler()(req)
+
+    gemini(handler, model="gemini-3.8-flash").translate(["a"])
+    assert seen == ["gemini-3.8-flash"]
+    assert MODELS["gemini-3.8-flash"].caution
+
+
+def test_thinking_levels_are_tried_in_order():
+    sent = []
+
+    def handler(req):
+        cfg = json.loads(req.content)["generationConfig"]
+        sent.append(cfg.get("thinkingConfig", {}).get("thinkingLevel"))
+        if cfg.get("thinkingConfig", {}).get("thinkingLevel") == "minimal":
+            return httpx.Response(400, json={"error": {"code": 400, "message": "thinking level minimal is not supported"}})
+        return echo_handler()(req)
+
+    gemini(handler, model="gemini-3.6-flash").translate(["a"])
+    assert sent == ["minimal", "low"]

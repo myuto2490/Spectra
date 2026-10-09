@@ -302,13 +302,21 @@ class SettingsDialog(QDialog):
             "未公開の原稿など機密性の高い文書の翻訳には注意してください。",
         )
         self.model = QComboBox()
-        for model_id, (name, _desc) in MODELS.items():
-            self.model.addItem(name, model_id)
+        for model_id, info in MODELS.items():
+            self.model.addItem(info.name + ("（非推奨）" if info.caution else ""), model_id)
         self.model.setCurrentIndex(max(0, self.model.findData(self.settings.gemini_model)))
         self.model.currentIndexChanged.connect(self._on_model)
-        self.model_desc = label(MODELS[self.settings.gemini_model][1], "caption", wrap=True)
+        self.model_desc = label("", "caption", wrap=True)
         model_group.add_row("翻訳に使うモデル", self.model)
         model_group.add_widget(self.model_desc)
+        self.auto_fallback = Switch(self.settings.auto_fallback)
+        self.auto_fallback.toggled.connect(self._on_auto_fallback)
+        model_group.add_row(
+            "混雑時に他のモデルへ切り替える",
+            self.auto_fallback,
+            "混雑や無料枠の上限で止まったときに、他の軽量なモデルで続きを翻訳します（3.8 Flash には切り替えません）",
+        )
+        self._refresh_model_desc()
         lay.addWidget(model_group)
         lay.addStretch(1)
         scroll = QScrollArea()
@@ -317,11 +325,20 @@ class SettingsDialog(QDialog):
         scroll.setWidget(page)
         return scroll
 
+    def _refresh_model_desc(self) -> None:
+        info = MODELS[self.settings.gemini_model]
+        self.model_desc.setText(info.caution or info.description)
+        set_prop(self.model_desc, "tone", "warning" if info.caution else None)
+
     def _on_model(self) -> None:
         self.settings.gemini_model = self.model.currentData()
-        self.model_desc.setText(MODELS[self.settings.gemini_model][1])
+        self._refresh_model_desc()
         self.settings.save()
         self.settingsChanged.emit()
+
+    def _on_auto_fallback(self, on: bool) -> None:
+        self.settings.auto_fallback = on
+        self.settings.save()
 
     # -- フォント --------------------------------------------------------------
 

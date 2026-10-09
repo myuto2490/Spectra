@@ -54,7 +54,7 @@ def test_open_translate_and_export(window, paper_path):
     assert w._busy()
     pump(app, 60, until=lambda: not w._busy())
     assert w.result is not None and w.result.qa.ok
-    assert w.primary_btn.text() == "保存…"
+    assert w.primary_btn.text() == "書き出す…"
     assert w.preview.translated.document() is not None
 
     # 出力形式だけを変えた場合は再翻訳せずに作り直せる
@@ -122,3 +122,18 @@ def test_preview_height_matches_pages_after_reopening(window, paper_path, tmp_pa
     view.set_zoom(0.5)
     pump(app, 0.2)
     assert view._container.height() == content_height(view)
+
+
+def test_export_dialog_formats():
+    from spectra.core.options import OutputMode
+    from spectra.ui.app import create_app
+    from spectra.ui.export_dialog import ExportDialog, output_pages, suffix_for
+
+    create_app([])
+    d = ExportDialog(OutputMode.SIDE_BY_SIDE, 12)
+    assert not d.grab().isNull()  # カードの描画で例外が出ないこと
+    assert d.selected() == OutputMode.SIDE_BY_SIDE
+    d.cards[OutputMode.INTERLEAVE].click()
+    assert d.selected() == OutputMode.INTERLEAVE and "24 ページ" in d.summary.text()
+    assert output_pages(OutputMode.TRANSLATED, 12) == 12
+    assert {suffix_for(m) for m in OutputMode} == {"_ja", "_ja_side", "_ja_alt"}

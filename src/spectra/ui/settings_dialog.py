@@ -19,7 +19,6 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QRadioButton,
     QScrollArea,
-    QSlider,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -67,7 +66,7 @@ class KeyField(QWidget):
         titles = QVBoxLayout()
         titles.setSpacing(2)
         titles.addWidget(label(self.info.name, "headline"))
-        titles.addWidget(label(f"{self.info.description}　{self.info.free_quota}。", "caption", wrap=True))
+        titles.addWidget(label(self.info.description, "caption", wrap=True))
         head.addLayout(titles, 1)
         get_key = link_button("キーを取得")
         get_key.setIcon(icons.icon("external", theme.current().accent, 14))
@@ -298,7 +297,7 @@ class SettingsDialog(QDialog):
 
         model_group = FormGroup(
             "モデル",
-            "無料枠（クレジットカード不要）では、送信した文章が Google の製品改善に使われる場合があります。"
+            "無料枠では、送信した文章が Google の製品改善に使われる場合があります。"
             "未公開の原稿など機密性の高い文書の翻訳には注意してください。",
         )
         self.model = QComboBox()
@@ -360,34 +359,11 @@ class SettingsDialog(QDialog):
             self.font_options[fid] = opt
         lay.addWidget(group)
 
-        size = FormGroup("文字の大きさ")
-        row = QWidget()
-        rl = QHBoxLayout(row)
-        rl.setContentsMargins(0, 0, 0, 0)
-        self.scale = QSlider(Qt.Orientation.Horizontal)
-        self.scale.setRange(80, 105)
-        self.scale.setValue(round(self.settings.text_scale * 100))
-        self.scale.setAccessibleName("原文に対する文字の大きさ")
-        self.scale_label = label(f"{self.scale.value()}%", "secondary")
-        self.scale_label.setFixedWidth(44)
-        self.scale.valueChanged.connect(self._on_scale)
-        rl.addWidget(label("原文比", "secondary"))
-        rl.addWidget(self.scale, 1)
-        rl.addWidget(self.scale_label)
-        size.add_widget(row)
-        size.set_footer("枠に収まらない段落は自動で小さくします。")
-        lay.addWidget(size)
         lay.addStretch(1)
         return page
 
     def _select_font(self, fid: str) -> None:
         self.settings.font = fid
-        self.settings.save()
-        self.settingsChanged.emit()
-
-    def _on_scale(self, v: int) -> None:
-        self.scale_label.setText(f"{v}%")
-        self.settings.text_scale = v / 100
         self.settings.save()
         self.settingsChanged.emit()
 

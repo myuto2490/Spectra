@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QAbstractButton,
     QButtonGroup,
     QFrame,
+    QGraphicsDropShadowEffect,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -207,6 +208,7 @@ class FormGroup(QWidget):
             outer.addWidget(label(title, "section"))
         self.card = QFrame()
         self.card.setProperty("card", True)
+        add_soft_shadow(self.card)
         self._rows = QVBoxLayout(self.card)
         self._rows.setContentsMargins(12, 4, 12, 4)
         self._rows.setSpacing(0)
@@ -304,6 +306,15 @@ class Banner(QFrame):
     def _on_close(self) -> None:
         self.hide()
         self.closed.emit()
+
+
+def add_soft_shadow(widget: QWidget, blur: int = 28, alpha: int = 22, dy: int = 6) -> None:
+    """浮いて見える柔らかい影。ダークモードでは影が見えにくいため弱めにする。"""
+    effect = QGraphicsDropShadowEffect(widget)
+    effect.setBlurRadius(blur)
+    effect.setOffset(0, dy)
+    effect.setColor(QColor(10, 12, 30, alpha if not theme.current().dark else alpha // 2))
+    widget.setGraphicsEffect(effect)
 
 
 def hline() -> QFrame:

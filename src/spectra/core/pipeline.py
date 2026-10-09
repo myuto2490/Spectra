@@ -21,7 +21,7 @@ from ..errors import DocumentError, EncryptedDocumentError, NoTextError
 from ..translate.base import Translator
 from ..translate.cache import TranslationCache
 from ..translate.errors import CancelledError
-from ..translate.service import TranslationPlan, plan, translate_texts
+from ..translate.service import PartialTranslationError, TranslationPlan, plan, translate_texts
 from . import qa
 from .analysis import analyze_document, page_range
 from .export import build_output, finalize
@@ -184,7 +184,12 @@ class TranslationJob:
     def _plan(self, a: DocumentAnalysis) -> TranslationPlan:
         return plan([s.source for s in a.segments], self.translator.cache_namespace(), self.cache)
 
-    def run(self) -> JobResult:
+    def run(self, allow_partial: bool = False) -> JobResult:
+        """翻訳を実行する。
+
+        allow_partial: 無料枠超過などで一部しか訳せなかった場合も、訳せた段落だけで PDF を作る
+        （訳せなかった段落は原文のまま一切変更しない）。
+        """
         started = time.monotonic()
         a = self.analyze()
         if not a.segments:
@@ -193,15 +198,23 @@ class TranslationJob:
 
         # 翻訳
         self._report(Stage.TRANSLATE, 0, 1)
-        results = translate_texts(
-            [s.source for s in a.segments],
-            self.translator,
-            self.cache,
-            progress=lambda d, t: self._report(Stage.TRANSLATE, d, t),
-        )
+        partial_note = ""
+        try:
+            results = translate_texts(
+                [s.source for s in a.segments],
+                self.translator,
+                self.cache,
+                progress=lambda d, t: self._report(Stage.TRANSLATE, d, t),
+            )
+        except PartialTranslationError as e:
+            if not allow_partial:
+                raise
+            results = e.results
+            partial_note = e.title
         for s in a.segments:
             s.translated = results.get(s.source)
         self._check_cancel()
+        untranslated = sum(1 for s in a.segments if not s.translated)
 
         # 組版・描画
         original = open_document(self.source_bytes)
@@ -237,6 +250,8 @@ class TranslationJob:
         self._report(Stage.SAVE, 1, 1)
 
         warnings = []
+        if untranslated:
+            warnings.append(f"{partial_note or '一部の段落を翻訳できませんでした'}。{untranslated} 個の段落は原文のままです。")
         if render_report.shrunk:
             warnings.append(f"{len(render_report.shrunk)} 個の段落を、元の枠に収めるため小さめの文字で組みました。")
         if not report.ok:

@@ -30,6 +30,7 @@ class Settings:
     text_scale: float = 0.95
     verify_layout: bool = True
     use_cache: bool = True
+    appearance: str = "auto"  # auto / light / dark
     last_open_dir: str = ""
     last_save_dir: str = ""
     window: dict = field(default_factory=dict)
@@ -74,6 +75,8 @@ class Settings:
             self.formality = Formality.DEFAULT.value
         if self.font not in {"builtin", "noto-serif", "noto-sans", "custom"}:
             self.font = "builtin"
+        if self.appearance not in ("auto", "light", "dark"):
+            self.appearance = "auto"
         self.text_scale = min(max(self.text_scale, 0.7), 1.1)
         self.schema = SCHEMA_VERSION
 

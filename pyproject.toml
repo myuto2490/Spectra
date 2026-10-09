@@ -1,0 +1,64 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "spectra-pdf"
+dynamic = ["version"]
+description = "論文 PDF を図表・数式・レイアウトを保ったまま日本語に翻訳するデスクトップアプリ"
+readme = "README.md"
+license = "AGPL-3.0-or-later"
+license-files = ["LICENSE"]
+authors = [{ name = "myuto2490" }]
+requires-python = ">=3.10"
+keywords = ["pdf", "translation", "japanese", "deepl", "paper", "academic"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: X11 Applications :: Qt",
+    "Intended Audience :: Science/Research",
+    "Natural Language :: Japanese",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Text Processing :: Linguistic",
+]
+dependencies = [
+    "pymupdf>=1.24.10",
+    "PySide6>=6.6",
+    "httpx>=0.27",
+    "keyring>=24",
+    "platformdirs>=4",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.5", "pyinstaller>=6.6", "pillow>=10"]
+
+[project.scripts]
+spectra = "spectra.__main__:main"
+
+[project.gui-scripts]
+spectra-gui = "spectra.ui.app:main"
+
+[project.urls]
+Homepage = "https://github.com/myuto2490/Spectra"
+Issues = "https://github.com/myuto2490/Spectra/issues"
+
+[tool.hatch.version]
+path = "src/spectra/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/spectra"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM"]
+ignore = ["E501"]

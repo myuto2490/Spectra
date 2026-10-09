@@ -113,3 +113,28 @@ def test_no_text(tmp_path):
     doc.save(path)
     with pytest.raises(NoTextError):
         run(path)
+
+
+def test_partial_translation_keeps_untranslated_paragraphs(paper_path, paper):
+    from spectra.translate.errors import QuotaExceededError
+    from spectra.translate.service import PartialTranslationError
+
+    class Flaky(DummyTranslator):
+        max_items = 3
+        calls = 0
+
+        def _translate_batch(self, texts):
+            Flaky.calls += 1
+            if Flaky.calls > 1:
+                raise QuotaExceededError
+            return super()._translate_batch(texts)
+
+    with pytest.raises(PartialTranslationError):
+        TranslationJob(str(paper_path), Flaky()).run()
+    Flaky.calls = 0
+    result = TranslationJob(str(paper_path), Flaky()).run(allow_partial=True)
+    assert any("原文のまま" in w for w in result.warnings)
+    out = pymupdf.open(stream=result.pdf, filetype="pdf")
+    assert "擬似" in out[0].get_text()
+    assert out[2].get_text() == paper[2].get_text()  # 訳せなかったページは完全に元のまま
+    assert result.qa.ok

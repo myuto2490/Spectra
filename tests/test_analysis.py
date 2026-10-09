@@ -83,7 +83,7 @@ def test_inline_math_protected(paper):
     assert '<x id="0"/>' in seg.source and '<x id="1"/>' in seg.source
     assert "momentum" in seg.source
     run0 = seg.runs[0]
-    assert run0.pieces[0].math
+    assert run0.pieces[0].math and run0.pieces[0].text == "α"
     # 下付きの t は同じ保護要素に含まれ、ベースラインより下がっている
     assert any(p.rise_ratio < 0 and p.size_ratio < 1 for p in run0.pieces)
 
@@ -100,3 +100,12 @@ def test_no_merge_across_headings(paper):
     a = analyze_document(paper)
     seg = next(s for s in a.segments if s.regions[0].page == 2 and s.kind == BlockKind.BODY)
     assert len(seg.regions) == 1
+
+
+def test_equation_without_math_fonts_is_skipped(paper):
+    assert _find(analyze_document(paper), "max(0").skip == SkipReason.MATH
+
+
+def test_body_starting_with_figure_is_not_caption(paper):
+    d = _find(analyze_document(paper), "Figure 1 shows")
+    assert d.kind == BlockKind.BODY and d.translate

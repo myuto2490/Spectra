@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: セキュリティ上の問題
+    url: https://github.com/myuto2490/Spectra/security/advisories/new
+    about: 脆弱性は公開の Issue ではなく、こちらから非公開で報告してください。

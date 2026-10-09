@@ -1,0 +1,59 @@
+name: 不具合の報告
+description: 動作がおかしい・レイアウトが崩れるなどの問題を報告する
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        報告ありがとうございます。著作権のある PDF ファイルそのものは添付しないでください（公開されている論文なら URL を記載してください）。
+  - type: textarea
+    id: what
+    attributes:
+      label: 何が起きましたか
+      description: 期待した動作と、実際の動作を書いてください。
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 再現手順
+      placeholder: |
+        1. PDF を開く
+        2. 「翻訳」を押す
+        3. 3 ページ目の図のキャプションが…
+  - type: input
+    id: paper
+    attributes:
+      label: 論文の URL（公開されている場合）
+      placeholder: https://arxiv.org/abs/...
+  - type: textarea
+    id: screenshot
+    attributes:
+      label: スクリーンショット
+      description: 崩れた箇所の原文と訳文の画像を貼り付けてください。
+  - type: input
+    id: version
+    attributes:
+      label: Spectra のバージョン
+      description: 「Spectra について」で確認できます。
+      placeholder: "0.1.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: OS
+      options: [macOS（Apple シリコン）, macOS（Intel）, Windows, Linux]
+    validations:
+      required: true
+  - type: dropdown
+    id: engine
+    attributes:
+      label: 翻訳エンジン
+      options: [DeepL API Free, Google Cloud Translation, その他]
+  - type: textarea
+    id: logs
+    attributes:
+      label: ログ
+      description: 設定 → 詳細 → フォルダ「ログ」の spectra.log の該当部分（API キーは記録されません）
+      render: text

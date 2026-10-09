@@ -26,5 +26,6 @@
   - インスペクタでの出力形式・ページ範囲・翻訳対象の設定と、翻訳前の文字数見積もり
   - API キーの入力・接続確認・今月の使用量表示
   - ライト / ダーク / 自動の外観、キーボードショートカット
+- リリース時のコード署名：macOS は Developer ID 署名と公証、Windows は SignPath による署名（設定方法は docs/CODE_SIGNING.md）
 
 [Unreleased]: https://github.com/myuto2490/Spectra/commits/develop

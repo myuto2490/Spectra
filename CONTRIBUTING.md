@@ -73,6 +73,7 @@ git push origin main develop vX.Y.Z
 
 タグを push すると GitHub Actions がタグ・`__version__`・CHANGELOG の一致を検査し、
 Windows / macOS / Linux 向けのアプリをビルドして Release を作成します。
+コード署名の設定は [docs/CODE_SIGNING.md](docs/CODE_SIGNING.md) を参照してください。
 
 ## ライセンス
 

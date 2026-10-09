@@ -33,7 +33,7 @@ from .errors import (
 log = logging.getLogger(__name__)
 
 API_BASE = "https://generativelanguage.googleapis.com/v1beta"
-PROMPT_VERSION = 1  # 指示文を変えたら上げる（キャッシュを分けるため）
+PROMPT_VERSION = 2  # 指示文を変えたら上げる（キャッシュを分けるため）
 
 
 
@@ -94,6 +94,8 @@ def system_prompt(options: TranslateOptions) -> str:
 4. 専門用語は分野で一般的な日本語訳を使う。定訳のない用語、手法名・モデル名・データセット名・人名・製品名は原語のまま残す。
 5. 略語（例: CNN, BLEU）、変数名、URL、メールアドレス、コードは原文のまま残す。
 6. 見出しの章番号（例: 3.2）や「Figure 1:」などの番号は残し、「Figure」は「図」、「Table」は「表」と訳す。
+   論文の定型の見出しは次のように訳す: Abstract → 概要、Introduction → はじめに、Related Work → 関連研究、
+   Conclusion(s) → 結論、Acknowledg(e)ments → 謝辞、References → 参考文献、Appendix → 付録、Keywords → キーワード。
 7. 句読点は「、」「。」を使い、英数字は半角のままにする。
 8. 訳文以外の説明や注記は書かない。"""
 

@@ -85,6 +85,8 @@ class SkipReason(str, Enum):
     ALREADY_JAPANESE = "already_japanese"
     REFERENCES = "references"
     AUTHORS = "authors"
+    RUNNING_HEADER = "running_header"
+    OVERLAP = "overlap"  # 訳文に置き換えると、重なっている翻訳対象外の文字まで消えてしまう
     CAPTION_DISABLED = "caption_disabled"
     FOOTNOTE_DISABLED = "footnote_disabled"
     OUT_OF_RANGE = "out_of_range"
@@ -170,6 +172,7 @@ class Region:
     source_chars: int  # 原文の文字数
     block_index: int
     first_baseline: float | None = None  # 原文 1 行目のベースライン
+    erase_rects: list[Rect] = field(default_factory=list)  # 消去する原文の文字の範囲（スパン単位）
 
 
 @dataclass
@@ -230,6 +233,12 @@ def overlap_ratio(inner: Rect, outer: Rect) -> float:
     if area <= 0:
         return 0.0
     return rect_area(rect_intersect(inner, outer)) / area
+
+
+def erase_rect(line: Rect) -> Rect:
+    """原文の文字（行・スパン）を消すときの範囲。上下を少し縮め、隣接する行の文字を巻き込まないようにする。"""
+    shrink = (line[3] - line[1]) * 0.18
+    return (line[0] - 0.2, line[1] + shrink, line[2] + 0.2, line[3] - shrink)
 
 
 def inflate(r: Rect, dx: float, dy: float | None = None) -> Rect:

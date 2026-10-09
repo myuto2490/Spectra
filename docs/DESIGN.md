@@ -275,12 +275,28 @@ packaging/             PyInstaller 設定・アイコン生成
 - `develop`: 統合ブランチ。
 - `feature/*` / `docs/*` / `ci/*`: 作業ブランチ。`develop` から切り、完了後 `--no-ff` でマージ。
 
-### 7.2 実装マイルストーン
+### 7.2 バージョン管理
+
+- **セマンティック バージョニング**（`MAJOR.MINOR.PATCH`）。PEP 440 と両立する形でプレリリースは `1.2.0rc1` のように書く。
+  - MAJOR: 出力 PDF や設定の互換性を壊す変更 / MINOR: 機能追加 / PATCH: 不具合修正
+  - 1.0.0 までは `0.x` で運用し、API や出力の互換性は保証しない
+- **バージョン番号の唯一の情報源**は `src/spectra/__init__.py` の `__version__`。
+  pyproject（hatch の dynamic version）、アプリの「Spectra について」、CLI の `--version`、
+  ビルド成果物のファイル名、macOS の `CFBundleShortVersionString`、Windows のファイルバージョンはすべてここから取得する。
+- **CHANGELOG.md**（Keep a Changelog 形式）に変更を `Unreleased` 節へ随時追記する。
+- **リリース手順**
+  1. `python scripts/bump_version.py {major|minor|patch|X.Y.Z}` — `__version__` を更新し、`Unreleased` を新バージョンの節に確定
+  2. `develop` でコミット → `main` へ `--no-ff` マージ → 注釈付きタグ `vX.Y.Z` を作成して push
+  3. GitHub Actions がタグを検知し、`scripts/check_version.py` でタグ・`__version__`・CHANGELOG の一致を検査してから 3 OS 向けにビルドし、CHANGELOG の該当節を本文にした Release を作成する
+- 初回リリースは `python scripts/bump_version.py 0.1.0`（現在値と同じ番号を明示して確定）
+
+### 7.3 実装マイルストーン
 
 | # | ブランチ | 内容 |
 | --- | --- | --- |
 | 0 | `docs/design-plan` | 本設計書 |
 | 1 | `feature/project-setup` | pyproject、ライセンス、README 雛形、パッケージ骨格 |
+| 1.5 | `chore/versioning` | バージョン管理（CHANGELOG、bump / check スクリプト） |
 | 2 | `feature/core-extraction` | models / fonts / extract / classify / segment / markup + テスト |
 | 3 | `feature/translators` | DeepL / Google / Dummy / キャッシュ / エラー + モックテスト |
 | 4 | `feature/layout-render` | 日本語組版・描画・出力形式・品質検査・パイプライン・CLI + テスト |
@@ -289,7 +305,7 @@ packaging/             PyInstaller 設定・アイコン生成
 | 7 | `ci/packaging` | GitHub Actions（テスト・3 OS ビルド）、PyInstaller、アプリアイコン |
 | 8 | `docs/readme` | README（スクリーンショット、API キー取得手順、FAQ）、CONTRIBUTING |
 
-### 7.3 テスト方針
+### 7.4 テスト方針
 
 - 著作権の都合上、実際の論文はリポジトリに含めない。テストでは PyMuPDF で **図・数式・表・2 段組を含む合成 PDF** を生成して検証する。
 - 翻訳 API は `httpx.MockTransport` でモックし、ネットワークなしで全テストが通るようにする。

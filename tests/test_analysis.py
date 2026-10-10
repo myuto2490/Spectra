@@ -180,15 +180,15 @@ def test_grid_clustering_groups_nearby_drawings_and_is_fast():
     doc = pymupdf.open()
     page = doc.new_page(width=595, height=842)
     shape = page.new_shape()
-    # 散布図：5,000 個の点が 2 つの領域に集まっている
+    # 散布図：5,000 個の点（それぞれ別の図形）が 2 つの領域に密集している
     for i in range(2500):
-        shape.draw_circle((60 + (i * 7) % 150, 60 + (i * 13) % 150), 0.6)
-        shape.draw_circle((360 + (i * 7) % 150, 400 + (i * 13) % 150), 0.6)
-    shape.finish(color=(0, 0, 1))
+        for ox, oy in ((60, 60), (360, 400)):
+            shape.draw_circle((ox + (i % 50) * 2, oy + (i // 50) * 2), 0.6)
+            shape.finish(color=(0, 0, 1))
     shape.commit()
     drawings = page.get_drawings()
     t = time.time()
     clusters = cluster_drawings(drawings, (0, 0, 595, 842))
     assert time.time() - t < 3
-    big = [r for r, _m in clusters if r[2] - r[0] > 100]
+    big = [r for r, _m in clusters if r[2] - r[0] > 80]
     assert len(big) == 2

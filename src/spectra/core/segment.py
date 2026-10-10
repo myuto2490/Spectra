@@ -106,6 +106,9 @@ def _detect_align(block: TextBlock, kind: BlockKind, page_width: float, size: fl
     x0, _, x1, _ = block.bbox
     center = (x0 + x1) / 2
     lines = block.lines
+    if kind == BlockKind.TITLE:
+        # タイトルは両端揃えにしない。原文でページの中央に置かれていれば、幅や行数によらず中央揃え
+        return Align.CENTER if abs(center - page_width / 2) < page_width * 0.03 else Align.LEFT
     if len(lines) == 1:
         # ページ中央に置かれ、左余白より内側から始まる 1 行は中央揃え（タイトル・見出し・短いキャプション）
         centered = abs(center - page_width / 2) < page_width * 0.03 and x0 > page_width * 0.12

@@ -25,7 +25,9 @@ def _setup_logging() -> None:
     root = logging.getLogger()
     root.setLevel(logging.INFO)
     root.addHandler(handler)
-    logging.getLogger("httpx").setLevel(logging.WARNING)
+    # 通信とフォントのサブセット化は記録が多いので、警告以上だけを残す
+    for noisy in ("httpx", "fontTools"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
     logging.getLogger(__name__).info("%s %s starting", APP_NAME, __version__)
 
 

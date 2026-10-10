@@ -39,6 +39,7 @@
 - 分数で 1 行が分断された段落の結合、訳文の段落どうしが重ならないことの保証
 - 日本語の字形の Noto Sans JP を同梱して標準フォントに（中国語風の漢字の字形を解消）
 - 括弧まわりの表記の整形（括弧内の余分な空白、英数字だけを囲む括弧は半角）
+- 段落の中の太字（段落先頭の小見出しや「Fig. 1.」など）を、訳文でも対応する語を太字で組む
 - リリース時のコード署名：macOS は Developer ID 署名と公証、Windows は SignPath による署名（設定方法は docs/CODE_SIGNING.md）
 
 [Unreleased]: https://github.com/myuto2490/Spectra/commits/develop

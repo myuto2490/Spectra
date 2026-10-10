@@ -8,7 +8,7 @@ from collections import Counter
 from dataclasses import dataclass, replace
 
 from .fonts import base_name, decode_symbol_font, is_math_font, is_math_span, is_sans_font
-from .markup import escape, placeholder, to_plain
+from .markup import BOLD_CLOSE, BOLD_OPEN, escape, placeholder, to_plain
 from .models import (
     Align,
     BlockDecision,
@@ -228,6 +228,7 @@ def build_unit(decision: BlockDecision, page_width: float, body_font: str = "") 
         pending.clear()
         return placeholder(rid) + (" " if trailing_space else "")
 
+    in_bold = False  # 段落の中の太字（段落全体が太字の見出しは書式で太字にするので囲まない）
     for line in block.lines:
         line_markup = ""
         for p in _pieces_for_line(line, style.size, body_font, has_math):
@@ -240,11 +241,23 @@ def build_unit(decision: BlockDecision, page_width: float, body_font: str = "") 
             if pending and not p.text.strip():
                 pending.append(p)
                 continue
-            line_markup += flush() + escape(p.text)
+            line_markup += flush()
+            want_bold = p.span.is_bold and not style.bold
+            if p.text.strip() and want_bold != in_bold:
+                body = p.text.lstrip()
+                line_markup += escape(p.text[: len(p.text) - len(body)])
+                line_markup += BOLD_OPEN if want_bold else BOLD_CLOSE
+                in_bold = want_bold
+                line_markup += escape(body)
+            else:
+                line_markup += escape(p.text)
         line_markup += flush()
         markup = _join(markup, re.sub(r"\s+", " ", line_markup).strip())
 
+    if in_bold:
+        markup += BOLD_CLOSE
     markup = re.sub(r"\s+", " ", markup).strip()
+    markup = re.sub(r"<b>\s*</b>", "", markup).replace(" </b>", "</b> ")
     if decision.kind in (BlockKind.HEADING, BlockKind.TITLE):
         from .classify import squeeze_letter_spacing
 

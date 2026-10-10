@@ -117,3 +117,12 @@ def test_inline_run_kept_whole_with_positions(fonts):
 def test_empty_translation(fonts):
     r = layout([], {}, [frame(0, 0, 100, 100)], fonts)
     assert r.fits and r.placed == []
+
+
+def test_bold_tokens_use_bold_fonts(fonts):
+    tokens = parse("<b>結果 Results.</b> 本文", set())
+    r = layout(tokens, {}, [frame(0, 0, 300, 20, style(Align.LEFT))], fonts, text_scale=1.0)
+    by_text = {g.text: g for g in r.placed}
+    assert by_text["Results."].role.name == "LATIN_BOLD"
+    assert by_text["結"].role.name == "JP_BOLD"  # 同梱の Noto Sans JP Bold
+    assert by_text["本"].role.name == "JP" and not by_text["本"].bold

@@ -85,7 +85,10 @@ def test_secret_store_env_has_priority(monkeypatch):
 
 
 def test_resolve_font_falls_back_to_builtin(tmp_path):
-    assert resolve_font("noto-serif").regular is None  # 未ダウンロード
+    # 未ダウンロードのフォントを選んでいる場合は、同梱の Noto Sans JP（日本語の字形）を使う
+    fallback = resolve_font("noto-serif")
+    assert fallback.regular and fallback.regular.endswith("NotoSansJP-Regular.otf")
+    assert fallback.bold and fallback.bold.endswith("NotoSansJP-Bold.otf")
     f = tmp_path / "MyMincho.ttf"
     f.write_bytes(b"x")
     r = resolve_font("custom", str(f))

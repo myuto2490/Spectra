@@ -24,7 +24,7 @@
 - **PDF のまま翻訳** — 翻訳結果も元と同じページ構成の PDF。ページ番号も図の位置もそのままです。
 - **図表・数式を壊さない** — 画像・グラフ・表の罫線・独立した数式・図の中の文字には一切手を加えません。翻訳後に自動検査を行い、図表の見た目が 1 ピクセルも変わっていないことを確認します。
 - **段落中の数式もそのまま** — 本文中の数式（例: 学習率 α、下付きの d<sub>k</sub>）は翻訳から保護し、訳文の中の自然な位置に元の形のまま配置します。
-- **読みやすい日本語の組版** — 禁則処理、和文と欧文の間の適切な空き、両端揃え、字下げに対応。2 段組で段をまたぐ段落も、原文と同じように流し込みます。明朝体（Noto Serif JP）も選べます。
+- **読みやすい日本語の組版** — 禁則処理、和文と欧文の間の適切な空き、両端揃え、字下げに対応。2 段組で段をまたぐ段落も、原文と同じように流し込みます。標準では日本語の字形の Noto Sans JP（同梱）を使い、明朝体（Noto Serif JP）も選べます。
 - **無料で使える** — 翻訳には Google の生成 AI「Gemini」を使います。API キーは Google アカウントだけで発行できます。論文の文体（である調 / です・ます調）や専門用語に合わせて自然に訳します。翻訳済みの文はキャッシュされるので、同じ論文を訳し直しても無料枠を消費しません。
 - **API キーは安全に保管** — macOS キーチェーン / Windows 資格情報マネージャー / Linux のキーリングに保存します。
 - **出力形式を選べる** — 翻訳のみ / 原文と訳文を左右に並べた対訳 / ページごとに交互の対訳。
@@ -171,7 +171,7 @@ ruff check src tests       # 静的解析
 
 Spectra は [GNU Affero General Public License v3.0](LICENSE)（AGPL-3.0-or-later）で配布するフリーソフトウェアです。
 
-主な依存ソフトウェア: [PyMuPDF](https://github.com/pymupdf/PyMuPDF)（AGPL-3.0）、[Qt for Python / PySide6](https://www.qt.io/qt-for-python)（LGPL-3.0）、[fontTools](https://github.com/fonttools/fonttools)（MIT）。任意でダウンロードできる Noto Serif JP / Noto Sans JP は SIL Open Font License 1.1 です。
+主な依存ソフトウェア: [PyMuPDF](https://github.com/pymupdf/PyMuPDF)（AGPL-3.0）、[Qt for Python / PySide6](https://www.qt.io/qt-for-python)（LGPL-3.0）、[fontTools](https://github.com/fonttools/fonttools)（MIT）。同梱の Noto Sans JP と任意でダウンロードできる Noto Serif JP は SIL Open Font License 1.1 です（ライセンス文は `src/spectra/assets/fonts/OFL.txt`）。
 
 Google および Gemini は Google LLC の商標です。Spectra は Google とは関係のない個人開発のソフトウェアです。
 

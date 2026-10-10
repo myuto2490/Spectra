@@ -221,7 +221,7 @@ class TranslationJob:
         doc = open_document(self.source_bytes)
         written: dict[int, list] = defaultdict(list)
         with unrotated(doc), unrotated(original):
-            renderer = Renderer(doc, a, self.render_options)
+            renderer = Renderer(doc, a, self.render_options, source=original)
             try:
                 render_report = renderer.render(
                     progress=lambda d, t: self._report(Stage.RENDER, d, t),
@@ -232,6 +232,10 @@ class TranslationJob:
             for s in a.segments:
                 for r in s.regions:
                     written[r.page].append(r.rect)
+                # 段落中の数式は、付随する線ごと新しい位置へ移すので、元の位置も「書き換えた範囲」に含める
+                for run in s.runs.values():
+                    if run.page is not None and run.bbox is not None:
+                        written[run.page].append(run.bbox)
 
             # 検査
             self._report(Stage.VERIFY, 0, 1)

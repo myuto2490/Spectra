@@ -96,7 +96,8 @@ def system_prompt(options: TranslateOptions) -> str:
 6. 見出しの章番号（例: 3.2）や「Figure 1:」などの番号は残し、「Figure」は「図」、「Table」は「表」と訳す。
    論文の定型の見出しは次のように訳す: Abstract → 概要、Introduction → はじめに、Related Work → 関連研究、
    Conclusion(s) → 結論、Acknowledg(e)ments → 謝辞、References → 参考文献、Appendix → 付録、Keywords → キーワード。
-7. 句読点は「、」「。」を使い、英数字は半角のままにする。
+7. 句読点は「、」「。」を使い、英数字は半角のままにする。漢字は日本語で一般的な字体を使い、中国語の簡体字を使わない。
+   括弧の内側に空白を入れない。中身が英数字だけの括弧（引用など）は半角の ( ) を使う。
 8. 訳文以外の説明や注記は書かない。"""
 
 

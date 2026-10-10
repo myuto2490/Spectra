@@ -20,6 +20,10 @@ import pymupdf
 
 log = logging.getLogger(__name__)
 
+_FONTS_DIR = Path(__file__).resolve().parent.parent / "assets" / "fonts"
+BUNDLED_REGULAR = _FONTS_DIR / "NotoSansJP-Regular.otf"
+BUNDLED_BOLD = _FONTS_DIR / "NotoSansJP-Bold.otf"
+
 # 未使用でも含めておく文字（記号の代替などで後から使われうる）
 _BASE_CHARS = "".join(chr(c) for c in range(0x20, 0x7F)) + "、。，．・：；？！「」『』（）［］〈〉《》—…‥ー"
 
@@ -122,6 +126,14 @@ class FontBook:
         self.jp_bold_path = jp_bold_path
         file_font = _load_file_font(jp_font_path)
         self._external = file_font is not None
+        if file_font is None and jp_font_path is None and BUNDLED_REGULAR.is_file():
+            # 指定が無ければ同梱の Noto Sans JP（日本語の字形）を使う
+            jp_font_path = str(BUNDLED_REGULAR)
+            jp_bold_path = jp_bold_path or (str(BUNDLED_BOLD) if BUNDLED_BOLD.is_file() else None)
+            self.jp_font_path, self.jp_bold_path = jp_font_path, jp_bold_path
+            file_font = _load_file_font(jp_font_path)
+            self._external = file_font is not None
+        # 最後の予備：MuPDF 内蔵の Droid Sans Fallback（漢字は中国語の字形になる）
         self.jp = file_font or pymupdf.Font("cjk")
         self.jp_bold = _load_file_font(jp_bold_path) if self._external else None
         self.serif = serif

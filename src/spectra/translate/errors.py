@@ -21,8 +21,11 @@ class AuthenticationError(TranslatorError):
 
 
 class QuotaExceededError(TranslatorError):
-    title = "今月の無料翻訳枠を使い切りました"
-    hint = "翻訳済みの段落はキャッシュに保存されています。来月の枠の更新後に続きから翻訳できます。別の翻訳エンジンに切り替えることもできます。"
+    title = "無料枠の 1 日あたりの上限に達しました"
+    hint = (
+        "上限は日本時間の 16 時（夏時間は 17 時）ごろに戻ります。翻訳済みの段落はキャッシュに保存されているので、続きから翻訳できます。"
+        "設定で別のモデルを選ぶと、別の枠で続けられる場合があります。"
+    )
 
 
 class RateLimitError(TranslatorError):

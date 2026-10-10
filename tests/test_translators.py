@@ -193,9 +193,12 @@ def test_daily_quota_is_not_retried():
         calls.append(1)
         return httpx.Response(429, json=_quota_body("GenerateRequestsPerDayPerProjectPerModel-FreeTier"))
 
-    with pytest.raises(QuotaExceededError):
+    with pytest.raises(QuotaExceededError) as e:
         gemini(handler, auto_fallback=False).translate(["a"])
     assert len(calls) == 1
+    message = e.value.user_message()
+    assert message.startswith("無料枠の 1 日あたりの上限に達しました")
+    assert "今月" not in message
 
 
 def test_per_minute_limit_waits_retry_delay_then_succeeds():

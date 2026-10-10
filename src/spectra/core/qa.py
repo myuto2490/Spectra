@@ -60,6 +60,35 @@ def _mean_diff(a: pymupdf.Pixmap, b: pymupdf.Pixmap) -> float:
     return total / max(1, len(sa))
 
 
+def _image_key(info: dict) -> tuple:
+    return (tuple(round(v, 1) for v in info["bbox"]), info["width"], info["height"])
+
+
+def _lost_images(before: pymupdf.Page, after: pymupdf.Page) -> list[tuple]:
+    """翻訳後に見た目から消えた画像。
+
+    PDF の描画命令を書き直すと、同じ位置に重ね描きされた冗長な画像（図を細かな断片で描いた PDF に多い）が
+    まとめられて数が減ることがある。その場合は見た目が変わらないため、消えた位置を高解像度で比較し、
+    実際に画素が変わったものだけを返す。
+    """
+    from collections import Counter
+
+    missing = Counter(_image_key(i) for i in before.get_image_info()) - Counter(
+        _image_key(i) for i in after.get_image_info()
+    )
+    lost = []
+    for key in missing.elements():
+        clip = pymupdf.Rect(key[0]) + (-1, -1, 1, 1)
+        clip &= before.rect
+        if clip.is_empty:
+            continue
+        a = before.get_pixmap(clip=clip, dpi=300, alpha=False)
+        b = after.get_pixmap(clip=clip, dpi=300, alpha=False)
+        if a.samples != b.samples:
+            lost.append(key)
+    return lost
+
+
 def check(
     before: pymupdf.Document,
     after: pymupdf.Document,
@@ -78,8 +107,9 @@ def check(
         pb, pf = before[pno], after[pno]
         report.pages_checked += 1
 
-        if len(pb.get_image_info()) != len(pf.get_image_info()):
-            report.issues.append(QAIssue(pno, "images", "画像の数が変化しました"))
+        lost = _lost_images(pb, pf)
+        if lost:
+            report.issues.append(QAIssue(pno, "images", f"画像が {len(lost)} 個失われました"))
         db, df = _drawing_count(pb), _drawing_count(pf)
         if db >= 0 and df >= 0 and db != df:
             report.issues.append(QAIssue(pno, "drawings", f"図形の数が変化しました（{db} → {df}）"))

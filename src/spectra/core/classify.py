@@ -12,7 +12,13 @@ from collections.abc import Iterable
 
 import pymupdf
 
-from .extract import SECTION_NAME, extract_blocks, find_figure_rects, find_table_rects
+from .extract import (
+    SECTION_NAME,
+    extract_blocks,
+    find_figure_rects,
+    find_table_rects,
+    read_drawings,
+)
 from .fonts import base_name, is_math_font, is_math_span, is_mono_font, math_char_ratio
 from .models import (
     BlockDecision,
@@ -26,6 +32,17 @@ from .models import (
 from .options import AnalysisOptions
 
 _WORD = re.compile(r"[A-Za-z][A-Za-z'’\-]*[A-Za-z]")
+# 数式中の関数名は単語として数えない（"cos φ (3)" のような数式の断片を文章と誤認しないため）
+_MATH_FUNCTIONS = {
+    "sin", "cos", "tan", "cot", "sec", "csc", "sinh", "cosh", "tanh", "arcsin", "arccos", "arctan",
+    "exp", "log", "ln", "lg", "max", "min", "sup", "inf", "lim", "det", "arg", "tr", "diag", "erf", "sgn", "mod",
+}
+_LETTER_SPACED = re.compile(r"\b([A-Za-z])((?: [A-Za-z]){2,})\b")
+
+
+def squeeze_letter_spacing(text: str) -> str:
+    """字間を空けた見出し（"A B S T R A C T"）を詰める。"""
+    return _LETTER_SPACED.sub(lambda m: m.group(1) + m.group(2).replace(" ", ""), text)
 _CJK = re.compile(r"[぀-ヿ㐀-䶿一-鿿ｦ-ﾟ]")
 _URL_OR_MAIL = re.compile(r"(https?://\S+|www\.\S+|\S+@\S+\.\w+)")
 # 番号の後に区切り記号が続くものだけをキャプションとみなす（"Figure 1 shows ..." は本文）
@@ -77,11 +94,11 @@ class BlockStats:
                 bold_chars += n
             size_weight[round(span.size, 1)] += n
             plain_parts.append(span.text)
-        plain = " ".join(plain_parts)
+        plain = squeeze_letter_spacing(" ".join(plain_parts))
         self.math_chars += int(math_char_ratio(plain) * len(plain.replace(" ", "")))
-        self.text = block.text.strip()
+        self.text = squeeze_letter_spacing(block.text.strip())
         no_links = _URL_OR_MAIL.sub(" ", plain)
-        self.words = len(_WORD.findall(no_links))
+        self.words = sum(1 for w in _WORD.findall(no_links) if w.lower() not in _MATH_FUNCTIONS)
         self.letters = sum(c.isascii() and c.isalpha() for c in no_links)
         self.digits = sum(c.isdigit() for c in no_links)
         self.cjk = len(_CJK.findall(plain))
@@ -108,6 +125,12 @@ def estimate_body_font(blocks: Iterable[TextBlock]) -> str:
             if not is_math_font(s.font):
                 weight[base_name(s.font)] += len(s.text.strip())
     return max(weight, key=weight.get) if weight else ""
+
+
+def _vertically_adjacent(a: TextBlock, b: TextBlock, size: float) -> bool:
+    gap = max(a.bbox[1] - b.bbox[3], b.bbox[1] - a.bbox[3])
+    h_overlap = min(a.bbox[2], b.bbox[2]) - max(a.bbox[0], b.bbox[0])
+    return gap <= size * 1.5 and h_overlap > 0
 
 
 def _tabular_blocks(blocks: list[TextBlock], stats: dict[int, BlockStats]) -> set[int]:
@@ -161,8 +184,9 @@ class DocumentClassifier:
 
     def analyze_page(self, page: pymupdf.Page, blocks: list[TextBlock] | None = None) -> PageAnalysis:
         blocks = extract_blocks(page) if blocks is None else blocks
-        figures = find_figure_rects(page)
-        tables = find_table_rects(page)
+        drawings = read_drawings(page)
+        figures = find_figure_rects(page, drawings)
+        tables = find_table_rects(page, drawings)
         stats = {b.index: BlockStats(b, self.body_font) for b in blocks}
         tabular = _tabular_blocks(blocks, stats)
         height = float(page.rect.height)
@@ -184,6 +208,7 @@ class DocumentClassifier:
             decisions=decisions,
             figure_rects=figures,
             table_rects=tables,
+            drawing_rects=[tuple(d["rect"]) for d in drawings],
         )
 
     def _front_matter(
@@ -202,10 +227,18 @@ class DocumentClassifier:
         front = [b for b in blocks[:idx] if not stats[b.index].rotated and stats[b.index].words]
         if not front:
             return {}
-        title_size = max(stats[b.index].size for b in front)
+        # 雑誌名やロゴ（大きいが語数が少ない）をタイトルと取り違えないよう、3 語以上のブロックから選ぶ
+        candidates = [b for b in front if stats[b.index].words >= 3] or front
+        title_size = max(stats[b.index].size for b in candidates)
+        titles = [b for b in candidates if stats[b.index].size >= title_size - 0.5]
+        # タイトルの折り返し行（1 語だけの行など）も、すぐ上下にあればタイトルに含める
+        for b in front:
+            near_title = any(_vertically_adjacent(b, t, title_size) for t in titles)
+            if b not in titles and stats[b.index].size >= title_size - 0.5 and near_title:
+                titles.append(b)
         result: dict[int, tuple[BlockKind, SkipReason | None]] = {}
         for b in front:
-            if stats[b.index].size >= title_size - 0.5:
+            if b in titles:
                 result[b.index] = (BlockKind.TITLE, None)
             else:
                 result[b.index] = (BlockKind.BODY, SkipReason.AUTHORS)
@@ -244,6 +277,9 @@ class DocumentClassifier:
             return SkipReason.OUT_OF_RANGE
         if st.rotated:
             return SkipReason.ROTATED
+        # ページ下端の柱（"A125, page 1 of 9" など）
+        if b.bbox[1] > self._page_height * 0.93 and len(b.lines) == 1 and st.words <= 6 and re.search(r"\d", st.text):
+            return SkipReason.RUNNING_HEADER
         # ページ上端の柱（"Smith et al." や雑誌名など）
         if b.bbox[3] < self._page_height * 0.07 and len(b.lines) == 1 and (st.words <= 4 or "et al" in st.text):
             return SkipReason.RUNNING_HEADER

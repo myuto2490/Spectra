@@ -97,3 +97,56 @@ def test_resolve_font_falls_back_to_builtin(tmp_path):
 
 def test_spectra_home_disables_os_keyring():
     assert not SecretStore().secure  # SPECTRA_HOME が設定されている（conftest）
+
+
+class _FakeKeyring:
+    """macOS のキーチェーンの代わり。読み書きの回数を数える。"""
+
+    def __init__(self, value: str):
+        self.store = {("Spectra", "gemini-api-key"): value}
+        self.reads = 0
+        self.writes = 0
+
+    def get_password(self, service, account):
+        self.reads += 1
+        return self.store.get((service, account))
+
+    def set_password(self, service, account, value):
+        self.writes += 1
+        self.store[(service, account)] = value
+
+    def delete_password(self, service, account):
+        self.store.pop((service, account), None)
+
+
+def test_keychain_is_read_once_and_reclaimed_once(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "darwin")
+    fake = _FakeKeyring("AIzaFromDevBuild")
+    store = SecretStore(use_keyring=False)
+    store._keyring = fake  # 別のアプリ（開発中の Python）が保存した項目がある状態
+
+    assert store.get("gemini") == "AIzaFromDevBuild"
+    assert store.get("gemini") == "AIzaFromDevBuild"
+    assert fake.reads == 1  # 2 回目以降は覚えたキーを使う
+    assert fake.writes == 1  # このアプリで保存し直して持ち主になる
+
+    # 次の起動（同じアプリ）：読み出しは 1 回、保存し直しはしない
+    store2 = SecretStore(use_keyring=False)
+    store2._keyring = fake
+    assert store2.get("gemini") == "AIzaFromDevBuild"
+    assert fake.writes == 1
+
+    # アップデートなどでアプリが変わると、もう一度だけ保存し直す
+    monkeypatch.setattr(SecretStore, "_identity", staticmethod(lambda: "new-app|0.1.1"))
+    store3 = SecretStore(use_keyring=False)
+    store3._keyring = fake
+    store3.get("gemini")
+    assert fake.writes == 2
+
+
+def test_delete_clears_cached_key():
+    store = SecretStore(use_keyring=False)
+    store.set("gemini", "AIzaKey")
+    assert store.get("gemini") == "AIzaKey"
+    store.delete("gemini")
+    assert store.get("gemini") == ""

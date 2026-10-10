@@ -7,6 +7,13 @@
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-10
+
+### 修正
+- macOS で、翻訳のたびにキーチェーンへのアクセスの許可を求められる問題を修正。
+  読み出した API キーはアプリを閉じるまで覚えておき、別のアプリ（以前の版など）が保存したキーは
+  初回の許可の後にこのアプリで保存し直すので、以降は確認なしで使えます
+
 ## [0.1.0] - 2026-10-10
 
 初めての公開版です。
@@ -41,5 +48,6 @@
 **コマンドラインツール**
 - `spectra translate` / `spectra estimate` / `spectra key`
 
-[Unreleased]: https://github.com/myuto2490/Spectra/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/myuto2490/Spectra/compare/v0.1.1...HEAD
 [0.1.0]: https://github.com/myuto2490/Spectra/releases/tag/v0.1.0
+[0.1.1]: https://github.com/myuto2490/Spectra/compare/v0.1.0...v0.1.1

@@ -192,3 +192,23 @@ def test_grid_clustering_groups_nearby_drawings_and_is_fast():
     assert time.time() - t < 3
     big = [r for r, _m in clusters if r[2] - r[0] > 80]
     assert len(big) == 2
+
+
+def test_paragraph_tail_line_with_superscripts_is_absorbed():
+    """上付き・下付きで段落から切り離された最後の行は段落の一部とみなし、独立した数式は取り込まない。"""
+    from spectra.core.analysis import _is_paragraph_tail
+    from spectra.core.models import BlockDecision, Line, Span, TextBlock
+
+    def block(text, bbox, size=10.0, lines=1):
+        span = Span(text, "Times-Roman", size, 0, 0, bbox, (bbox[0], bbox[3] - 2))
+        return TextBlock(0, 0, bbox, [Line([span], bbox) for _ in range(lines)])
+
+    para = BlockDecision(block("The mixing ratio is constrained by", (318, 289, 569, 432), lines=13), BlockKind.BODY)
+    tail = BlockDecision(block("18.64 (Orton 1992).", (361, 429, 467, 443)), BlockKind.BODY, SkipReason.NUMERIC)
+    assert _is_paragraph_tail(tail, para)
+
+    display = BlockDecision(block("x = 1.0 (3)", (400, 436, 488, 448)), BlockKind.BODY, SkipReason.MATH)
+    assert not _is_paragraph_tail(display, para)
+
+    elsewhere = BlockDecision(block("18.64 (Orton 1992).", (60, 600, 160, 612)), BlockKind.BODY, SkipReason.NUMERIC)
+    assert not _is_paragraph_tail(elsewhere, para)

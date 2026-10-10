@@ -212,3 +212,20 @@ def test_paragraph_tail_line_with_superscripts_is_absorbed():
 
     elsewhere = BlockDecision(block("18.64 (Orton 1992).", (60, 600, 160, 612)), BlockKind.BODY, SkipReason.NUMERIC)
     assert not _is_paragraph_tail(elsewhere, para)
+
+
+def test_centered_titles_are_centered_even_when_wide():
+    """ページいっぱいに広がる中央揃えのタイトルも、2 行目も、中央揃えで組む。"""
+
+    def draw(page):
+        for y, text in ((80, "A Remarkably Long Title About Planetary Atmospheres and Their Winds"), (100, "Observed by Radio Telescopes")):
+            w = pymupdf.get_text_length(text, fontname="tibo", fontsize=16)
+            page.insert_text(((595 - w) / 2, y), text, fontname="tibo", fontsize=16)
+        page.insert_text((60, 140), "Alice Example", fontname="tiro", fontsize=10)
+        page.insert_text((280, 180), "ABSTRACT", fontname="tibo", fontsize=10)
+        page.insert_text((60, 200), "We present observations of the atmosphere and discuss them.", fontname="tiro", fontsize=10)
+
+    a = analyze_document(_one_page(draw))
+    title = next(s for s in a.segments if s.kind == BlockKind.TITLE)
+    assert len(title.regions) == 2
+    assert {r.style.align.value for r in title.regions} == {"center"}

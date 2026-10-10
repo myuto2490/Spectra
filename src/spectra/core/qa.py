@@ -43,11 +43,45 @@ def _norm(text: str) -> Counter:
     return Counter(re.sub(r"\s+", "", text))
 
 
-def _drawing_count(page: pymupdf.Page) -> int:
+def _drawing_keys(page: pymupdf.Page, exclude: list[Rect]) -> Counter | None:
+    """図形の位置の一覧。exclude（訳文を書いた段落）の中にある図形（数式の線など）は含めない。"""
     try:
-        return len(page.get_drawings())
+        drawings = page.get_drawings()
     except Exception:
-        return -1
+        return None
+    zones = [inflate(r, 2) for r in exclude]
+
+    def inside(r) -> bool:
+        cx, cy = (r[0] + r[2]) / 2, (r[1] + r[3]) / 2
+        return any(z[0] <= cx <= z[2] and z[1] <= cy <= z[3] for z in zones)
+
+    return Counter(
+        tuple(round(v, 1) for v in d["rect"]) for d in drawings if not inside(tuple(d["rect"]))
+    )
+
+
+def _lost_drawings(before: pymupdf.Page, after: pymupdf.Page, exclude: list[Rect]) -> int:
+    """元の図形のうち、翻訳後に同じ位置に見つからないものの数。
+
+    段落中の数式を元の見た目のまま移すと、切り抜きで隠れた（見えない）線が増えることがあるため、
+    数の比較ではなく「元の図形が残っているか」で判定する。
+    """
+    a, b = _drawing_keys(before, exclude), _drawing_keys(after, [])
+    if a is None or b is None:
+        return 0
+    missing = a - b
+    if not missing:
+        return 0
+    # 描画命令の書き直しで座標がわずかにずれることがあるので、0.3pt 以内なら同じ図形とみなす
+    remaining = list((b - a).elements())
+    lost = 0
+    for key in missing.elements():
+        match = next((i for i, k in enumerate(remaining) if all(abs(x - y) <= 0.3 for x, y in zip(key, k))), None)
+        if match is None:
+            lost += 1
+        else:
+            remaining.pop(match)
+    return lost
 
 
 def _mean_diff(a: pymupdf.Pixmap, b: pymupdf.Pixmap) -> float:
@@ -110,9 +144,10 @@ def check(
         lost = _lost_images(pb, pf)
         if lost:
             report.issues.append(QAIssue(pno, "images", f"画像が {len(lost)} 個失われました"))
-        db, df = _drawing_count(pb), _drawing_count(pf)
-        if db >= 0 and df >= 0 and db != df:
-            report.issues.append(QAIssue(pno, "drawings", f"図形の数が変化しました（{db} → {df}）"))
+        mine_rects = written.get(pno, [])
+        lost_drawings = _lost_drawings(pb, pf, mine_rects)
+        if lost_drawings:
+            report.issues.append(QAIssue(pno, "drawings", f"図形が {lost_drawings} 個失われました"))
 
         for d in pa.decisions:
             if d.translate:

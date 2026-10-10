@@ -32,7 +32,7 @@ class FontChoice:
 
 
 FONT_CHOICES: dict[str, FontChoice] = {
-    "builtin": FontChoice("builtin", "標準ゴシック（内蔵）", "追加のダウンロードなしで使えます。", False, {}),
+    "builtin": FontChoice("builtin", "Noto Sans JP（ゴシック体・内蔵）", "画面でも紙でも読みやすいゴシック体。追加のダウンロードは不要です。", False, {}),
     "noto-serif": FontChoice(
         "noto-serif",
         "Noto Serif JP（明朝体）",
@@ -43,17 +43,6 @@ FONT_CHOICES: dict[str, FontChoice] = {
             "NotoSerifJP-Bold.otf": f"{_NOTO}/Serif/SubsetOTF/JP/NotoSerifJP-Bold.otf",
         },
         12.7,
-    ),
-    "noto-sans": FontChoice(
-        "noto-sans",
-        "Noto Sans JP（ゴシック体）",
-        "画面で読みやすいゴシック体。太字の見出しにも対応します。",
-        False,
-        {
-            "NotoSansJP-Regular.otf": f"{_NOTO}/Sans/SubsetOTF/JP/NotoSansJP-Regular.otf",
-            "NotoSansJP-Bold.otf": f"{_NOTO}/Sans/SubsetOTF/JP/NotoSansJP-Bold.otf",
-        },
-        9.2,
     ),
     "custom": FontChoice("custom", "フォントファイルを指定…", "TrueType / OpenType フォント（.ttf .otf .ttc）", False, {}),
 }
@@ -82,7 +71,18 @@ def resolve_font(font_id: str, custom_path: str = "") -> ResolvedFont:
     if choice and choice.files and is_installed(font_id):
         names = list(choice.files)
         return ResolvedFont(str(paths.fonts_dir() / names[0]), str(paths.fonts_dir() / names[1]), choice.serif)
-    return ResolvedFont(None, None, False)
+    regular, bold = bundled_font()
+    return ResolvedFont(regular, bold, False)
+
+
+def bundled_font() -> tuple[str | None, str | None]:
+    """アプリに同梱した Noto Sans JP（標準・太字）。見つからなければ (None, None)。"""
+    from ..core.fontbook import BUNDLED_BOLD, BUNDLED_REGULAR
+
+    return (
+        str(BUNDLED_REGULAR) if BUNDLED_REGULAR.is_file() else None,
+        str(BUNDLED_BOLD) if BUNDLED_BOLD.is_file() else None,
+    )
 
 
 def download(font_id: str, progress: Callable[[int, int], None] | None = None, client: httpx.Client | None = None) -> None:

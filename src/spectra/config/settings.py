@@ -27,7 +27,7 @@ class Settings:
     translate_captions: bool = True
     translate_footnotes: bool = True
     skip_references: bool = True
-    font: str = "builtin"  # builtin / noto-serif / noto-sans / custom
+    font: str = "builtin"  # builtin（同梱の Noto Sans JP）/ noto-serif / custom
     custom_font_path: str = ""
     verify_layout: bool = True
     use_cache: bool = True
@@ -75,7 +75,9 @@ class Settings:
             self.output_mode = OutputMode.TRANSLATED.value
         if self.formality not in (Formality.DEFAULT.value, Formality.POLITE.value):
             self.formality = Formality.DEFAULT.value  # である調
-        if self.font not in {"builtin", "noto-serif", "noto-sans", "custom"}:
+        if self.font == "noto-sans":
+            self.font = "builtin"  # Noto Sans JP は同梱になった
+        if self.font not in {"builtin", "noto-serif", "custom"}:
             self.font = "builtin"
         from ..translate.gemini import DEFAULT_MODEL, MODELS
 

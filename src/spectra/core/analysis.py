@@ -82,7 +82,7 @@ def guard_overlaps(pa: PageAnalysis) -> None:
             hits = [k for k in kept if _overlaps(rects, k)]
             if not hits:
                 continue
-            if all(_is_fragment(k) for k in hits):
+            if all(_is_fragment(k) or _is_paragraph_tail(k, d) for k in hits):
                 for k in hits:
                     d.block.lines.extend(k.block.lines)
                     d.block.lines.sort(key=lambda ln: (round(ln.baseline, 1), ln.bbox[0]))
@@ -102,6 +102,24 @@ def _overlaps(rects: list, other) -> bool:
         if any(rect_area(rect_intersect(r, sb)) > 0.5 for r in rects):
             return True
     return False
+
+
+def _is_paragraph_tail(k, para) -> bool:
+    """段落から切り離された、上付き・下付きの数値を含む段落の最後の行（例: "18.64 (Orton 1992)."）。
+
+    段落のすぐ下（または重なる位置）にあって段の幅に収まる、数値・数式中心の短い 1 行は段落の一部とみなす。
+    等号を含んで中央に置かれた行は独立した数式の可能性が高いので取り込まない。
+    """
+    if k.skip not in _FRAGMENT_REASONS or len(k.block.lines) != 1 or k.block.char_count > 40:
+        return False
+    kb, pb = k.block.bbox, para.block.bbox
+    size = max((s.size for s in para.block.spans), default=10.0)
+    within = kb[0] >= pb[0] - 2 and kb[2] <= pb[2] + 2
+    below = pb[3] - size <= kb[1] <= pb[3] + size * 0.8
+    text = k.block.text
+    centered = abs((kb[0] + kb[2]) / 2 - (pb[0] + pb[2]) / 2) < size and kb[0] - pb[0] > size * 2
+    display_math = ("=" in text or "≈" in text) and centered
+    return within and below and not display_math
 
 
 def _is_fragment(d) -> bool:

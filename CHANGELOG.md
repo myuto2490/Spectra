@@ -32,6 +32,9 @@
   - ライト / ダーク / 自動の外観、キーボードショートカット
 - PDF の書き出し画面：形式（翻訳のみ / 左右に対訳 / ページごとに対訳）を図付きのカードで選び、再翻訳なしで何度でも書き出せる
 - 行間の広い原稿形式の論文や、見出しが段落の先頭にある論文（Abstract など）への対応
+- 出版社ごとのレイアウトへの対応（Elsevier・A&A・AAS・AGU/Wiley・Springer・IEEE の 20 本で検証）
+  - 雑誌名・ロゴ・字間を空けた見出し・ページ上下の柱・擬似コード・数式の断片の判定
+  - 図形の多いページ（散布図など）の高速化、翻訳後のファイルサイズを元とほぼ同じに
 - リリース時のコード署名：macOS は Developer ID 署名と公証、Windows は SignPath による署名（設定方法は docs/CODE_SIGNING.md）
 
 [Unreleased]: https://github.com/myuto2490/Spectra/commits/develop

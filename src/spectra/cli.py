@@ -237,6 +237,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO if args.verbose else logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
+    logging.getLogger("fontTools").setLevel(logging.WARNING)
     if args.command is None:
         parser.print_help()
         return 0

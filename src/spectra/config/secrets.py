@@ -35,6 +35,9 @@ class SecretStore:
             # OS の資格情報ストアにある普段のキーを読み書きしない
             use_keyring = not os.environ.get("SPECTRA_HOME")
         self._keyring = self._init_keyring() if use_keyring else None
+        # 読み出したキーはアプリを閉じるまで覚えておく（キーチェーンへの問い合わせを起動ごとに 1 回にする）
+        self._cache: dict[str, str] = {}
+        self._owner_file = self.fallback_file.with_name("keychain_owner.json")
 
     @staticmethod
     def _init_keyring():
@@ -74,14 +77,65 @@ class SecretStore:
             for var in ENV_VARS.get(engine, ()):
                 if os.environ.get(var):
                     return os.environ[var].strip()
+        if engine in self._cache:
+            return self._cache[engine]
         if self._keyring is not None:
             try:
                 value = self._keyring.get_password(APP_NAME, _account(engine))
                 if value:
+                    self._cache[engine] = value
+                    self._claim(engine, value)
                     return value
             except Exception:
                 log.warning("failed to read from keyring", exc_info=True)
-        return self._read_file().get(engine, "")
+        value = self._read_file().get(engine, "")
+        if value:
+            self._cache[engine] = value
+        return value
+
+    # -- キーチェーンの項目の持ち主 ----------------------------------------------------
+
+    @staticmethod
+    def _identity() -> str:
+        """このアプリの識別（実行ファイルとバージョン）。アップデートすると変わる。"""
+        import sys
+
+        from .. import __version__
+
+        return f"{sys.executable}|{__version__}"
+
+    def _claim(self, engine: str, value: str) -> None:
+        """別のアプリ（開発中の Python やアップデート前の版）が保存した項目を、このアプリで保存し直す。
+
+        macOS のキーチェーンは、項目を作ったアプリには確認なしで読み出しを許す。
+        別のアプリが作った項目は、読み出すたびに許可を求められるので、初回に許可された後に
+        このアプリで作り直しておく（keyring の保存は「削除してから追加」なので持ち主が入れ替わる）。
+        """
+        import sys
+
+        if sys.platform != "darwin" or self._keyring is None:
+            return
+        owners = self._read_owners()
+        if owners.get(engine) == self._identity():
+            return
+        try:
+            self._keyring.set_password(APP_NAME, _account(engine), value)
+            owners[engine] = self._identity()
+            self._write_owners(owners)
+        except Exception:
+            log.info("could not re-save the key to the keychain", exc_info=True)
+
+    def _read_owners(self) -> dict[str, str]:
+        try:
+            data = json.loads(self._owner_file.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    def _write_owners(self, owners: dict[str, str]) -> None:
+        with contextlib.suppress(OSError):
+            self._owner_file.parent.mkdir(parents=True, exist_ok=True)
+            self._owner_file.write_text(json.dumps(owners), encoding="utf-8")
 
     def source(self, engine: str) -> str | None:
         """キーの保存場所（表示用）。未設定なら None。"""
@@ -97,10 +151,14 @@ class SecretStore:
         if not value:
             self.delete(engine)
             return
+        self._cache[engine] = value
         if self._keyring is not None:
             try:
                 self._keyring.set_password(APP_NAME, _account(engine), value)
                 self._remove_from_file(engine)
+                owners = self._read_owners()
+                owners[engine] = self._identity()
+                self._write_owners(owners)
                 return
             except Exception:
                 log.warning("failed to write to keyring, falling back to file", exc_info=True)
@@ -109,6 +167,7 @@ class SecretStore:
         self._write_file(data)
 
     def delete(self, engine: str) -> None:
+        self._cache.pop(engine, None)
         if self._keyring is not None:
             # 未登録の場合も例外になるため無視する
             with contextlib.suppress(Exception):

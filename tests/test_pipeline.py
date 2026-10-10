@@ -43,7 +43,8 @@ def test_text_is_replaced_but_skipped_text_kept(paper_path):
 def test_fonts_are_embedded_and_subset(paper_path):
     out = pymupdf.open(stream=run(paper_path).pdf, filetype="pdf")
     names = {f[3] for f in out[0].get_fonts()}
-    assert any("Droid" in n and "+" in n for n in names)
+    # 同梱の Noto Sans JP（日本語の字形）が、使った文字だけに絞って埋め込まれる
+    assert any("Noto Sans JP" in n and "+" in n for n in names)
 
 
 @pytest.mark.parametrize(

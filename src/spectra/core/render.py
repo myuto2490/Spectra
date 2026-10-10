@@ -29,7 +29,8 @@ from .models import (
     rect_intersect,
 )
 from .options import RenderOptions
-from .redact import erase_text
+from .redact import erase_text, stub_forms
+from .textnorm import normalize_translation
 
 log = logging.getLogger(__name__)
 
@@ -64,6 +65,24 @@ def _used_text(segments: list[Segment]) -> str:
         for run in seg.runs.values():
             chars.update(run.text)
     return "".join(sorted(chars))
+
+
+def _complement(page: Rect, keep: list[Rect]) -> list[Rect]:
+    """page から keep の矩形群を除いた領域を、重ならない矩形の集まりで返す。"""
+    ys = sorted({page[1], page[3], *[min(max(k[1], page[1]), page[3]) for k in keep], *[min(max(k[3], page[1]), page[3]) for k in keep]})
+    out: list[Rect] = []
+    for ya, yb in zip(ys, ys[1:]):
+        if yb - ya <= 0:
+            continue
+        spans = sorted((k[0], k[2]) for k in keep if k[1] < yb and k[3] > ya)
+        x = page[0]
+        for a, b in spans:
+            if a > x:
+                out.append((x, ya, a, yb))
+            x = max(x, b)
+        if x < page[2]:
+            out.append((x, ya, page[2], yb))
+    return out
 
 
 def _merge_rects(rects: list[Rect], gap: float = 2.0) -> list[Rect]:
@@ -137,13 +156,22 @@ def _expand(region: Region, geo: PageGeometry, own_blocks: set[int], horizontal:
 
 
 class Renderer:
-    def __init__(self, doc: pymupdf.Document, analysis: DocumentAnalysis, options: RenderOptions):
+    def __init__(
+        self,
+        doc: pymupdf.Document,
+        analysis: DocumentAnalysis,
+        options: RenderOptions,
+        source: pymupdf.Document | None = None,
+    ):
+        """source: 翻訳前の元の文書。渡すと、段落中の数式を元の見た目のまま移して配置する。"""
+        self.source = source
         self.doc = doc
         self.analysis = analysis
         self.options = options
         self.fonts = FontBook(options.font_path, serif=options.font_is_serif, jp_bold_path=options.bold_font_path)
         self._geo: dict[int, PageGeometry] = {}
         self._kept: dict[int, list[Rect]] = {}
+        self._regions_by_page: dict[int, list[tuple[str, Rect]]] = {}
         self._pa = {pa.page: pa for pa in analysis.pages}
 
     def geometry(self, pno: int) -> PageGeometry:
@@ -164,9 +192,29 @@ class Renderer:
                 single_line = len(r.line_rects) == 1 and len(seg.regions) == 1
                 last = i == len(seg.regions) - 1
                 rect = _expand(r, self.geometry(r.page), own[r.page], horizontal=single_line, vertical=last)
+            rect = self._clip_to_neighbors(seg, r.page, rect)
             offset = None if r.first_baseline is None else r.first_baseline - r.rect[1]
             frames.append(Frame(page=r.page, rect=rect, style=r.style, first_baseline_offset=offset))
         return frames
+
+    def _clip_to_neighbors(self, seg: Segment, pno: int, rect: Rect) -> Rect:
+        """他の段落の枠と重なる部分を削る（訳文どうしが重なって書かれることを防ぐ）。"""
+        x0, y0, x1, y1 = rect
+        for other_id, o in self._translated_rects(pno):
+            if other_id == seg.id or min(x1, o[2]) - max(x0, o[0]) <= 1:
+                continue
+            if o[1] >= y0 and o[1] < y1:  # 下にある枠に食い込んでいる
+                y1 = max(y0 + 1, o[1] - 0.5)
+            elif o[3] <= y1 and o[3] > y0 and o[1] < y0:  # 上にある枠が食い込んでいる
+                y0 = min(y1 - 1, o[3] + 0.5)
+        return (x0, y0, x1, y1)
+
+    def _translated_rects(self, pno: int) -> list[tuple[str, Rect]]:
+        if pno not in self._regions_by_page:
+            self._regions_by_page[pno] = [
+                (s.id, r.rect) for s in self.analysis.segments if s.translated for r in s.regions if r.page == pno
+            ]
+        return self._regions_by_page[pno]
 
     def _kept_spans(self, pno: int) -> list[Rect]:
         """翻訳しない文字の範囲（消してはいけない）。"""
@@ -194,7 +242,7 @@ class Renderer:
         return out
 
     def layout_segment(self, seg: Segment) -> LayoutResult:
-        tokens = parse(seg.translated or "", set(seg.runs))
+        tokens = parse(normalize_translation(seg.translated or ""), set(seg.runs))
         opts = self.options
         result = layout(tokens, seg.runs, self._frames(seg, expand=False), self.fonts, opts.text_scale)
         if result.fits and result.scale >= opts.text_scale - 1e-6:
@@ -215,6 +263,7 @@ class Renderer:
         by_page: dict[int, list[PlacedGlyphs]] = defaultdict(list)
         erase: dict[int, list[Rect]] = defaultdict(list)
         moves: list[tuple[InlineRun, PlacedRun]] = []
+        transplants: list[tuple[InlineRun, PlacedRun]] = []
         segments = [s for s in self.analysis.segments if s.translated]
         self.fonts.prepare(_used_text(segments))
         total = len(segments) + len(self._pa)
@@ -223,7 +272,10 @@ class Renderer:
             if should_cancel and should_cancel():
                 raise InterruptedError
             result = self.layout_segment(seg)
+            movable = {rid for rid, run in seg.runs.items() if self._can_transplant(run)}
             for g in result.placed:
+                if g.run_id is not None and g.run_id in movable:
+                    continue  # 元の見た目のまま移すので、代用フォントでは描かない
                 by_page[g.page].append(g)
             for r in seg.regions:
                 erase[r.page].extend(self._erase_rects_for(r))
@@ -231,6 +283,8 @@ class Renderer:
                 run = seg.runs.get(pr.run_id)
                 if run is not None and run.bbox is not None and run.origin is not None:
                     moves.append((run, pr))
+                    if pr.run_id in movable:
+                        transplants.append((run, pr))
             report.segments.append(SegmentReport(seg.id, seg.regions[0].page, result.scale, result.fits))
             done += 1
             if progress:
@@ -238,6 +292,7 @@ class Renderer:
 
         # 数式に付随するベクター線（根号の上線・分数の横線など）を数式と一緒に移動する
         vectors = self._collect_inline_vectors(moves)
+        stamps = self._make_stamps(transplants)
 
         for pno in sorted(self._pa):
             if should_cancel and should_cancel():
@@ -253,12 +308,69 @@ class Renderer:
             if by_page.get(pno):
                 self._write(page, by_page[pno])
             for d, run, pr in vectors:
-                if pr.page == pno:
+                # 元の見た目のまま移す数式は、線も一緒に移るので描き直さない
+                if pr.page == pno and not self._can_transplant(run):
                     self._redraw(page, d, run, pr)
+            for run, pr in transplants:
+                if pr.page == pno:
+                    self._transplant(page, run, pr, stamps)
             done += 1
             if progress:
                 progress(done, total)
         return report
+
+    def _can_transplant(self, run: InlineRun) -> bool:
+        return self.source is not None and run.bbox is not None and run.origin is not None and run.page is not None
+
+    def _make_stamps(self, transplants: list[tuple[InlineRun, PlacedRun]]) -> dict[int, tuple[pymupdf.Document, int]]:
+        """数式の部分だけを残した「切り抜き用のページ」を作る。
+
+        元のページをそのまま貼り込むと、切り抜きで隠れた部分（図の大量の図形など）も PDF に残り、
+        表示が重くなる。数式の範囲の外にある文字・図形・画像を消したページから移すことで、
+        貼り込む中身を数式だけにする。
+        """
+        by_page: dict[int, list[Rect]] = defaultdict(list)
+        for run, _pr in transplants:
+            by_page[run.page].append(inflate(run.bbox, 1.0))  # type: ignore[arg-type]
+        if not by_page or self.source is None:
+            return {}
+        stamp_doc = pymupdf.open()
+        stamps: dict[int, tuple[pymupdf.Document, int]] = {}
+        for pno, keep in sorted(by_page.items()):
+            stamp_doc.insert_pdf(self.source, from_page=pno, to_page=pno)
+            sp = stamp_doc[-1]
+            # 段落中の数式は図の部品（フォーム XObject）の中には無いので、部品は空にしておく
+            # （残すと消去処理が部品を複製し、ファイルが膨らんで処理も遅くなる）
+            stub_forms(stamp_doc, sp)
+            for r in _complement(tuple(sp.rect), keep):
+                sp.add_redact_annot(pymupdf.Rect(r), fill=False, cross_out=False)
+            sp.apply_redactions(
+                images=pymupdf.PDF_REDACT_IMAGE_REMOVE,
+                graphics=pymupdf.PDF_REDACT_LINE_ART_REMOVE_IF_TOUCHED,
+                text=pymupdf.PDF_REDACT_TEXT_REMOVE,
+            )
+            stamps[pno] = (stamp_doc, sp.number)
+        return stamps
+
+    def _transplant(
+        self, page: pymupdf.Page, run: InlineRun, pr: PlacedRun, stamps: dict[int, tuple[pymupdf.Document, int]]
+    ) -> None:
+        """元の文書の数式部分を、そのままの見た目で新しい位置へ配置する。
+
+        字形・分数の線・根号のほか、文字コードの対応が分からない記号（Δ など）も正しく再現できる。
+        配置した部分の外側は切り抜かれ、文字の抽出にも含まれない。
+        """
+        x0, y0, x1, y1 = run.bbox  # type: ignore[misc]
+        ox, oy = run.origin  # type: ignore[misc]
+        f = pr.factor
+        target = pymupdf.Rect(pr.x + (x0 - ox) * f, pr.baseline + (y0 - oy) * f, pr.x + (x1 - ox) * f, pr.baseline + (y1 - oy) * f)
+        if target.is_empty:
+            return
+        src_doc, src_page = stamps.get(run.page, (self.source, run.page))  # type: ignore[arg-type]
+        try:
+            page.show_pdf_page(target, src_doc, src_page, clip=pymupdf.Rect(run.bbox), keep_proportion=False, overlay=True)
+        except Exception:
+            log.warning("page %d: could not place inline math", page.number + 1, exc_info=True)
 
     def _collect_inline_vectors(self, moves: list[tuple[InlineRun, PlacedRun]]) -> list[tuple[dict, InlineRun, PlacedRun]]:
         by_page: dict[int, list[tuple[InlineRun, PlacedRun]]] = defaultdict(list)

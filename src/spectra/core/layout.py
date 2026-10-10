@@ -68,6 +68,7 @@ class Atom:
     no_break_after: bool = False
     cjk_punct: bool = False
     run_id: int | None = None
+    scale: float = 1.0  # 保護要素を行に収めるための縮小率
 
 
 @dataclass
@@ -80,6 +81,7 @@ class PlacedGlyphs:
     size: float
     color: int
     bold: bool
+    run_id: int | None = None  # 保護要素（数式など）のグリフなら、その番号
 
 
 @dataclass
@@ -190,9 +192,25 @@ def _text_atoms(text: str, fonts: FontBook, latin_role: FontRole, bold: bool, ou
         i = j
 
 
+# 保護要素が上下にはみ出してよい範囲（em）。これを超える分数などは縮めて前後の行に重ならないようにする
+_RUN_TOP, _RUN_BOTTOM = 1.1, -0.4
+
+
+def _run_fit_scale(run: InlineRun) -> float:
+    top = max((p.rise_ratio + p.size_ratio * 0.75 for p in run.pieces), default=0.0)
+    bottom = min((p.rise_ratio - p.size_ratio * 0.2 for p in run.pieces), default=0.0)
+    scale = 1.0
+    if top > _RUN_TOP:
+        scale = min(scale, _RUN_TOP / top)
+    if bottom < _RUN_BOTTOM:
+        scale = min(scale, _RUN_BOTTOM / bottom)
+    return max(scale, 0.7)
+
+
 def _inline_atom(run: InlineRun, fonts: FontBook) -> Atom:
     glyphs: list[Glyphs] = []
     positioned = run.width_ratio is not None and all(p.dx_ratio is not None for p in run.pieces)
+    fit = _run_fit_scale(run)
     for p in run.pieces:
         if not p.text:
             continue
@@ -207,9 +225,9 @@ def _inline_atom(run: InlineRun, fonts: FontBook) -> Atom:
         else:
             base = FontRole.LATIN
         # 下付き・上付きの大きさとずれは原文の比率を保ちつつ極端な値を抑える
-        size_ratio = min(max(p.size_ratio, 0.45), 1.6)
-        rise_ratio = min(max(p.rise_ratio, -0.6), 0.8)
-        dx = p.dx_ratio if positioned else None
+        size_ratio = min(max(p.size_ratio, 0.45), 1.6) * fit
+        rise_ratio = min(max(p.rise_ratio, -0.6), 0.8) * fit
+        dx = p.dx_ratio * fit if positioned and p.dx_ratio is not None else None
         for part, role in fonts.split_by_coverage(p.text, base):
             w = fonts.width(part, role, 1.0) * size_ratio
             glyphs.append(
@@ -229,8 +247,8 @@ def _inline_atom(run: InlineRun, fonts: FontBook) -> Atom:
     if positioned:
         # 原文の幅を基準にしつつ、代替フォントで幅が広がった場合も重ならないようにする
         natural = max((g.dx or 0.0) + g.unit_width for g in glyphs) if glyphs else 0.0
-        return Atom(AtomKind.INLINE, glyphs, max(run.width_ratio or 0.0, natural))
-    return Atom(AtomKind.INLINE, glyphs, sum(g.unit_width for g in glyphs))
+        return Atom(AtomKind.INLINE, glyphs, max((run.width_ratio or 0.0) * fit, natural), scale=fit)
+    return Atom(AtomKind.INLINE, glyphs, sum(g.unit_width for g in glyphs), scale=fit)
 
 
 def _split_long(atom: Atom, max_unit_width: float, fonts: FontBook) -> list[Atom]:
@@ -476,7 +494,8 @@ def _place(trial: _Trial, frames: list[Frame], style: TextStyle) -> tuple[list[P
                 x += _autospace(line.atoms[ai - 1], atom) * size + gap_add
             atom_x = x
             if atom.run_id is not None:
-                placed_runs.append(PlacedRun(atom.run_id, fr.page, atom_x, baseline, size / style.size if style.size else 1.0))
+                factor = (size / style.size if style.size else 1.0) * atom.scale
+                placed_runs.append(PlacedRun(atom.run_id, fr.page, atom_x, baseline, factor))
             for g in atom.glyphs:
                 gsize = size * g.size_ratio
                 gx = atom_x + g.dx * size if g.dx is not None else x
@@ -491,6 +510,7 @@ def _place(trial: _Trial, frames: list[Frame], style: TextStyle) -> tuple[list[P
                             size=gsize,
                             color=style.color if g.color is None else g.color,
                             bold=g.bold,
+                            run_id=atom.run_id,
                         )
                     )
                 x = gx + g.unit_width * size

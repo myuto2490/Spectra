@@ -86,6 +86,11 @@ def _entries(doc: pymupdf.Document, owner: int, path: str) -> dict[str, int]:
     return {m.group(1): int(m.group(2)) for m in _REF.finditer(text)}
 
 
+def stub_forms(doc: pymupdf.Document, page: pymupdf.Page) -> None:
+    """ページが参照する図の部品を、空の仮部品に置き換える（元に戻さない）。"""
+    _stub_forms(doc, page)
+
+
 def _stub_forms(doc: pymupdf.Document, page: pymupdf.Page) -> tuple[int, str, dict[str, int]] | None:
     try:
         owner, path = _xobject_owner(doc, page)

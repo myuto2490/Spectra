@@ -17,8 +17,8 @@ NOTICES = (
     "Qt / PySide6 — GNU LGPL v3（The Qt Company）",
     "fontTools — MIT License",
     "httpx — BSD License / keyring — MIT License / platformdirs — MIT License",
-    "Droid Sans Fallback — Apache License 2.0",
-    "Noto Serif JP / Noto Sans JP — SIL Open Font License 1.1（任意でダウンロード）",
+    "Noto Sans JP — SIL Open Font License 1.1（同梱）",
+    "Noto Serif JP — SIL Open Font License 1.1（任意でダウンロード）",
 )
 
 

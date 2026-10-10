@@ -79,12 +79,29 @@ def _merge_paragraph_lines(blocks: list[TextBlock]) -> list[TextBlock]:
     out: list[TextBlock] = []
     for b in blocks:
         prev = out[-1] if out else None
-        if prev is not None and _continues_paragraph(prev, b):
+        if prev is not None and _continues_same_line(prev, b):
+            # 分数などで 1 行が左右のブロックに分断されている：同じ行としてつなぎ直す
+            prev.lines = _merge_visual_lines(prev.lines + [Line(list(ln.spans), ln.bbox, ln.direction) for ln in b.lines])
+            prev.bbox = rect_union(prev.bbox, b.bbox)
+        elif prev is not None and _continues_paragraph(prev, b):
             prev.lines = prev.lines + b.lines
             prev.bbox = rect_union(prev.bbox, b.bbox)
         else:
             out.append(b)
     return out
+
+
+def _continues_same_line(a: TextBlock, b: TextBlock) -> bool:
+    """a の最後の行と b の最初の行が、同じベースラインで左右に並んでいる。"""
+    if _is_rotated(a) or _is_rotated(b):
+        return False
+    last, first = a.lines[-1], b.lines[0]
+    size = _line_size(last)
+    same_baseline = abs(first.baseline - last.baseline) <= max(1.5, size * 0.15)
+    # 分数の分子と分母のように、境目で少し重なることがある
+    to_the_right = first.bbox[0] >= last.bbox[2] - size * 1.5 and first.bbox[0] - last.bbox[2] < size * 6
+    to_the_right = to_the_right and first.bbox[0] > last.bbox[0] + (last.bbox[2] - last.bbox[0]) * 0.5
+    return same_baseline and to_the_right and abs(_line_size(first) - size) <= max(0.6, size * 0.06)
 
 
 def _continues_paragraph(a: TextBlock, b: TextBlock) -> bool:
@@ -97,7 +114,8 @@ def _continues_paragraph(a: TextBlock, b: TextBlock) -> bool:
     last, first = a.lines[-1], b.lines[0]
     # 縦方向：すぐ下に続いていること。複数行あるなら行送りもそろっていること
     gap = first.bbox[1] - last.bbox[3]
-    if gap < -1 or gap > size * 1.5:
+    # 分数などで行が高くなると、前後のブロックが上下に重なることがある（負の隙間も許す）
+    if gap < -size * 1.5 or gap > size * 1.5:
         return False
     if len(a.lines) >= 2:
         pitch = a.lines[-1].baseline - a.lines[-2].baseline

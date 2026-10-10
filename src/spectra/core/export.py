@@ -8,9 +8,10 @@ import pymupdf
 
 from .options import OutputMode
 
-# garbage=3（重複オブジェクトの統合）は図の多い PDF で数十秒かかる割に効果が小さいため使わない。
-# 代わりに小さなオブジェクトをオブジェクトストリームにまとめて圧縮する。
-SAVE_OPTIONS = {"garbage": 1, "deflate": True, "use_objstms": 1}
+# garbage=4：不要なオブジェクトを捨て、中身（ストリーム）まで同一のオブジェクトを 1 つにまとめる。
+# 段落中の数式を元の見た目のまま移すと、元の論文のフォントがページごとに複製されるため、これでまとめる。
+# 小さなオブジェクトはオブジェクトストリームにまとめて圧縮する。
+SAVE_OPTIONS = {"garbage": 4, "deflate": True, "use_objstms": 1}
 
 
 def build_output(original: pymupdf.Document, translated: pymupdf.Document, mode: OutputMode, pages: range) -> pymupdf.Document:

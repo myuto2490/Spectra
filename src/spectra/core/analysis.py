@@ -77,6 +77,7 @@ def guard_overlaps(pa: PageAnalysis) -> None:
         for d in pa.decisions:
             if not d.translate:
                 continue
+            # 描画時と同じく、重なる行はスパン単位で消すので、判定もスパン単位で行う
             rects = [erase_rect(s.bbox) for s in d.block.spans if s.text.strip()]
             hits = [k for k in kept if _overlaps(rects, k)]
             if not hits:

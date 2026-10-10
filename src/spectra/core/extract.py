@@ -226,7 +226,9 @@ def _heading_first_line(lines: list[Line]) -> bool:
     if len(lines) < 2:
         return False
     first, rest = lines[0], lines[1:]
-    text = first.text.strip()
+    from .classify import squeeze_letter_spacing
+
+    text = squeeze_letter_spacing(first.text.strip())
     if not text or len(text.split()) > 6:
         return False
     if SECTION_NAME.match(text):
@@ -241,7 +243,16 @@ def _heading_first_line(lines: list[Line]) -> bool:
     return first_w < median * 0.5 and abs(first_c - rest_c) < size and not text.endswith((".", ","))
 
 
-def find_figure_rects(page: pymupdf.Page) -> list[Rect]:
+def read_drawings(page: pymupdf.Page) -> list[dict]:
+    """ページのベクター描画を読む（重い処理なので、ページごとに 1 回だけ呼んで使い回す）。"""
+    try:
+        return page.get_drawings()
+    except Exception:  # 壊れたコンテンツストリーム
+        log.warning("page %d: failed to read drawings", page.number, exc_info=True)
+        return []
+
+
+def find_figure_rects(page: pymupdf.Page, drawings: list[dict] | None = None) -> list[Rect]:
     """図とみなす領域（画像・まとまったベクター描画）を返す。"""
     page_area = rect_area(_to_rect(page.rect))
     rects: list[Rect] = []
@@ -253,28 +264,96 @@ def find_figure_rects(page: pymupdf.Page) -> list[Rect]:
             continue
         rects.append(r)
 
-    try:
-        drawings = page.get_drawings()
-    except Exception:  # 壊れたコンテンツストリーム
-        log.warning("page %d: failed to read drawings", page.number, exc_info=True)
-        return rects
+    if drawings is None:
+        drawings = read_drawings(page)
     if not drawings:
         return rects
-    try:
-        clusters = page.cluster_drawings(drawings=drawings)
-    except Exception:
-        clusters = []
-    for c in clusters:
-        r = _to_rect(c)
+    for r, members in cluster_drawings(drawings, _to_rect(page.rect)):
         w, h = r[2] - r[0], r[3] - r[1]
         if w < 24 or h < 24 or rect_area(r) > page_area * 0.8:
             continue
-        inside = [d for d in drawings if _inside(_to_rect(d["rect"]), r)]
         # 単純な枠（強調ボックス・背景色）は図ではない。中の文章は翻訳する
-        if len(inside) <= 2 and all(_is_plain_box(d) for d in inside):
+        if len(members) <= 2 and all(_is_plain_box(d) for d in members):
             continue
         rects.append(r)
     return rects
+
+
+def cluster_drawings(drawings: list[dict], page_rect: Rect, cell: float = 3.0) -> list[tuple[Rect, list[dict]]]:
+    """近くにあるベクター描画をまとめる（図の領域の検出）。
+
+    ページを cell pt 角のマス目に区切り、描画が占めるマスとその隣（許容誤差）を塗って、
+    つながったマスの塊ごとにまとめる。描画の数に比例する時間で済むため、
+    数万〜数十万の図形を含む散布図のページでも速い（PyMuPDF の cluster_drawings は二乗に近い）。
+    """
+    x0, y0, x1, y1 = page_rect
+    cols = max(1, int((x1 - x0) / cell) + 2)
+    rows = max(1, int((y1 - y0) / cell) + 2)
+    grid = [0] * (cols * rows)  # 0: 空き、それ以外: 描画あり
+
+    def cells(r: Rect) -> tuple[int, int, int, int]:
+        c0 = min(cols - 1, max(0, int((r[0] - x0) / cell) - 1))
+        c1 = min(cols - 1, max(0, int((r[2] - x0) / cell) + 1))
+        r0 = min(rows - 1, max(0, int((r[1] - y0) / cell) - 1))
+        r1 = min(rows - 1, max(0, int((r[3] - y0) / cell) + 1))
+        return c0, r0, c1, r1
+
+    boxes = []
+    for d in drawings:
+        r = _to_rect(d["rect"])
+        boxes.append(r)
+        c0, r0, c1, r1 = cells(r)
+        w, h = c1 - c0 + 1, r1 - r0 + 1
+        if w * h > 4 * (w + h) and w > 2 and h > 2:
+            # 大きな矩形（枠線・背景）は外周だけを塗る（中の文章の領域まで図にしないため）
+            for c in range(c0, c1 + 1):
+                grid[r0 * cols + c] = grid[r1 * cols + c] = 1
+            for rr in range(r0, r1 + 1):
+                grid[rr * cols + c0] = grid[rr * cols + c1] = 1
+        else:
+            for rr in range(r0, r1 + 1):
+                base = rr * cols
+                for c in range(c0, c1 + 1):
+                    grid[base + c] = 1
+
+    # つながったマスに番号を付ける
+    label = [0] * len(grid)
+    comp_box: list[list[float]] = []
+    current = 0
+    for start in range(len(grid)):
+        if not grid[start] or label[start]:
+            continue
+        current += 1
+        stack = [start]
+        label[start] = current
+        while stack:
+            i = stack.pop()
+            r, c = divmod(i, cols)
+            for j in (i - 1 if c else -1, i + 1 if c < cols - 1 else -1, i - cols, i + cols):
+                if 0 <= j < len(grid) and grid[j] and not label[j]:
+                    label[j] = current
+                    stack.append(j)
+        comp_box.append([])
+
+    members: dict[int, list[int]] = {}
+    for k, r in enumerate(boxes):
+        cx = min(cols - 1, max(0, int(((r[0] + r[2]) / 2 - x0) / cell)))
+        cy = min(rows - 1, max(0, int(((r[1] + r[3]) / 2 - y0) / cell)))
+        lab = label[cy * cols + cx]
+        if not lab:
+            # 大きな枠の中心は塗っていないので、外周のマスで所属を決める
+            c0, r0, _c1, _r1 = cells(r)
+            lab = label[r0 * cols + c0]
+        if lab:
+            members.setdefault(lab, []).append(k)
+
+    out: list[tuple[Rect, list[dict]]] = []
+    for idxs in members.values():
+        bb = boxes[idxs[0]]
+        for k in idxs[1:]:
+            bb = rect_union(bb, boxes[k])
+        out.append((bb, [drawings[k] for k in idxs]))
+    return out
 
 
 def _inside(inner: Rect, outer: Rect, tol: float = 1.0) -> bool:
@@ -292,7 +371,14 @@ def _is_plain_box(drawing: dict) -> bool:
     return kinds <= {"re", "qu"} or (kinds <= {"l"} and len(items) <= 4)
 
 
-def find_table_rects(page: pymupdf.Page) -> list[Rect]:
+def find_table_rects(page: pymupdf.Page, drawings: list[dict] | None = None) -> list[Rect]:
+    """罫線で囲まれた表の領域。罫線のほとんど無いページでは検出を省く（重い処理のため）。"""
+    if drawings is not None:
+        strokes = sum(1 for d in drawings for it in d.get("items", []) if it[0] in ("l", "re"))
+        # 罫線の表は多くても数百本。数千を超える図形はグラフなどの図なので、表の検出は省く
+        # （罫線の無い表と同じく、列の空きや行の揃いからの判定は引き続き行う）
+        if strokes < 4 or len(drawings) > 3000:
+            return []
     try:
         tables = page.find_tables()
     except Exception:

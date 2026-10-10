@@ -1,3 +1,5 @@
+import pymupdf
+
 from spectra.core.analysis import analyze_document
 from spectra.core.models import BlockKind, SkipReason
 from spectra.core.options import AnalysisOptions
@@ -116,3 +118,77 @@ def test_multi_line_title_is_one_segment(paper):
     seg = next(s for s in a.segments if s.kind == BlockKind.TITLE)
     assert "Learning Robust Representations for Testing with Synthetic Papers" in seg.source
     assert len(seg.regions) == 2
+
+
+def _one_page(draw) -> pymupdf.Document:
+    doc = pymupdf.open()
+    draw(doc.new_page(width=595, height=842))
+    return doc
+
+
+def test_letter_spaced_abstract_heading_and_front_matter():
+    def draw(page):
+        page.insert_text((60, 60), "Journal", fontname="hebo", fontsize=20)  # 雑誌名（大きいが 1 語）
+        page.insert_text((60, 110), "A Study of Planetary Atmospheres", fontname="tibo", fontsize=16)
+        page.insert_text((60, 130), "Using Submillimeter Data", fontname="tibo", fontsize=16)
+        page.insert_text((60, 160), "Alice Example, Bob Sample", fontname="tiro", fontsize=10)
+        page.insert_text((60, 200), "A B S T R A C T", fontname="tibo", fontsize=9)
+        y = 220
+        for _ in range(4):
+            page.insert_text((60, y), "We present new observations of the atmosphere and discuss them here.", fontname="tiro", fontsize=10)
+            y += 12
+
+    a = analyze_document(_one_page(draw))
+    kinds = {d.block.text.strip()[:12]: (d.kind, d.skip) for d in a.pages[0].decisions}
+    assert kinds["Journal"][1] == SkipReason.AUTHORS
+    assert kinds["Alice Exampl"][1] == SkipReason.AUTHORS
+    title = next(s for s in a.segments if s.kind == BlockKind.TITLE)
+    assert "Atmospheres Using Submillimeter" in title.source
+    heading = next(s for s in a.segments if s.kind == BlockKind.HEADING)
+    assert heading.source == "ABSTRACT"
+
+
+def test_math_function_names_are_not_words():
+    def draw(page):
+        page.insert_text((60, 100), "Some body text that is long enough to be a paragraph here.", fontname="tiro", fontsize=10)
+        page.insert_text((250, 300), "cos", fontname="tiro", fontsize=10)
+        page.insert_text((272, 300), "f", fontname="symb", fontsize=10)
+        page.insert_text((520, 300), "(3)", fontname="tiro", fontsize=10)
+
+    a = analyze_document(_one_page(draw))
+    eq = next(d for d in a.pages[0].decisions if d.block.text.strip().startswith("cos"))
+    assert not eq.translate
+
+
+def test_body_color_prefers_neutral_over_link_color():
+    from spectra.core.models import Span
+    from spectra.core.segment import _body_color
+
+    def span(text, color):
+        return Span(text, "Times", 10, color, 0, (0, 0, 1, 1), (0, 0))
+
+    blue = 0x0055CC
+    spans = [span("Hubbard et al., 1995; Podolak et al., 1995", blue), span("are enriched in heavy", 0x231F20)]
+    assert _body_color(spans) == 0x231F20
+
+
+def test_grid_clustering_groups_nearby_drawings_and_is_fast():
+    import time
+
+    from spectra.core.extract import cluster_drawings
+
+    doc = pymupdf.open()
+    page = doc.new_page(width=595, height=842)
+    shape = page.new_shape()
+    # 散布図：5,000 個の点が 2 つの領域に集まっている
+    for i in range(2500):
+        shape.draw_circle((60 + (i * 7) % 150, 60 + (i * 13) % 150), 0.6)
+        shape.draw_circle((360 + (i * 7) % 150, 400 + (i * 13) % 150), 0.6)
+    shape.finish(color=(0, 0, 1))
+    shape.commit()
+    drawings = page.get_drawings()
+    t = time.time()
+    clusters = cluster_drawings(drawings, (0, 0, 595, 842))
+    assert time.time() - t < 3
+    big = [r for r, _m in clusters if r[2] - r[0] > 100]
+    assert len(big) == 2

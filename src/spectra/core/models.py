@@ -172,7 +172,8 @@ class Region:
     source_chars: int  # 原文の文字数
     block_index: int
     first_baseline: float | None = None  # 原文 1 行目のベースライン
-    erase_rects: list[Rect] = field(default_factory=list)  # 消去する原文の文字の範囲（スパン単位）
+    # 各行の文字の並び（スパン）の範囲。翻訳対象外の文字と重なる行だけ、行全体ではなくスパン単位で消す
+    span_rects: list[list[Rect]] = field(default_factory=list)
 
 
 @dataclass
@@ -199,6 +200,7 @@ class PageAnalysis:
     decisions: list[BlockDecision]
     figure_rects: list[Rect] = field(default_factory=list)
     table_rects: list[Rect] = field(default_factory=list)
+    drawing_rects: list[Rect] = field(default_factory=list)  # ベクター描画の範囲（領域拡張の障害物の判定に使う）
 
 
 @dataclass

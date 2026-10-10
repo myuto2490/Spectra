@@ -32,8 +32,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Intel Mac 向けの実行環境（macos-13）は GitHub で提供終了のため、Apple シリコン向けのみ
           - { os: macos-14, name: macOS-arm64 }
-          - { os: macos-13, name: macOS-x86_64 }
           - { os: windows-latest, name: Windows-x64 }
           - { os: ubuntu-22.04, name: Linux-x86_64 }
     env:

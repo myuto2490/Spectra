@@ -285,11 +285,7 @@ class GeminiTranslator(Translator):
             raise ModelUnavailableError(message, hint="設定で別のモデルを選んでください。")
         if r.status_code == 429 or status == "RESOURCE_EXHAUSTED":
             if per_day or "per day" in low:
-                raise QuotaExceededError(
-                    "Gemini API の無料枠の 1 日あたりの上限に達しました。",
-                    hint="上限は日本時間の 16 時（夏時間は 17 時）ごろに戻ります。翻訳済みの段落はキャッシュに保存されているので、続きから翻訳できます。"
-                    "設定で別のモデルを選ぶと、別の枠で続けられる場合があります。",
-                )
+                raise QuotaExceededError()
             err = RateLimitError("無料枠の 1 分あたりの上限に達したため、少し待ってから再開します。")
             err.retry_after = retry_after  # type: ignore[attr-defined]
             raise err

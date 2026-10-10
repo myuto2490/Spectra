@@ -77,6 +77,8 @@ _RESPONSE_SCHEMA = {
 }
 # 返ってきたタグの表記ゆれ（<x id='0'></x> など）も受け付ける
 _TAG = re.compile(r"""<x\s+id\s*=\s*["']?(\d+)["']?\s*/?>(?:\s*</x>)?""", re.IGNORECASE)
+# 受信時に残すタグ：保護要素 <x id="N"/> と太字 <b> </b>
+_KEEP = re.compile(_TAG.pattern + r"|<(/?)b\s*>", re.IGNORECASE)
 _BLOCKED = {"SAFETY", "RECITATION", "PROHIBITED_CONTENT", "BLOCKLIST", "SPII", "OTHER", "LANGUAGE"}
 
 
@@ -91,6 +93,7 @@ def system_prompt(options: TranslateOptions) -> str:
 1. 文体は{style}で統一する。
 2. 原文の意味を省略・追加せずに訳す。各要素は独立した段落・見出し・キャプションなので、要素をまたいで文を移動しない。
 3. <x id="0"/> のようなタグは数式・記号・引用番号を表す。タグは一字一句変えずに、すべて 1 回ずつ訳文に含め、日本語の語順で自然な位置に置く。タグの中身を推測して書き換えない。
+   <b>…</b> で囲まれた部分は原文の太字（段落先頭の小見出しなど）。対応する訳語を同じ <b>…</b> で囲む。
 4. 専門用語は分野で一般的な日本語訳を使う。定訳のない用語、手法名・モデル名・データセット名・人名・製品名は原語のまま残す。
 5. 略語（例: CNN, BLEU）、変数名、URL、メールアドレス、コードは原文のまま残す。
 6. 見出しの章番号（例: 3.2）や「Figure 1:」などの番号は残し、「Figure」は「図」、「Table」は「表」と訳す。
@@ -307,9 +310,12 @@ def _unescape(markup: str) -> str:
 def _escape_text(text: str) -> str:
     """受信した訳文を、タグ以外の部分だけ XML エスケープしたマークアップに戻す。"""
     out, pos = [], 0
-    for m in _TAG.finditer(text):
+    for m in _KEEP.finditer(text):
         out.append(text[pos : m.start()].replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
-        out.append(placeholder(int(m.group(1))))
+        if m.group(1) is not None:
+            out.append(placeholder(int(m.group(1))))
+        else:
+            out.append("</b>" if m.group(2) else "<b>")
         pos = m.end()
     out.append(text[pos:].replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
     return "".join(out)

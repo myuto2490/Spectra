@@ -380,3 +380,11 @@ def test_thinking_levels_are_tried_in_order():
 
     gemini(handler, model="gemini-3.6-flash").translate(["a"])
     assert sent == ["minimal", "low"]
+
+
+def test_bold_tags_survive_round_trip():
+    calls = []
+    t = gemini(echo_handler(lambda s: s.replace("Results.", "結果。"), calls=calls))
+    out = t.translate(["<b>Results.</b> We find &lt;1 <x id=\"0\"/>"])[0]
+    assert calls[0]["items"][0]["text"] == '<b>Results.</b> We find <1 <x id="0"/>'
+    assert out == '<b>結果。</b> We find &lt;1 <x id="0"/>'

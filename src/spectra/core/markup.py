@@ -1,6 +1,8 @@
 """翻訳 API に渡すマークアップの生成と解析。
 
 保護対象（インライン数式・引用番号など）は空要素 ``<x id="N"/>`` で表す。
+段落の中の太字（"Results." のような段落先頭の小見出しなど）は ``<b>…</b>`` で囲み、
+訳文でも対応する語を同じタグで囲んでもらう。
 翻訳エンジン（Gemini）にはタグを一字一句変えずに残し、日本語の語順に合う位置へ置くよう指示する。
 表記ゆれやタグの欠落があっても数式を失わないよう、解析側で補正する。
 """
@@ -12,6 +14,9 @@ import re
 from dataclasses import dataclass
 
 _TAG = re.compile(r"""<x\s+id\s*=\s*["']?(\d+)["']?\s*/?>(?:\s*</x>)?""", re.IGNORECASE)
+_BOLD = re.compile(r"<(/?)b\s*>", re.IGNORECASE)
+_MARK = re.compile(_TAG.pattern + r"|" + _BOLD.pattern, re.IGNORECASE)
+BOLD_OPEN, BOLD_CLOSE = "<b>", "</b>"
 _STRAY_CLOSE = re.compile(r"</x\s*>", re.IGNORECASE)
 _ANY_TAG = re.compile(r"</?[a-zA-Z][^<>]*>")
 
@@ -30,6 +35,7 @@ class Token:
 
     text: str = ""
     run_id: int | None = None
+    bold: bool = False
 
 
 def parse(markup: str, known_ids: set[int]) -> list[Token]:
@@ -42,14 +48,18 @@ def parse(markup: str, known_ids: set[int]) -> list[Token]:
     tokens: list[Token] = []
     seen: set[int] = set()
     pos = 0
-    for m in _TAG.finditer(markup):
-        _append_text(tokens, markup[pos : m.start()])
+    bold = False
+    for m in _MARK.finditer(markup):
+        _append_text(tokens, markup[pos : m.start()], bold)
+        pos = m.end()
+        if m.group(1) is None:  # <b> / </b>
+            bold = m.group(2) == ""
+            continue
         rid = int(m.group(1))
         if rid in known_ids and rid not in seen:
-            tokens.append(Token(run_id=rid))
+            tokens.append(Token(run_id=rid, bold=bold))
             seen.add(rid)
-        pos = m.end()
-    _append_text(tokens, markup[pos:])
+    _append_text(tokens, markup[pos:], bold)
     missing = sorted(known_ids - seen)
     for rid in missing:
         tokens.append(Token(text=" "))
@@ -57,14 +67,14 @@ def parse(markup: str, known_ids: set[int]) -> list[Token]:
     return tokens
 
 
-def _append_text(tokens: list[Token], raw: str) -> None:
+def _append_text(tokens: list[Token], raw: str, bold: bool = False) -> None:
     if not raw:
         return
     raw = _STRAY_CLOSE.sub("", raw)
     raw = _ANY_TAG.sub("", raw)
     text = html.unescape(raw)
     if text:
-        tokens.append(Token(text=text))
+        tokens.append(Token(text=text, bold=bold))
 
 
 def to_plain(markup: str) -> str:

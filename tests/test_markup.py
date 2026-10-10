@@ -26,3 +26,9 @@ def test_open_close_pair_and_entities():
 def test_escape_and_plain():
     m = escape("a < b & c") + placeholder(3)
     assert to_plain(m) == "a < b & c"
+
+
+def test_bold_ranges():
+    tokens = parse('<b>結果。</b>本文 <x id="0"/> と<B >強調</b >', {0})
+    assert [(t.text, t.bold) for t in tokens if t.text.strip()] == [("結果。", True), ("本文 ", False), (" と", False), ("強調", True)]
+    assert to_plain("<b>Results.</b> We find") == "Results. We find"

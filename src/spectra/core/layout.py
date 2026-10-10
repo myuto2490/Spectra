@@ -124,8 +124,9 @@ def is_cjk(ch: str) -> bool:
 
 def build_atoms(tokens: list[Token], runs: dict[int, InlineRun], fonts: FontBook, bold: bool) -> list[Atom]:
     atoms: list[Atom] = []
-    text_role = FontRole.LATIN_BOLD if bold else FontRole.LATIN
     for tok in tokens:
+        tok_bold = bold or tok.bold  # 段落全体の太字、または <b>…</b> で囲まれた部分
+        text_role = FontRole.LATIN_BOLD if tok_bold else FontRole.LATIN
         if tok.run_id is not None:
             run = runs.get(tok.run_id)
             if run is not None and run.text.strip():
@@ -133,7 +134,7 @@ def build_atoms(tokens: list[Token], runs: dict[int, InlineRun], fonts: FontBook
                 atom.run_id = tok.run_id
                 atoms.append(atom)
             continue
-        _text_atoms(tok.text, fonts, text_role, bold, atoms)
+        _text_atoms(tok.text, fonts, text_role, tok_bold, atoms)
     # 先頭・末尾・連続する空白を整理
     cleaned: list[Atom] = []
     for a in atoms:

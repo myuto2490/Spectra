@@ -20,6 +20,7 @@ import httpx
 
 from ..core.markup import placeholder
 from ..core.options import Formality, TranslateOptions
+from ..core.textnorm import is_degenerate
 from .base import Translator, Usage
 from .errors import (
     AuthenticationError,
@@ -194,6 +195,10 @@ class GeminiTranslator(Translator):
         except _BlockedError:
             result = None
         if result is not None and len(result) == len(texts):
+            # 出力が崩れた項目は、1 件ずつ訳し直す（それでも崩れれば原文のまま残す）
+            if len(texts) > 1:
+                for i in [i for i, t in enumerate(result) if t is None]:
+                    result[i] = self._translate_batch([texts[i]])[0]
             return result
         # 件数が合わない・ブロックされた場合は分割してやり直す（1 件でも訳せなければ None）
         if len(texts) == 1:
@@ -250,7 +255,7 @@ class GeminiTranslator(Translator):
                 by_id.setdefault(obj["id"], obj["text"])
         if len(by_id) != expected or set(by_id) != set(range(expected)):
             return None
-        return [_escape_text(by_id[i]) for i in range(expected)]
+        return [None if is_degenerate(by_id[i]) else _escape_text(by_id[i]) for i in range(expected)]
 
     # -- 確認 ------------------------------------------------------------
 
@@ -285,11 +290,7 @@ class GeminiTranslator(Translator):
             raise ModelUnavailableError(message, hint="設定で別のモデルを選んでください。")
         if r.status_code == 429 or status == "RESOURCE_EXHAUSTED":
             if per_day or "per day" in low:
-                raise QuotaExceededError(
-                    "Gemini API の無料枠の 1 日あたりの上限に達しました。",
-                    hint="上限は日本時間の 16 時（夏時間は 17 時）ごろに戻ります。翻訳済みの段落はキャッシュに保存されているので、続きから翻訳できます。"
-                    "設定で別のモデルを選ぶと、別の枠で続けられる場合があります。",
-                )
+                raise QuotaExceededError()
             err = RateLimitError("無料枠の 1 分あたりの上限に達したため、少し待ってから再開します。")
             err.retry_after = retry_after  # type: ignore[attr-defined]
             raise err

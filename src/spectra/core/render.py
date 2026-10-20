@@ -15,7 +15,7 @@ import pymupdf
 
 from .fontbook import FontBook, FontRole
 from .layout import Frame, LayoutResult, PlacedGlyphs, PlacedRun, layout
-from .markup import parse
+from .markup import parse, to_plain
 from .models import (
     DocumentAnalysis,
     InlineRun,
@@ -30,6 +30,7 @@ from .models import (
 )
 from .options import RenderOptions
 from .redact import erase_text, stub_forms
+from .scan import cover, cover_rect, image_dpi, is_scanned, paper_color
 from .textnorm import normalize_translation
 
 log = logging.getLogger(__name__)
@@ -65,6 +66,15 @@ def _used_text(segments: list[Segment]) -> str:
         for run in seg.runs.values():
             chars.update(run.text)
     return "".join(sorted(chars))
+
+
+def _unchanged(seg: Segment) -> bool:
+    """訳文が原文と同じ（固有名詞だけの見出しなど）。描き直さずに原文を残す。"""
+    return to_plain(normalize_translation(seg.translated or "")).split() == to_plain(seg.source).split()
+
+
+def _rendered(segments: list[Segment]) -> list[Segment]:
+    return [s for s in segments if s.translated and not _unchanged(s)]
 
 
 def _complement(page: Rect, keep: list[Rect]) -> list[Rect]:
@@ -173,11 +183,20 @@ class Renderer:
         self._kept: dict[int, list[Rect]] = {}
         self._regions_by_page: dict[int, list[tuple[str, Rect]]] = {}
         self._pa = {pa.page: pa for pa in analysis.pages}
+        self._scanned: dict[int, bool] = {}
 
     def geometry(self, pno: int) -> PageGeometry:
         if pno not in self._geo:
             self._geo[pno] = PageGeometry(self.doc[pno], self._pa[pno])
         return self._geo[pno]
+
+    def scanned(self, pno: int) -> bool:
+        """スキャンしたページ（見えている原文は画像で、文字は透明な OCR テキスト）か。"""
+        if pno not in self._scanned:
+            self._scanned[pno] = is_scanned((self.source or self.doc)[pno])
+            if self._scanned[pno]:
+                log.info("page %d: scanned page, covering source lines", pno + 1)
+        return self._scanned[pno]
 
     # -- 組版 ------------------------------------------------------------
 
@@ -212,7 +231,7 @@ class Renderer:
     def _translated_rects(self, pno: int) -> list[tuple[str, Rect]]:
         if pno not in self._regions_by_page:
             self._regions_by_page[pno] = [
-                (s.id, r.rect) for s in self.analysis.segments if s.translated for r in s.regions if r.page == pno
+                (s.id, r.rect) for s in _rendered(self.analysis.segments) for r in s.regions if r.page == pno
             ]
         return self._regions_by_page[pno]
 
@@ -264,7 +283,7 @@ class Renderer:
         erase: dict[int, list[Rect]] = defaultdict(list)
         moves: list[tuple[InlineRun, PlacedRun]] = []
         transplants: list[tuple[InlineRun, PlacedRun]] = []
-        segments = [s for s in self.analysis.segments if s.translated]
+        segments = _rendered(self.analysis.segments)
         self.fonts.prepare(_used_text(segments))
         total = len(segments) + len(self._pa)
         done = 0
@@ -299,7 +318,12 @@ class Renderer:
                 raise InterruptedError
             page = self.doc[pno]
             if erase.get(pno):
+                scanned = self.scanned(pno)  # 消す前に判定する
+                paper = paper_color(page) if scanned else None
                 self._erase(page, erase[pno])
+                if paper:
+                    # 透明な文字を消しても、画像の中の原文は見えたまま残るので紙の色で塗る
+                    cover(page, [cover_rect(r) for r in erase[pno]], paper)
             originals = [d for d, _, _ in vectors if d["_page"] == pno]
             if originals:
                 self._erase_vectors(page, originals)
@@ -331,7 +355,8 @@ class Renderer:
         """
         by_page: dict[int, list[Rect]] = defaultdict(list)
         for run, _pr in transplants:
-            by_page[run.page].append(inflate(run.bbox, 1.0))  # type: ignore[arg-type]
+            if not self.scanned(run.page):  # type: ignore[arg-type]
+                by_page[run.page].append(inflate(run.bbox, 1.0))  # type: ignore[arg-type]
         if not by_page or self.source is None:
             return {}
         stamp_doc = pymupdf.open()
@@ -366,9 +391,25 @@ class Renderer:
         target = pymupdf.Rect(pr.x + (x0 - ox) * f, pr.baseline + (y0 - oy) * f, pr.x + (x1 - ox) * f, pr.baseline + (y1 - oy) * f)
         if target.is_empty:
             return
+        if self.scanned(run.page):  # type: ignore[arg-type]
+            self._transplant_scanned(page, run, target)
+            return
         src_doc, src_page = stamps.get(run.page, (self.source, run.page))  # type: ignore[arg-type]
         try:
             page.show_pdf_page(target, src_doc, src_page, clip=pymupdf.Rect(run.bbox), keep_proportion=False, overlay=True)
+        except Exception:
+            log.warning("page %d: could not place inline math", page.number + 1, exc_info=True)
+
+    def _transplant_scanned(self, page: pymupdf.Page, run: InlineRun, target: pymupdf.Rect) -> None:
+        """スキャンしたページの数式は、画像の該当部分を切り出して配置する。
+
+        ページをそのまま貼り込むと、透明な OCR テキストも一緒に入り、文字の抽出に紛れ込む。
+        """
+        src = self.source[run.page]  # type: ignore[index]
+        dpi = min(600.0, max(150.0, image_dpi(src)))
+        try:
+            pix = src.get_pixmap(clip=pymupdf.Rect(run.bbox), dpi=round(dpi), alpha=False)
+            page.insert_image(target, pixmap=pix, keep_proportion=False, overlay=True)
         except Exception:
             log.warning("page %d: could not place inline math", page.number + 1, exc_info=True)
 

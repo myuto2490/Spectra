@@ -7,6 +7,15 @@
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-10-21
+
+### 修正
+- スキャンした PDF（ページ全体の画像に透明な OCR テキストを重ねたもの）で、画像の中の英文が消えずに訳文と重なって表示される問題を修正。
+  原文の行を紙の色で塗りつぶしてから訳文を組み、段落の中の数式は画像から切り出して配置します
+- 透明な OCR テキストが二重に付いたページで、同じ段落が重ねて訳される問題と、「T T T」「_ 1」などの断片がページ末尾に繰り返し現れる問題を修正
+- 訳文に `<math><mi>p</mi></math>` などの MathML・HTML のタグや、崩れた結合文字の連続が混じる問題を修正（崩れた訳文は 1 件ずつ訳し直し、それでも崩れていれば原文のまま残します）
+- Gemini の 1 日の無料枠を使い切ったときに、「今月の無料翻訳枠を使い切りました」という誤った見出しが表示される問題を修正
+
 ## [0.1.2] - 2026-10-10
 
 ### 修正
@@ -53,7 +62,8 @@
 **コマンドラインツール**
 - `spectra translate` / `spectra estimate` / `spectra key`
 
-[Unreleased]: https://github.com/myuto2490/Spectra/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/myuto2490/Spectra/compare/v0.1.3...HEAD
 [0.1.0]: https://github.com/myuto2490/Spectra/releases/tag/v0.1.0
 [0.1.1]: https://github.com/myuto2490/Spectra/compare/v0.1.0...v0.1.1
 [0.1.2]: https://github.com/myuto2490/Spectra/compare/v0.1.1...v0.1.2
+[0.1.3]: https://github.com/myuto2490/Spectra/compare/v0.1.2...v0.1.3

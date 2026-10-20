@@ -229,3 +229,30 @@ def test_centered_titles_are_centered_even_when_wide():
     title = next(s for s in a.segments if s.kind == BlockKind.TITLE)
     assert len(title.regions) == 2
     assert {r.style.align.value for r in title.regions} == {"center"}
+
+
+def test_duplicate_text_layers_are_translated_once():
+    # スキャンに OCR テキストを二重に付けた PDF（同じ位置に、少しずれて同じ文字が重なる）
+    from pdf_factory import make_scanned
+
+    doc = make_scanned()
+    page = doc[0]
+    for i, line in enumerate(["Learning Robust Representations for Testing", "with Synthetic Papers"]):
+        w = pymupdf.get_text_length(line, fontname="tibo", fontsize=17)
+        page.insert_text(((595 - w) / 2, 73.5 + i * 20), line, fontname="tibo", fontsize=17, render_mode=3)
+    a = analyze_document(doc)
+    titles = [s for s in a.segments if "Learning Robust" in s.source]
+    assert len(titles) == 1
+
+
+def test_wordless_block_in_front_matter_is_not_a_title():
+    # 表紙の図の中に OCR が拾った記号の断片
+    doc = pymupdf.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_text((150, 100), "Inverse Methods for Sounding", fontname="tibo", fontsize=24)
+    page.insert_text((400, 300), "; - ' A", fontname="tibo", fontsize=20)
+    page.insert_text((60, 400), "Abstract", fontname="tibo", fontsize=12)
+    page.insert_text((60, 420), "We study inverse methods for remote sounding of the atmosphere.", fontname="tiro", fontsize=10)
+    a = analyze_document(doc)
+    assert _find(a, "Inverse Methods").translate
+    assert _find(a, "; - ' A").skip == SkipReason.NO_WORDS

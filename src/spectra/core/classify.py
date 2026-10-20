@@ -288,6 +288,8 @@ class DocumentClassifier:
             if _ABSTRACT.match(st.text):
                 self.seen_abstract = True
             elif kind == BlockKind.TITLE:
+                if st.words == 0:
+                    return SkipReason.NO_WORDS  # ロゴや図の中の記号（スキャンの読み取り誤りなど）
                 self.seen_title = True
                 return None
             elif self.seen_title and st.words <= 15 and not _SENTENCE.search(st.text):

@@ -143,6 +143,21 @@ def test_blocked_item_becomes_none():
     assert gemini(handler).translate(["ok", "bad"]) == ["訳", None]
 
 
+def test_degenerate_item_is_retried_alone():
+    garbage = "".join(chr(c) for c in range(0x0334, 0x0350))
+    calls = []
+
+    def handler(req):
+        items = json.loads(json.loads(req.content)["contents"][0]["parts"][0]["text"])
+        calls.append(len(items))
+        if len(items) > 1:
+            return gemini_reply([{"id": i["id"], "text": "訳" + (garbage if i["text"] == "b" else "")} for i in items])
+        return gemini_reply([{"id": 0, "text": "訳し直し"}])
+
+    assert gemini(handler).translate(["a", "b"]) == ["訳", "訳し直し"]
+    assert calls == [2, 1]
+
+
 def test_thinking_config_dropped_if_unsupported():
     calls = []
 

@@ -7,6 +7,8 @@
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-10-21
+
 ### 修正
 - スキャンした PDF（ページ全体の画像に透明な OCR テキストを重ねたもの）で、画像の中の英文が消えずに訳文と重なって表示される問題を修正。
   原文の行を紙の色で塗りつぶしてから訳文を組み、段落の中の数式は画像から切り出して配置します
@@ -60,7 +62,8 @@
 **コマンドラインツール**
 - `spectra translate` / `spectra estimate` / `spectra key`
 
-[Unreleased]: https://github.com/myuto2490/Spectra/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/myuto2490/Spectra/compare/v0.1.3...HEAD
 [0.1.0]: https://github.com/myuto2490/Spectra/releases/tag/v0.1.0
 [0.1.1]: https://github.com/myuto2490/Spectra/compare/v0.1.0...v0.1.1
 [0.1.2]: https://github.com/myuto2490/Spectra/compare/v0.1.1...v0.1.2
+[0.1.3]: https://github.com/myuto2490/Spectra/compare/v0.1.2...v0.1.3

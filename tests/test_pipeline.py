@@ -139,3 +139,43 @@ def test_partial_translation_keeps_untranslated_paragraphs(paper_path, paper):
     assert "擬似" in out[0].get_text()
     assert out[2].get_text() == paper[2].get_text()  # 訳せなかったページは完全に元のまま
     assert result.qa.ok
+
+
+def _invisible_chars(page: pymupdf.Page) -> int:
+    return sum(len(t["chars"]) for t in page.get_texttrace() if t["type"] == 3)
+
+
+def test_scanned_pdf_covers_source_text_in_image(tmp_path):
+    from pdf_factory import PAPER, make_scanned
+
+    from spectra.core.scan import is_scanned
+
+    path = tmp_path / "scanned.pdf"
+    src = make_scanned(str(path))
+    assert is_scanned(src[0])
+
+    class Short(DummyTranslator):
+        def _translate_batch(self, texts):
+            return ["訳。" + "".join(_TAG.findall(t)) for t in texts]
+
+    from spectra.translate.dummy import _TAG
+
+    result = TranslationJob(str(path), Short()).run()
+    out = pymupdf.open(stream=result.pdf, filetype="pdf")
+    assert "訳" in out[0].get_text()
+    # 概要の右側（短い訳文が届かない範囲）では、画像の中の英文が紙の色で塗りつぶされている
+    pix = out[0].get_pixmap(clip=pymupdf.Rect(300, 190, 490, 240), dpi=72)
+    paper = tuple(round(v * 255) for v in PAPER)
+    s = pix.samples
+    dark = sum(1 for i in range(0, len(s), pix.n) if sum(s[i : i + 3]) < sum(paper) - 120)
+    assert dark == 0
+    assert all(abs(a - b) <= 6 for a, b in zip(s[:3], paper))
+    # 段落中の数式は画像から切り出して移し、透明な OCR テキストは持ち込まない
+    assert _invisible_chars(out[0]) < _invisible_chars(src[0])
+    assert len(out[0].get_image_info()) > len(src[0].get_image_info())
+
+
+def test_scanned_detection_ignores_normal_pages(paper):
+    from spectra.core.scan import is_scanned
+
+    assert not any(is_scanned(p) for p in paper)

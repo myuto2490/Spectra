@@ -50,6 +50,7 @@ def analyze_document(
         if progress:
             progress(i + 1, len(pages))
     for pa in analyses:
+        drop_duplicate_layers(pa)
         guard_overlaps(pa)
     segments = build_segments(
         [(pa.width, pa.decisions) for pa in analyses],
@@ -60,6 +61,23 @@ def analyze_document(
 
 
 _FRAGMENT_REASONS = (SkipReason.MATH, SkipReason.NO_WORDS, SkipReason.NUMERIC)
+
+
+def drop_duplicate_layers(pa: PageAnalysis) -> None:
+    """同じ位置に重ねた文字の層（スキャンに二重に付けた OCR テキストなど）は、最初の 1 つだけ訳す。
+
+    重なった層の文字は、最初の段落を消すときに一緒に消える。
+    """
+    kept: list = []
+    for d in list(pa.decisions):
+        if d.translate and any(k.translate and _same_place(d.block.bbox, k.block.bbox) for k in kept):
+            pa.decisions.remove(d)
+        else:
+            kept.append(d)
+
+
+def _same_place(a, b) -> bool:
+    return rect_area(rect_intersect(a, b)) >= max(rect_area(a), rect_area(b)) * 0.8
 
 
 def guard_overlaps(pa: PageAnalysis) -> None:

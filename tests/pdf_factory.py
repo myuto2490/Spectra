@@ -156,3 +156,27 @@ def _page_three(page: pymupdf.Page) -> None:
     page.insert_text((520, 320), "(2)", fontname=BODY, fontsize=SIZE)
     # 「Figure 1 shows」で始まる本文（キャプションではない）
     page.insert_text((56, 350), "Figure 1 shows that the loss decreases steadily during training.", fontname=BODY, fontsize=SIZE)
+
+
+PAPER = (0.96, 0.94, 0.86)  # スキャンした紙の色
+
+
+def make_scanned(path: str | None = None) -> pymupdf.Document:
+    """スキャンした論文を模した PDF：見える文字はページ全体の画像で、その上に透明な OCR テキストを重ねる。"""
+    src = make_paper()
+    doc = pymupdf.open()
+    for sp in src:
+        sp.draw_rect(sp.rect, color=None, fill=PAPER, overlay=False)
+        pix = sp.get_pixmap(dpi=150)
+        page = doc.new_page(width=sp.rect.width, height=sp.rect.height)
+        page.insert_image(page.rect, pixmap=pix)
+        for block in sp.get_text("dict")["blocks"]:
+            for line in block.get("lines", []):
+                if line["dir"] != (1.0, 0.0):
+                    continue
+                for span in line["spans"]:
+                    font = MATH if "Symbol" in span["font"] else BOLD if "Bold" in span["font"] else BODY
+                    page.insert_text(span["origin"], span["text"], fontname=font, fontsize=span["size"], render_mode=3)
+    if path:
+        doc.save(path)
+    return doc

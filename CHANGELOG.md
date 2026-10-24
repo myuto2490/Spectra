@@ -7,6 +7,8 @@
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-10-24
+
 ### 修正
 - v0.1.3 の配布版が起動しない問題を修正（ビルド時に入った PyMuPDF 2.0 が、同梱されていないレイアウト解析用のファイルを起動時に読み込もうとして失敗していました。PyMuPDF を 1.x に固定しました）
 
@@ -65,8 +67,9 @@
 **コマンドラインツール**
 - `spectra translate` / `spectra estimate` / `spectra key`
 
-[Unreleased]: https://github.com/myuto2490/Spectra/compare/v0.1.3...HEAD
+[Unreleased]: https://github.com/myuto2490/Spectra/compare/v0.1.4...HEAD
 [0.1.0]: https://github.com/myuto2490/Spectra/releases/tag/v0.1.0
 [0.1.1]: https://github.com/myuto2490/Spectra/compare/v0.1.0...v0.1.1
 [0.1.2]: https://github.com/myuto2490/Spectra/compare/v0.1.1...v0.1.2
 [0.1.3]: https://github.com/myuto2490/Spectra/compare/v0.1.2...v0.1.3
+[0.1.4]: https://github.com/myuto2490/Spectra/compare/v0.1.3...v0.1.4

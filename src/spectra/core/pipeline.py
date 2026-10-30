@@ -88,6 +88,7 @@ class JobResult:
     segments: int
     translated_chars: int
     elapsed: float
+    untranslated: int = 0  # 無料枠超過などで原文のまま残した段落の数
     warnings: list[str] = field(default_factory=list)
 
 
@@ -268,5 +269,6 @@ class TranslationJob:
             segments=len(a.segments),
             translated_chars=sum(len(s.source) for s in a.segments),
             elapsed=time.monotonic() - started,
+            untranslated=untranslated,
             warnings=warnings,
         )

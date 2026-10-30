@@ -32,6 +32,8 @@ class Settings:
     verify_layout: bool = True
     use_cache: bool = True
     appearance: str = "auto"  # auto / light / dark
+    metadata_lookup: bool = False  # 書誌情報を Crossref / arXiv に照会する（DOI・arXiv ID だけを送る）
+    metadata_lookup_asked: bool = False  # 照会してよいかを一度尋ねたか
     last_open_dir: str = ""
     last_save_dir: str = ""
     window: dict = field(default_factory=dict)

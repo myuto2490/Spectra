@@ -180,3 +180,43 @@ def make_scanned(path: str | None = None) -> pymupdf.Document:
     if path:
         doc.save(path)
     return doc
+
+
+def make_library_paper(
+    path: str | None = None,
+    *,
+    title: str = "Attention Is All You Need",
+    header: str = "",
+    body: list[str] | None = None,
+    info: dict | None = None,
+    xmp: str = "",
+    seed: int = 0,
+) -> pymupdf.Document:
+    """書誌情報の抽出を試す 1 ページの論文。
+
+    header はタイトルの上に 9pt で書く前置き（雑誌名など）、body はタイトル・著者の下の行（DOI 表記など）。
+    seed を変えると本文（＝ファイルのハッシュ）だけが変わる。
+    """
+    doc = pymupdf.open()
+    page = doc.new_page(width=595, height=842)
+    y = 60.0
+    if header:
+        page.insert_text((56, y), header, fontname=BODY, fontsize=9)
+        y += 30
+    if title:
+        page.insert_text((56, y), title, fontname=BOLD, fontsize=18)
+        y += 40
+    page.insert_text((56, y), "Ashish Vaswani   Noam Shazeer", fontname=BODY, fontsize=SIZE)
+    y += 30
+    for line in body or []:
+        page.insert_text((56, y), line, fontname=BODY, fontsize=SIZE)
+        y += PITCH
+    write_paragraph(page, LEFT_COL, y + 20, LOREM[seed % len(LOREM) :] + LOREM, 6)
+    page.insert_text((520, 40), "12", fontname=BODY, fontsize=24)  # 大きなページ番号（タイトルと誤認しない）
+    if info:
+        doc.set_metadata(info)
+    if xmp:
+        doc.set_xml_metadata(xmp)
+    if path:
+        doc.save(path)
+    return doc

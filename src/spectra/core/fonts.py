@@ -11,6 +11,7 @@ from functools import lru_cache
 _SUBSET_PREFIX = re.compile(r"^[A-Z]{6}\+")
 
 # 数式専用フォント。CMR（Computer Modern Roman）は本文にも使われるため含めない。
+# Adv* は Elsevier の古い組版の記号フォント（"=" が "¼"、"−" が "\x03"、根号の上線が "ﬃ" として取り出される）
 _MATH_FONT = re.compile(
     r"""^(
         CMMI | CMBSY | CMSY | CMEX | CMMIB | MSAM | MSBM | EUFM | EUFB | EUSM | EURM | RSFS |
@@ -19,7 +20,8 @@ _MATH_FONT = re.compile(
         stix.*math | xits.*math | cambria.?math | latinmodern.?math | asana.?math |
         tex.?gyre.*math | fira.?math | garamond.?math | libertinus.?math |
         MTSY | MTMI | MTEX | MT.?Extra | Euclid | esint | stmary | wasy | bbm | dsrom |
-        Symbol | SymbolMT | MathematicalPi | Mathematica | MathJax | KaTeX_(?!Main)
+        Symbol | SymbolMT | MathematicalPi | Mathematica | MathJax | KaTeX_(?!Main) |
+        Adv(P[0-9A-F]{6} | PSMP | PSSym | PSMSAM | PSMSBM | MTSY | MTMI | MTEX | Pi\d)
     )""",
     re.IGNORECASE | re.VERBOSE,
 )

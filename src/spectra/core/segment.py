@@ -168,13 +168,34 @@ def _pieces_for_line(line: Line, base_size: float, body_font: str, has_math: boo
         for i, p in enumerate(pieces):
             if p.protected or not _OPERATOR_ONLY.match(p.text) or not p.text.strip():
                 continue
+            # 数式の直後の句読点（". Black…" の "."）は文の区切りなので数式に含めない
+            following = pieces[i + 1].text if i + 1 < len(pieces) else ""
+            if p.text.strip() in (".", ",", ";", ":") and (p.text[-1:].isspace() or following[:1].isspace()):
+                continue
             left = i > 0 and pieces[i - 1].protected and not _CITATION.fullmatch(pieces[i - 1].text)
             right = i + 1 < len(pieces) and pieces[i + 1].protected and not _CITATION.fullmatch(pieces[i + 1].text)
             cm_font = base_name(p.span.font).upper().startswith(("CMR", "LMROMAN", "CMBX"))
             if (left and right) or ((left or right) and (cm_font or len(p.text.strip()) <= 1)):
                 p.protected = True
                 changed = True
+
+    # 下付きの添字が直に付いた斜体の名前（noise_ν、sky_trans_ν など）は変数名なので数式に含める
+    for i, p in enumerate(pieces):
+        lowered = p.span.origin[1] - baseline > base_size * 0.1
+        if not (p.protected and is_math_font(p.span.font) and lowered) or i == 0:
+            continue
+        name = pieces[i - 1]
+        if name.protected or not _italic_word(name) or p.span.bbox[0] - name.span.bbox[2] > 0.5:
+            continue
+        j = i - 1
+        while j >= 0 and not pieces[j].protected and _italic_word(pieces[j]):
+            pieces[j].protected = True
+            j -= 1
     return pieces
+
+
+def _italic_word(p: _Piece) -> bool:
+    return p.exact and p.span.is_italic and not is_math_font(p.span.font) and bool(re.fullmatch(r"[A-Za-z\s]+", p.text))
 
 
 def _inline_piece(p: _Piece, base_size: float) -> InlinePiece:
@@ -292,7 +313,8 @@ def _make_run(pieces: list[_Piece], base_size: float, page: int) -> InlineRun:
     inline = [_inline_piece(p, base_size) for p in items]
     inline[0] = replace(inline[0], text=inline[0].text.lstrip())
     inline[-1] = replace(inline[-1], text=inline[-1].text.rstrip())
-    if all(p.exact for p in items) and base_size > 0:
+    # 間に補った空白は位置を持たないが、塊の位置の判断には関係しない
+    if all(p.exact or not p.text.strip() for p in items) and base_size > 0:
         visible = [p for p in items if p.text.strip()]
         x0 = min(p.span.bbox[0] for p in visible)
         x1 = max(p.span.bbox[2] for p in visible)

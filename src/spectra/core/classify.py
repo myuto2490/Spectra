@@ -25,6 +25,7 @@ from .models import (
     BlockKind,
     PageAnalysis,
     SkipReason,
+    Span,
     TextBlock,
     inflate,
     overlap_ratio,
@@ -54,6 +55,7 @@ _CAPTION = re.compile(
 # 擬似コード（アルゴリズムの枠）の行： "1:" "12:" や "Input:" "Require:" で始まる
 _PSEUDOCODE = re.compile(r"^\s*(\d{1,2}:|(input|output|require|ensure|return)\s*:)", re.IGNORECASE)
 _EQUATION_SIGN = re.compile(r"[=≈≤≥<>∝≡]")
+_EQUATION_NUMBER = re.compile(r"\S\s*\(\d{1,3}[a-z]?\)\s*$")
 _LONG_WORD = re.compile(r"[A-Za-z]{4,}")
 _ABSTRACT = re.compile(r"^\s*(abstract|summary)\b", re.IGNORECASE)
 _ABSTRACT_HEADING = re.compile(r"^\s*(abstract|summary)\s*[.:—-]?\s*$", re.IGNORECASE)
@@ -69,7 +71,7 @@ class BlockStats:
 
     __slots__ = (
         "chars", "math_chars", "mono_chars", "letters", "digits", "cjk",
-        "words", "size", "all_bold", "rotated", "text",
+        "words", "size", "all_bold", "rotated", "text", "has_math", "italic_only",
     )
 
     def __init__(self, block: TextBlock, body_font: str = ""):
@@ -78,20 +80,26 @@ class BlockStats:
         size_weight: dict[float, int] = defaultdict(int)
         plain_parts: list[str] = []
         bold_chars = 0
-        has_math = any(is_math_font(s.font) for s in block.spans)
+        has_math = self.has_math = any(is_math_font(s.font) for s in block.spans)
+        upright = 0  # 立体（斜体でない）の英字の数
+        main_size = _main_size(block) if has_math else 0.0
         for span in block.spans:
             t = span.text.strip()
             n = len(t)
             if not n:
                 continue
             self.chars += n
-            if is_math_font(span.font) or (has_math and is_math_span(span.font, span.text, body_font)):
+            if is_math_font(span.font) or (
+                has_math and (is_math_span(span.font, span.text, body_font) or _variable_like(span, main_size))
+            ):
                 self.math_chars += n
                 continue
             if is_mono_font(span.font):
                 self.mono_chars += n
             if span.is_bold:
                 bold_chars += n
+            if not span.is_italic:
+                upright += sum(c.isalpha() for c in t)
             size_weight[round(span.size, 1)] += n
             plain_parts.append(span.text)
         plain = squeeze_letter_spacing(" ".join(plain_parts))
@@ -106,6 +114,24 @@ class BlockStats:
         non_math = self.chars - self.math_chars
         self.all_bold = non_math > 0 and bold_chars >= non_math * 0.9
         self.rotated = any(abs(ln.direction[1]) > 1e-3 or ln.direction[0] < 0 for ln in block.lines)
+        self.italic_only = self.letters > 0 and upright == 0
+
+
+def _main_size(block: TextBlock) -> float:
+    weight: dict[float, int] = defaultdict(int)
+    for s in block.spans:
+        if not is_math_font(s.font):
+            weight[round(s.size, 1)] += len(s.text.strip())
+    return max(weight, key=weight.get) if weight else 0.0
+
+
+def _variable_like(span: Span, main_size: float) -> bool:
+    """数式の中の変数・添字らしいスパン（斜体の 1 文字、本文より小さい文字）。
+
+    数式フォントの記号を除くと、"y j F j" のような変数の並びが字間を空けた単語に見えるため。
+    """
+    t = span.text.strip()
+    return (span.is_italic and len(t) == 1 and t.isalpha()) or span.size < main_size * 0.8
 
 
 def estimate_body_size(blocks: Iterable[TextBlock]) -> float:
@@ -147,13 +173,13 @@ def _tabular_blocks(blocks: list[TextBlock], stats: dict[int, BlockStats]) -> se
 
 
 def has_column_gaps(block: TextBlock, size: float) -> bool:
-    """行の大半に大きな列間隔がある＝罫線の無い表。"""
-    if len(block.lines) < 2:
-        return False
+    """行の大半に大きな列間隔がある＝罫線の無い表。1 行だけなら 3 列以上（表の見出し行）。"""
     gapped = 0
     for ln in block.lines:
         spans = [s for s in ln.spans if s.text.strip()]
         gaps = sum(1 for a, b in zip(spans, spans[1:]) if b.bbox[0] - a.bbox[2] > size * 1.5)
+        if len(block.lines) == 1:
+            return gaps >= 2
         if gaps >= 1:
             gapped += 1
     return gapped >= len(block.lines) * 0.6
@@ -164,7 +190,15 @@ def _looks_like_equation(block: TextBlock, st: BlockStats) -> bool:
 
     1 行で、等号などを含み、長い英単語がほとんど無いもの。例: "s = min(1, w / w0)   (1)"
     """
-    if len(block.lines) != 1 or not _EQUATION_SIGN.search(st.text):
+    if len(block.lines) != 1:
+        return False
+    # 数式フォントの記号と斜体の変数名だけの 1 行（総和の上限 "nspectral" などを含む独立数式の断片）
+    if st.has_math and st.italic_only and st.words <= 2:
+        return True
+    # 式番号で終わる、長い単語の無い 1 行（独立数式の右端の断片。例: "s′ exp(−τ s′) ds′ (7)"）
+    if _EQUATION_NUMBER.search(st.text) and not _LONG_WORD.search(st.text) and st.words <= 2:
+        return True
+    if not _EQUATION_SIGN.search(st.text):
         return False
     return len(_LONG_WORD.findall(st.text)) <= 1 and st.words <= 4
 

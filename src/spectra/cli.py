@@ -5,12 +5,15 @@
     spectra translate paper.pdf --mode side-by-side --pages 1-5
     spectra estimate paper.pdf                     # 翻訳する文字数を見積もる
     spectra key set gemini                         # API キーを保存（入力は表示されない）
+    spectra library add paper.pdf --lookup         # ライブラリに取り込み、DOI / arXiv ID で書誌情報を照会
+    spectra library list                           # ライブラリの論文を一覧する
 """
 
 from __future__ import annotations
 
 import argparse
 import getpass
+import json
 import logging
 import sys
 import threading
@@ -77,6 +80,19 @@ def _build_parser() -> argparse.ArgumentParser:
     k = sub.add_parser("key", help="API キーを管理する")
     k.add_argument("action", choices=["set", "delete", "status"])
     k.add_argument("engine", nargs="?", choices=["gemini"], default="gemini")
+
+    lib = sub.add_parser("library", help="論文ライブラリを管理する")
+    lib_sub = lib.add_subparsers(dest="library_command", metavar="<action>", required=True)
+    la = lib_sub.add_parser("add", help="PDF をライブラリに取り込む")
+    la.add_argument("inputs", type=Path, nargs="+", metavar="pdf", help="取り込む PDF")
+    la.add_argument(
+        "--lookup",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="DOI / arXiv ID だけを Crossref・arXiv に送って書誌情報を照会する（既定: 設定値）",
+    )
+    ll = lib_sub.add_parser("list", help="ライブラリの論文を一覧する")
+    ll.add_argument("--json", action="store_true", help="JSON で出力する")
 
     sub.add_parser("gui", help="GUI を起動する")
     return p
@@ -233,6 +249,94 @@ def _cmd_key(args) -> int:
     return 0
 
 
+def _cmd_library(args) -> int:
+    from .library import Library
+
+    library = Library()
+    try:
+        if args.library_command == "add":
+            return _library_add(library, args)
+        return _library_list(library, args)
+    finally:
+        library.close()
+
+
+def _library_add(library, args) -> int:
+    import httpx
+
+    from .library import LookupFailed
+    from .library.lookup import lookup
+
+    use_lookup = args.lookup if args.lookup is not None else getattr(Settings.load(), "metadata_lookup", False)
+    client = httpx.Client(follow_redirects=True) if use_lookup else None
+    failed = 0
+    try:
+        for path in args.inputs:
+            try:
+                paper, existed = library.add(path)
+            except (SpectraError, OSError) as e:
+                message = e.user_message() if isinstance(e, SpectraError) else str(e)
+                print(f"{path}: 取り込めませんでした — {message}", file=sys.stderr)
+                failed += 1
+                continue
+            if existed:
+                print(f"[{paper.id}] 既にライブラリにあります: {paper.display_title}")
+                continue
+            if client is None:
+                library.set_meta_status(paper.id, "local")
+            else:
+                try:
+                    found = lookup(paper.metadata, client)
+                except LookupFailed as e:  # 通信の失敗は pending のまま残し、あとで再試行できるようにする
+                    print(f"  注意: {e.title}{'（' + e.detail + '）' if e.detail else ''}", file=sys.stderr)
+                else:
+                    if found:
+                        paper = library.update_metadata(paper.id, found, status="done")
+                    else:
+                        library.set_meta_status(paper.id, "failed")
+            print(f"[{paper.id}] 追加しました: {_paper_line(paper)}")
+            for other in library.same_identifier(paper):
+                print(f"  注意: 同じ DOI / arXiv ID の論文があります: [{other.id}] {other.display_title}")
+    finally:
+        if client is not None:
+            client.close()
+    return 1 if failed else 0
+
+
+def _library_list(library, args) -> int:
+    papers = library.papers()
+    if args.json:
+        rows = [
+            {
+                "id": p.id,
+                "title": p.display_title,
+                "authors": [a.full() for a in p.metadata.authors],
+                "year": p.metadata.year,
+                "venue": p.metadata.venue,
+                "doi": p.metadata.doi,
+                "arxiv_id": p.metadata.arxiv_id,
+                "file_name": p.file_name,
+                "pdf": str(p.pdf_path),
+                "translated": str(p.translated_path) if p.translation else None,
+                "meta_status": p.meta_status,
+            }
+            for p in papers
+        ]
+        print(json.dumps(rows, ensure_ascii=False, indent=2))
+        return 0
+    if not papers:
+        print("ライブラリは空です。`spectra library add <pdf>` で論文を追加できます。")
+        return 0
+    for p in papers:
+        print(f"[{p.id}] {_paper_line(p)}{'  （訳文あり）' if p.translation else ''}")
+    return 0
+
+
+def _paper_line(paper) -> str:
+    head = ", ".join(x for x in (paper.authors_short, str(paper.metadata.year or "")) if x)
+    return f"{head} — {paper.display_title}" if head else paper.display_title
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -246,7 +350,7 @@ def main(argv: list[str] | None = None) -> int:
 
         return gui_main()
     try:
-        return {"translate": _cmd_translate, "estimate": _cmd_estimate, "key": _cmd_key}[args.command](args)
+        return {"translate": _cmd_translate, "estimate": _cmd_estimate, "key": _cmd_key, "library": _cmd_library}[args.command](args)
     except SpectraError as e:
         print(f"\nエラー: {e.user_message()}", file=sys.stderr)
         return 1

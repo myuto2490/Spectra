@@ -8,6 +8,7 @@ import statistics
 
 import pymupdf
 
+from .fonts import is_math_font
 from .models import Line, Rect, Span, TextBlock, overlap_ratio, rect_area, rect_union
 
 log = logging.getLogger(__name__)
@@ -16,6 +17,9 @@ log = logging.getLogger(__name__)
 TEXT_FLAGS = (
     pymupdf.TEXT_PRESERVE_WHITESPACE | pymupdf.TEXT_MEDIABOX_CLIP | pymupdf.TEXT_CID_FOR_UNKNOWN_UNICODE
 ) & ~pymupdf.TEXT_PRESERVE_LIGATURES
+
+
+_EQUATION_NUMBER = re.compile(r"\S\s*\(\d{1,3}[a-z]?\)\s*$")
 
 
 def _to_rect(r) -> Rect:
@@ -76,14 +80,26 @@ def _merge_paragraph_lines(blocks: list[TextBlock]) -> list[TextBlock]:
     左端・右端・文字サイズ・行送りがそろって続いている行だけを結合する。
     前の行が短く終わっている（段落の最終行）場合や、見出しのような短い行の後は結合しない。
     """
-    out: list[TextBlock] = []
+    # 先に 1 行を組み立て直してから（数式で高くなった行の形が決まってから）段落として結合する
+    rows: list[TextBlock] = []
     for b in blocks:
-        prev = out[-1] if out else None
-        if prev is not None and _continues_same_line(prev, b):
+        prev = rows[-1] if rows else None
+        if prev is not None and _math_on_last_line(prev, b):
+            # 根号や分数だけのブロック（行の上下にはみ出している）：前の行の一部として取り込む
+            last = prev.lines[-1]
+            last.spans = sorted(last.spans + [s for ln in b.lines for s in ln.spans], key=lambda s: s.bbox[0])
+            last.bbox = rect_union(last.bbox, b.bbox)
+            prev.bbox = rect_union(prev.bbox, b.bbox)
+        elif prev is not None and _continues_same_line(prev, b):
             # 分数などで 1 行が左右のブロックに分断されている：同じ行としてつなぎ直す
             prev.lines = _merge_visual_lines(prev.lines + [Line(list(ln.spans), ln.bbox, ln.direction) for ln in b.lines])
             prev.bbox = rect_union(prev.bbox, b.bbox)
-        elif prev is not None and _continues_paragraph(prev, b):
+        else:
+            rows.append(b)
+    out: list[TextBlock] = []
+    for b in rows:
+        prev = out[-1] if out else None
+        if prev is not None and _continues_paragraph(prev, b):
             prev.lines = prev.lines + b.lines
             prev.bbox = rect_union(prev.bbox, b.bbox)
         else:
@@ -99,9 +115,66 @@ def _continues_same_line(a: TextBlock, b: TextBlock) -> bool:
     size = _line_size(last)
     same_baseline = abs(first.baseline - last.baseline) <= max(1.5, size * 0.15)
     # 分数の分子と分母のように、境目で少し重なることがある
-    to_the_right = first.bbox[0] >= last.bbox[2] - size * 1.5 and first.bbox[0] - last.bbox[2] < size * 6
+    to_the_right = first.bbox[0] >= last.bbox[2] - size * 1.5 or _overlap_is_math(last, first)
+    to_the_right = to_the_right and first.bbox[0] - last.bbox[2] < size * 6
     to_the_right = to_the_right and first.bbox[0] > last.bbox[0] + (last.bbox[2] - last.bbox[0]) * 0.5
-    return same_baseline and to_the_right and abs(_line_size(first) - size) <= max(0.6, size * 0.06)
+    # 行頭・行末の数式（σ² など）は本文と文字の大きさが違う
+    same_size = abs(_line_size(first) - size) <= max(0.6, size * 0.06)
+    same_size = same_size or _all_math(last, _line_size(first)) or _all_math(first, size)
+    return same_baseline and to_the_right and same_size
+
+
+def _math_like(span: Span, size: float) -> bool:
+    """数式の部品とみなすスパン（数式フォント、または本文より小さい分子・分母・添字）。"""
+    return not span.text.strip() or is_math_font(span.font) or span.size < size * 0.8
+
+
+def _is_equation_line(ln: Line, size: float) -> bool:
+    """独立数式の行：数式フォントを含み、文章の単語（2 文字以上の英字）が無いか、式番号で終わり長い単語が無い。"""
+    if not any(is_math_font(s.font) for s in ln.spans):
+        return False
+    text = "".join(s.text for s in ln.spans if not _math_like(s, size))
+    if not re.search(r"[A-Za-z]{2,}", text):
+        return True
+    return bool(_EQUATION_NUMBER.search(ln.text)) and not re.search(r"[A-Za-z]{4,}", text)
+
+
+def _all_math(ln: Line, size: float) -> bool:
+    return all(_math_like(s, size) for s in ln.spans)
+
+
+def _overlapping_spans(a: Line, b: Line) -> list[Span]:
+    """a と b の文字のうち、左右に重なっているもの（空白は除く）。"""
+    sa = [s for s in a.spans if s.text.strip()]
+    sb = [s for s in b.spans if s.text.strip()]
+    out: list[Span] = []
+    for s in sa:
+        for t in sb:
+            if min(s.bbox[2], t.bbox[2]) - max(s.bbox[0], t.bbox[0]) >= 1.0:
+                out += [s, t]
+    return out
+
+
+def _overlap_is_math(a: Line, b: Line) -> bool:
+    """左右に重なっている文字が、数式の部品だけか（分子と分母が上下に並んでいる）。"""
+    over = _overlapping_spans(a, b)
+    size = max(_line_size(a), _line_size(b))
+    return bool(over) and all(_math_like(s, size) for s in over)
+
+
+def _math_on_last_line(a: TextBlock, b: TextBlock) -> bool:
+    """b が数式の部品だけでできていて、a の最後の行のすぐ右で、その行の上下にはみ出す位置にある。"""
+    if _is_rotated(a) or _is_rotated(b):
+        return False
+    last = a.lines[-1]
+    size = _line_size(last)
+    if not all(_math_like(s, size) for s in b.spans):
+        return False
+    base = last.baseline
+    x0, y0, x1, y1 = b.bbox
+    beside = last.bbox[0] < x0 <= last.bbox[2] + size * 2
+    within = base - size * 2.2 <= y0 and y1 <= base + size * 1.2 and y0 < last.bbox[1]
+    return beside and within
 
 
 def _continues_paragraph(a: TextBlock, b: TextBlock) -> bool:
@@ -112,6 +185,8 @@ def _continues_paragraph(a: TextBlock, b: TextBlock) -> bool:
         return False
     size = size_a
     last, first = a.lines[-1], b.lines[0]
+    if _is_equation_line(first, size) or _is_equation_line(last, size):
+        return False  # 段落の前後の独立数式
     # 縦方向：すぐ下に続いていること。複数行あるなら行送りもそろっていること
     gap = first.bbox[1] - last.bbox[3]
     # 分数などで行が高くなると、前後のブロックが上下に重なることがある（負の隙間も許す）
@@ -119,7 +194,10 @@ def _continues_paragraph(a: TextBlock, b: TextBlock) -> bool:
         return False
     if len(a.lines) >= 2:
         pitch = a.lines[-1].baseline - a.lines[-2].baseline
-        if abs((first.baseline - last.baseline) - pitch) > max(2.0, pitch * 0.25):
+        step = first.baseline - last.baseline
+        # 根号や分数で高くなった行は、行送りが広がる（行の矩形どうしが接していれば続きとみなす）
+        tall = max(first.bbox[3] - first.bbox[1], last.bbox[3] - last.bbox[1]) > size * 1.6
+        if abs(step - pitch) > max(2.0, pitch * 0.25) and not (tall and step > pitch and gap <= size * 0.6):
             return False
     # 横方向：同じ段の中で左右がそろっていること（1 行目の字下げは許す）
     left = min(ln.bbox[0] for ln in a.lines[1:]) if len(a.lines) >= 2 else a.bbox[0]
@@ -162,7 +240,8 @@ def _absorb_fragments(blocks: list[TextBlock]) -> list[TextBlock]:
 def _merge_visual_lines(lines: list[Line]) -> list[Line]:
     """PyMuPDF が別行として返す同一行上の断片（上付き・下付き・字間の広い単語）を 1 行にまとめる。"""
     merged: list[Line] = []
-    for ln in lines:
+    # 上から順に見る（取り込んだ断片のように順序が前後していても、同じ高さの行どうしを照らし合わせる）
+    for ln in sorted(lines, key=lambda ln: ln.bbox[1]):
         if ln.direction != (1.0, 0.0) and abs(ln.direction[1]) > 1e-3:
             merged.append(ln)
             continue
@@ -170,8 +249,9 @@ def _merge_visual_lines(lines: list[Line]) -> list[Line]:
         for cand in reversed(merged[-3:]):
             if abs(cand.direction[1]) > 1e-3:
                 continue
-            h_overlap = min(ln.bbox[2], cand.bbox[2]) - max(ln.bbox[0], cand.bbox[0])
-            if h_overlap < 1.0 and _vertically_aligned(ln.bbox, cand.bbox):
+            # 文字どうしが左右に重ならなければ同じ行。分子と分母のように上下に並ぶ数式の部品は、重なっていても同じ行
+            side_by_side = not _overlapping_spans(ln, cand) or _overlap_is_math(ln, cand)
+            if side_by_side and _vertically_aligned(ln.bbox, cand.bbox):
                 target = cand
                 break
         if target is None:

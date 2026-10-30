@@ -1,4 +1,5 @@
 import pymupdf
+import pytest
 
 from spectra.core.analysis import analyze_document
 from spectra.core.models import BlockKind, SkipReason
@@ -256,3 +257,164 @@ def test_wordless_block_in_front_matter_is_not_a_title():
     a = analyze_document(doc)
     assert _find(a, "Inverse Methods").translate
     assert _find(a, "; - ' A").skip == SkipReason.NO_WORDS
+
+
+# ---- Elsevier の古い組版（Adv* の記号フォント）の段落中の数式 ----------------------
+
+_R, _I = "AdvGulliv-R", "AdvGulliv-I"  # 本文・斜体
+_SYM, _EXT, _PUNCT, _GREEK = "AdvP4C4E74", "AdvP4C4E46", "AdvP4C4E51", "AdvPSMP10"  # = − ／根号／小数点／ν
+
+
+def _span(text, font, size, x0, x1, base):
+    from spectra.core.models import Span
+
+    return Span(text, font, size, 0, 0, (x0, base - size * 0.75, x1, base + size * 0.25), (x0, base))
+
+
+def _line(*spans):
+    from spectra.core.models import Line, rect_union
+
+    bbox = spans[0].bbox
+    for s in spans[1:]:
+        bbox = rect_union(bbox, s.bbox)
+    return Line(list(spans), bbox)
+
+
+def _block(*lines):
+    from spectra.core.models import TextBlock, rect_union
+
+    bbox = lines[0].bbox
+    for ln in lines[1:]:
+        bbox = rect_union(bbox, ln.bbox)
+    return TextBlock(0, 0, bbox, list(lines))
+
+
+def test_elsevier_symbol_fonts_are_math_fonts():
+    from spectra.core.fonts import is_math_font
+
+    for name in ("AdvP4C4E74", "ABCDEF+AdvP4C4E46", "AdvPSMP10", "AdvPSSym", "AdvMTSY", "AdvPi2"):
+        assert is_math_font(name), name
+    for name in ("AdvGulliv-R", "AdvGulliv-I", "AdvPSUnv", "AdvOT596495f2", "AdvTT825c8005"):
+        assert not is_math_font(name), name
+
+
+def _noise_paragraph():
+    """'... of the noise as / noise_ν = √(1.1 − sky_trans_ν) / sky_trans_ν. We used ... / an assumed ...'
+
+    PyMuPDF は根号・分子（R）と、分母から続く文（D）を別のブロックとして返す。
+    """
+    para = _block(
+        _line(_span("of the Dewar window and an observation of dark sky, respectively.", _R, 8.1, 311.5, 562.6, 541.2)),
+        _line(_span("We then calculated the predicted spectral variance of the noise as", _R, 8.1, 311.5, 562.5, 551.7)),
+    )
+    lhs = _block(
+        _line(_span("noise", _I, 8.1, 311.5, 332.0, 569.7), _span("m", _GREEK, 6.4, 332.0, 335.0, 570.9), _span("¼", _SYM, 8.1, 336.0, 342.0, 569.7))
+    )
+    radical = _block(
+        _line(_span("p", _SYM, 8.1, 344.2, 350.9, 559.6), _span("ffiffiffiffiffiffiffiffiffiffiffi", _EXT, 8.1, 350.9, 388.0, 559.6)),
+        _line(
+            _span("1", _R, 5.2, 350.9, 353.5, 565.1),
+            _span(":", _PUNCT, 5.2, 353.5, 354.8, 565.1),
+            _span("1", _R, 5.2, 354.8, 357.4, 565.1),
+            _span("\x03", _SYM, 5.2, 357.4, 361.5, 565.1),
+            _span("sky trans", _I, 5.2, 361.5, 385.0, 565.1),
+            _span("m", _GREEK, 4.9, 385.0, 387.5, 565.9),
+        ),
+    )
+    rest = _block(
+        _line(
+            _span("sky trans", _I, 5.2, 353.5, 380.0, 572.4),
+            _span("m", _GREEK, 4.9, 380.0, 382.5, 573.2),
+            _span(".", _R, 8.1, 388.5, 390.5, 569.7),
+            _span(" We used 1.1 in this equation to account for", _R, 8.1, 390.5, 562.5, 569.7),
+        )
+    )
+    after = _block(
+        _line(_span("an assumed window plus telescope emissivity of 10%. (This 10% va-", _R, 8.1, 311.5, 562.6, 584.4)),
+        _line(_span("lue is an empirical result. When we observe at a wavelength where", _R, 8.1, 311.5, 562.6, 594.9)),
+    )
+    return [para, lhs, radical, rest, after]
+
+
+def test_inline_radical_and_fraction_are_rebuilt_into_one_line():
+    from spectra.core.extract import _merge_paragraph_lines
+
+    blocks = _merge_paragraph_lines(_noise_paragraph())
+    assert len(blocks) == 1  # 根号で行送りが広がった行も、前後の段落とつながる
+    row = blocks[0].lines[2]
+    assert len(blocks[0].lines) == 5
+    assert row.text.startswith("noise") and row.text.endswith("account for")
+    assert row.baseline == pytest.approx(569.7)  # 根号の上線ではなく本文の文字の位置
+
+
+def test_stacked_fraction_parts_on_one_line():
+    """分子と分母は左右に重なっていても同じ行。文字が重ならない語は順序によらず同じ行にまとめる。"""
+    from spectra.core.extract import _merge_visual_lines
+
+    numerator = _line(
+        _span("from our flat-field via,", _R, 8.1, 311.5, 400.1, 518.9),
+        _span(" sky trans", _I, 8.1, 400.1, 437.4, 518.9),
+        _span("m", _GREEK, 6.4, 437.3, 440.2, 520.3),
+        _span("¼", _SYM, 8.1, 442.9, 449.2, 519.1),
+        _span("black", _I, 5.2, 451.5, 463.8, 515.3),
+        _span("\x03", _SYM, 5.2, 466.5, 470.6, 515.3),
+        _span("sky", _I, 5.2, 470.6, 478.2, 515.3),
+    )
+    denominator = _line(_span("black", _I, 5.2, 458.8, 471.0, 521.6))
+    rest = _line(_span(". Black and sky are", _R, 8.1, 480.9, 562.6, 518.9))
+    merged = _merge_visual_lines([denominator, rest, numerator])  # 断片を取り込んだときのように順序が前後する
+    assert len(merged) == 1
+
+    text = _line(_span("Typically,", _R, 10, 58.9, 105.0, 443.0), _span("P", _I, 10, 190.0, 199.2, 443.0))
+    words = _line(_span("the raw power", _R, 10, 108.9, 185.0, 443.1))
+    assert len(_merge_visual_lines([text, words])) == 1
+    other = _line(_span("the next line of the paragraph", _R, 10, 58.9, 185.0, 445.0))
+    assert len(_merge_visual_lines([text, other])) == 2  # 本文の文字どうしが重なる行は別の行
+
+
+def test_display_equation_is_not_merged_into_paragraph():
+    from spectra.core.extract import _merge_paragraph_lines
+
+    intro = _block(_line(_span("Table 3. We also report the reduced chi-squared of the best fit:", _R, 8.1, 32.7, 283.8, 523.0)))
+    equation = _block(_line(_span("v", _GREEK, 10.4, 33.1, 40.0, 545.0), _span("¼", _SYM, 8.4, 45.0, 52.0, 545.0), _span("1", _R, 8.4, 60.0, 65.0, 541.0)))
+    assert len(_merge_paragraph_lines([intro, equation])) == 2
+
+    numbered = _block(_line(_span("F", _GREEK, 8.1, 42.5, 50.0, 716.0), _span(" = Kn dq/dz ,", _I, 8.1, 50.0, 140.0, 716.0), _span("(7)", _R, 8.1, 280.0, 293.6, 716.0)))
+    where = _block(
+        _line(_span("where q is the CO mole ratio, n is the atmospheric num-", _R, 8.1, 42.5, 293.6, 739.0)),
+        _line(_span("ber density, and the gradient in the CO mole ratio is", _R, 8.1, 42.6, 293.6, 750.9)),
+    )
+    assert len(_merge_paragraph_lines([numbered, where])) == 2
+
+
+def test_inline_math_with_variable_names_is_one_movable_run():
+    from spectra.core.extract import _merge_paragraph_lines
+    from spectra.core.models import BlockDecision
+    from spectra.core.segment import build_unit
+
+    block = _merge_paragraph_lines(_noise_paragraph())[0]
+    unit = build_unit(BlockDecision(block, BlockKind.BODY), 595, body_font=_R)
+    assert "noise as <x" in unit.markup and '"/>. We used 1.1' in unit.markup  # 文末の "." は数式に含めない
+    run = next(r for r in unit.runs.values() if r.text.startswith("noise"))  # 変数名 noise_ν も数式の一部
+    assert run.bbox is not None  # 元の見た目のまま移せる（分子・分母・根号が 1 つの塊）
+    assert run.bbox[1] < 554 and run.bbox[3] > 573  # 根号の上端から分母の下端まで
+
+
+def test_display_equation_fragments_are_not_translated():
+    from spectra.core.classify import BlockStats, _looks_like_equation, has_column_gaps
+
+    # χ² = Σ_{j=1}^{nspectral} …：総和の上限は斜体の単語
+    upper = _block(_line(_span("v", _GREEK, 10.4, 42.5, 50.0, 700.0), _span("¼", _SYM, 8.4, 52.0, 58.0, 700.0), _span("nspectral", _I, 5.4, 62.4, 84.1, 692.0)))
+    assert _looks_like_equation(upper, BlockStats(upper, _R))
+    # y_j − F_j(x_{i+1})：1 文字の変数を字間の空いた単語とみなさない
+    numerator = _block(_line(*[_span(t, f, s, 91.6 + 4 * i, 95.6 + 4 * i, 697.0) for i, (t, f, s) in enumerate(
+        [("y", _I, 8.4), ("j", _I, 5.4), ("\x03", _SYM, 8.4), ("F", _I, 8.4), ("j", _I, 5.4), ("ð", _SYM, 8.4), ("x", _I, 8.4), ("i", _I, 5.4)]
+    )]))
+    st = BlockStats(numerator, _R)
+    assert st.math_chars / st.chars > 0.5
+    # 式番号で終わる独立数式の右端
+    tail = _block(_line(_span("s′ exp(−τ s′) ds′", "TimesNewRomanPS-ItalicMT", 10, 208.0, 280.0, 640.0), _span("(7)", "TimesNewRomanPSMT", 10, 288.4, 300.1, 640.0)))
+    assert _looks_like_equation(tail, BlockStats(tail, "TimesNewRomanPSMT"))
+    # 1 行だけの表の見出し（列の間が 2 か所以上空いている）
+    header = _block(_line(_span("Wavelength", _R, 8, 51.0, 90.0, 95.0), _span("Intensity", _R, 8, 150.0, 190.0, 95.0), _span("Width", _R, 8, 260.0, 290.0, 95.0)))
+    assert has_column_gaps(header, 8)

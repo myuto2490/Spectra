@@ -7,6 +7,16 @@
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-10-30
+
+### 修正
+- Elsevier の古い論文（Icarus など）で、段落の中の分数・根号が「¼」「pffiffi」のような文字化けになったり、分子と分母が離れて置かれたりする問題を修正。
+  記号用のフォント（`AdvP…` `AdvPSMP…` など）を数式として扱い、行の上下にはみ出した分数・根号を 1 行にまとめ直して、元の見た目のまま訳文の中に配置します
+- 同じ論文で、独立した数式の一部（総和の上限 "nspectral" や分子の "yj − Fj" など）が訳されて数式が崩れる問題を修正
+- macOS で、起動するたびにキーチェーンのパスワードを 2 回求められる問題を修正。
+  起動時は API キーの有無だけを（中身を読まずに）確かめ、キーを読むのは翻訳を始めたときの 1 回だけにしました。
+  確認が出たときに「常に許可」を選ぶと、そのバージョンでは以後求められません
+
 ## [0.1.4] - 2026-10-24
 
 ### 修正
@@ -67,9 +77,10 @@
 **コマンドラインツール**
 - `spectra translate` / `spectra estimate` / `spectra key`
 
-[Unreleased]: https://github.com/myuto2490/Spectra/compare/v0.1.4...HEAD
+[Unreleased]: https://github.com/myuto2490/Spectra/compare/v0.1.5...HEAD
 [0.1.0]: https://github.com/myuto2490/Spectra/releases/tag/v0.1.0
 [0.1.1]: https://github.com/myuto2490/Spectra/compare/v0.1.0...v0.1.1
 [0.1.2]: https://github.com/myuto2490/Spectra/compare/v0.1.1...v0.1.2
 [0.1.3]: https://github.com/myuto2490/Spectra/compare/v0.1.2...v0.1.3
 [0.1.4]: https://github.com/myuto2490/Spectra/compare/v0.1.3...v0.1.4
+[0.1.5]: https://github.com/myuto2490/Spectra/compare/v0.1.4...v0.1.5

@@ -263,10 +263,11 @@ class Renderer:
     def layout_segment(self, seg: Segment) -> LayoutResult:
         tokens = parse(normalize_translation(seg.translated or ""), set(seg.runs))
         opts = self.options
-        result = layout(tokens, seg.runs, self._frames(seg, expand=False), self.fonts, opts.text_scale)
+        transplant = self.source is not None
+        result = layout(tokens, seg.runs, self._frames(seg, expand=False), self.fonts, opts.text_scale, transplant=transplant)
         if result.fits and result.scale >= opts.text_scale - 1e-6:
             return result
-        expanded = layout(tokens, seg.runs, self._frames(seg, expand=True), self.fonts, opts.text_scale)
+        expanded = layout(tokens, seg.runs, self._frames(seg, expand=True), self.fonts, opts.text_scale, transplant=transplant)
         if (expanded.fits, expanded.scale) > (result.fits, result.scale):
             return expanded
         return result

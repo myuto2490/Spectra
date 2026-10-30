@@ -122,7 +122,9 @@ def is_cjk(ch: str) -> bool:
     return bool(_CJK_RE.match(ch))
 
 
-def build_atoms(tokens: list[Token], runs: dict[int, InlineRun], fonts: FontBook, bold: bool) -> list[Atom]:
+def build_atoms(
+    tokens: list[Token], runs: dict[int, InlineRun], fonts: FontBook, bold: bool, transplant: bool = False
+) -> list[Atom]:
     atoms: list[Atom] = []
     for tok in tokens:
         tok_bold = bold or tok.bold  # 段落全体の太字、または <b>…</b> で囲まれた部分
@@ -130,7 +132,7 @@ def build_atoms(tokens: list[Token], runs: dict[int, InlineRun], fonts: FontBook
         if tok.run_id is not None:
             run = runs.get(tok.run_id)
             if run is not None and run.text.strip():
-                atom = _inline_atom(run, fonts)
+                atom = _inline_atom(run, fonts, transplant)
                 atom.run_id = tok.run_id
                 atoms.append(atom)
             continue
@@ -208,7 +210,7 @@ def _run_fit_scale(run: InlineRun) -> float:
     return max(scale, 0.7)
 
 
-def _inline_atom(run: InlineRun, fonts: FontBook) -> Atom:
+def _inline_atom(run: InlineRun, fonts: FontBook, transplant: bool = False) -> Atom:
     glyphs: list[Glyphs] = []
     positioned = run.width_ratio is not None and all(p.dx_ratio is not None for p in run.pieces)
     fit = _run_fit_scale(run)
@@ -246,6 +248,9 @@ def _inline_atom(run: InlineRun, fonts: FontBook) -> Atom:
             if dx is not None:
                 dx += w
     if positioned:
+        if transplant and run.bbox is not None:
+            # 元の見た目のまま移すので、幅は原文どおり（根号の上線 "ffiffi…" などを代替フォントで測らない）
+            return Atom(AtomKind.INLINE, glyphs, (run.width_ratio or 0.0) * fit, scale=fit)
         # 原文の幅を基準にしつつ、代替フォントで幅が広がった場合も重ならないようにする
         natural = max((g.dx or 0.0) + g.unit_width for g in glyphs) if glyphs else 0.0
         return Atom(AtomKind.INLINE, glyphs, max((run.width_ratio or 0.0) * fit, natural), scale=fit)
@@ -419,12 +424,16 @@ def layout(
     fonts: FontBook,
     text_scale: float = 0.95,
     min_scale: float = 0.2,
+    transplant: bool = False,
 ) -> LayoutResult:
-    """訳文を frames に流し込み、配置済みグリフを返す。"""
+    """訳文を frames に流し込み、配置済みグリフを返す。
+
+    transplant: 段落中の数式を元の文書から移して配置する（数式の幅を原文どおりに取る）。
+    """
     if not frames:
         return LayoutResult([], 1.0, False, 0)
     style = frames[0].style
-    atoms = build_atoms(tokens, runs, fonts, style.bold)
+    atoms = build_atoms(tokens, runs, fonts, style.bold, transplant)
     if not atoms:
         return LayoutResult([], 1.0, True, 0)
 

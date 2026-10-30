@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -30,7 +31,15 @@ class Span:
 
     @property
     def is_italic(self) -> bool:
-        return bool(self.flags & 2) or _name_has(self.font, ("italic", "oblique", "-it", "ital"))
+        # "AdvGulliv-I" "AdvOT7fb33346.I" のように末尾の I だけで斜体を表すフォントもある
+        return (
+            bool(self.flags & 2)
+            or _name_has(self.font, ("italic", "oblique", "-it", "ital"))
+            or bool(_ITALIC_SUFFIX.search(self.font))
+        )
+
+
+_ITALIC_SUFFIX = re.compile(r"[-.]B?I$")
 
 
 def _name_has(font: str, keys: tuple[str, ...]) -> bool:
@@ -50,7 +59,15 @@ class Line:
 
     @property
     def baseline(self) -> float:
-        main = max(self.spans, key=lambda s: len(s.text.strip()) * s.size)
+        # 根号の上線のように数式フォントの記号が長く続くことがあるので、数式フォントは 1 文字分として数える。
+        # 分子・添字のような小さな文字が基準にならないよう、大きさを重く見る
+        from .fonts import is_math_font
+
+        def weight(s: Span) -> float:
+            n = len(s.text.strip())
+            return s.size**2 * (min(n, 1) if is_math_font(s.font) else n)
+
+        main = max(self.spans, key=weight)
         return main.origin[1]
 
 

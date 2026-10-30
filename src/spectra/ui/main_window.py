@@ -311,7 +311,7 @@ class MainWindow(QMainWindow):
         info = registry.ENGINES.get(engine)
         has_key = (not info.needs_key) if info else False
         if info and info.needs_key:
-            has_key = bool(self.secrets.get(engine))
+            has_key = self.secrets.has(engine)
         self.inspector.set_engine_status(has_key)
         if has_key:
             from ..translate.gemini import MODELS

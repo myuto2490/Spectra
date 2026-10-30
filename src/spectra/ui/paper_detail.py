@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPlainTextEdit,
     QScrollArea,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -93,15 +94,16 @@ class PaperDetail(QScrollArea):
         head.addWidget(self.title)
         head.addWidget(self.authors)
         head.addWidget(self.venue)
-        links = QHBoxLayout()
-        links.setSpacing(12)
+        links = QVBoxLayout()
+        links.setSpacing(2)
         self.doi_link = link_button("")
         self.doi_link.clicked.connect(lambda: self._open_url(f"https://doi.org/{self._paper.metadata.doi}"))
         self.arxiv_link = link_button("")
         self.arxiv_link.clicked.connect(lambda: self._open_url(f"https://arxiv.org/abs/{self._paper.metadata.arxiv_id}"))
-        links.addWidget(self.doi_link)
-        links.addWidget(self.arxiv_link)
-        links.addStretch(1)
+        for b in (self.doi_link, self.arxiv_link):
+            # 長い DOI でパネルの幅が広がらないようにする
+            b.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+            links.addWidget(b)
         head.addLayout(links)
         sl.addLayout(head)
 
@@ -149,7 +151,6 @@ class PaperDetail(QScrollArea):
 
         info = FormGroup("ファイル")
         self.file_name = _value()
-        self.file_name.setWordWrap(True)
         self.file_pages = _value()
         self.added = _value()
         info.add_row("ファイル名", self.file_name)
@@ -234,6 +235,9 @@ class PaperDetail(QScrollArea):
         elif p.meta_status == "failed":
             text, tone = "書誌情報を取得できませんでした。DOI を入力すると取得し直します。", "warning"
             nid = doi_ok = True
+        elif p.meta_status == "pending" and lookup_enabled:
+            text, tone = "書誌情報をまだ取得できていません（照会先に接続できませんでした）。", None
+            doi_ok = True
         elif p.meta_status in ("local", "pending") and not lookup_enabled and md.source != "manual":
             text, tone = "PDF から読み取った情報です。照会を有効にすると、DOI から正確な書誌情報を取得できます。", None
             nid = True
@@ -250,12 +254,17 @@ class PaperDetail(QScrollArea):
         self.tr_status.setText(translation_status(p, job)[0])
         for row in (self.tr_pages_row, self.tr_model_row, self.tr_date_row):
             row.setVisible(t is not None)
+            if row.separator is not None:
+                row.separator.setVisible(t is not None)
         if t is not None:
             last = t.last_page + 1 if t.last_page is not None else p.page_count
             self.tr_pages.setText("すべて" if t.first_page == 0 and t.last_page is None else f"{t.first_page + 1}–{last}")
             self.tr_model.setText(_model_name(t.model))
             self.tr_date.setText(format_date(t.created_at))
-        self.file_name.setText(p.file_name)
+        # 長いファイル名でパネルの幅が広がらないよう、中央を省略する
+        fm = self.file_name.fontMetrics()
+        self.file_name.setText(fm.elidedText(p.file_name, Qt.TextElideMode.ElideMiddle, 170))
+        self.file_name.setToolTip(p.file_name)
         self.file_pages.setText(f"{p.page_count}")
         self.added.setText(format_date(p.added_at))
         self.abstract.setText(md.abstract)

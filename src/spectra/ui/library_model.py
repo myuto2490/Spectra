@@ -238,16 +238,32 @@ class PaperFilterProxy(QSortFilterProxyModel):
         self._collection: int | None = None
         self._terms: list[str] = []
 
+    def _refilter(self, change) -> None:
+        # Qt 6.10 で invalidateFilter() が非推奨になり、変更の前後を begin/endFilterChange で囲む形になった
+        if hasattr(self, "beginFilterChange"):
+            self.beginFilterChange()
+            change()
+            self.endFilterChange()
+        else:
+            change()
+            self.invalidateFilter()
+
     def set_scope(self, scope: str, collection: int | None = None) -> None:
-        self._scope, self._collection = scope, collection
-        self.invalidateFilter()
+        def change():
+            self._scope, self._collection = scope, collection
+
+        self._refilter(change)
 
     def scope(self) -> tuple[str, int | None]:
         return self._scope, self._collection
 
     def set_search(self, text: str) -> None:
-        self._terms = [t.casefold() for t in text.split() if t]
-        self.invalidateFilter()
+        terms = [t.casefold() for t in text.split() if t]
+
+        def change():
+            self._terms = terms
+
+        self._refilter(change)
 
     def has_search(self) -> bool:
         return bool(self._terms)

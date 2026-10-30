@@ -19,12 +19,15 @@ def window(tmp_path, monkeypatch):
     from spectra.ui.main_window import MainWindow
 
     app = create_app([])
-    settings = Settings(engine="dummy")
+    # 書誌情報の照会は尋ね済み（オフ）にして、確認のダイアログで止まらないようにする
+    settings = Settings(engine="dummy", metadata_lookup_asked=True)
     w = MainWindow(settings=settings, secrets=SecretStore(use_keyring=False))
     w.show()
     yield app, w
-    w._job_task = None
+    w.queue.cancel_all()
+    pump(app, 30, until=lambda: not w._busy())
     w.close()
+    w.library.close()
 
 
 def pump(app, seconds=0.2, until=None):
@@ -41,11 +44,13 @@ def test_empty_state(window):
     pump(app)
     assert w.stack.currentWidget() is w.drop_zone
     assert not w.primary_btn.isVisible()
+    assert not w.search.isVisible()
 
 
 def test_open_translate_and_export(window, paper_path):
     app, w = window
     assert w.open_file(paper_path)
+    assert w.screen_mode == "reader" and w.stack.currentWidget() is w.content
     pump(app, 5, until=lambda: w.inspector.est_paragraphs.text().isdigit())
     assert int(w.inspector.est_paragraphs.text()) > 5
     assert w.primary_btn.text() == "翻訳"
@@ -63,6 +68,17 @@ def test_open_translate_and_export(window, paper_path):
 
     out = pymupdf.open(stream=w._output_bytes(), filetype="pdf")
     assert out[0].rect.width == pytest.approx(1190)
+
+    # 訳文はライブラリに保存され、開き直すと翻訳せずにすぐ表示できる
+    paper = w.library.papers()[0]
+    assert paper.translation is not None and paper.translation.complete
+    assert paper.translated_path.exists()
+    w.show_library()
+    assert w.stack.currentWidget() is w.library_view and w.original_doc is None
+    assert "翻訳済み" in w.library_view.model.data(w.library_view.model.index(0, 5))
+    assert w.open_paper(paper.id)
+    assert w.preview.translated.document() is not None
+    assert w.primary_btn.text() == "書き出す…"
 
 
 def test_invalid_file_is_rejected(window, tmp_path, monkeypatch):
@@ -137,3 +153,109 @@ def test_export_dialog_formats():
     assert d.selected() == OutputMode.INTERLEAVE and "24 ページ" in d.summary.text()
     assert output_pages(OutputMode.TRANSLATED, 12) == 12
     assert {suffix_for(m) for m in OutputMode} == {"_ja", "_ja_side", "_ja_alt"}
+
+
+def _distinct_paper(path, title):
+    """内容（＝ハッシュ）の異なる合成論文。"""
+    from pdf_factory import make_paper
+
+    doc = make_paper()
+    doc.set_metadata({"title": title})
+    doc.save(path)
+    return path
+
+
+def test_library_add_filter_and_collections(window, tmp_path):
+    app, w = window
+    folder = tmp_path / "papers"
+    folder.mkdir()
+    a = _distinct_paper(folder / "a.pdf", "Alpha Networks for Sparse Data")
+    b = _distinct_paper(folder / "b.pdf", "Beta Methods in Planetary Science")
+    (folder / "notes.txt").write_text("not a pdf")
+
+    papers = w.add_files([folder])
+    assert len(papers) == 2
+    assert w.screen_mode == "library" and w.stack.currentWidget() is w.library_view
+    assert w.search.isVisible() and w.add_btn.isVisible()
+    view = w.library_view
+    assert view.proxy.rowCount() == 2
+    assert all(p.meta_status == "local" for p in w.library.papers())  # 照会しない設定
+
+    # 同じファイルをもう一度追加しても増えない
+    assert len(w.add_files([a], open_single=False)) == 1
+    assert len(w.library.papers()) == 2
+
+    # 検索
+    w.search.setText("planetary")
+    assert view.proxy.rowCount() == 1
+    w.search.setText("no such paper")
+    assert view.proxy.rowCount() == 0 and view.center.currentWidget() is view.no_match
+    w.search.clear()
+    assert view.proxy.rowCount() == 2
+
+    # お気に入りで絞り込む
+    alpha = next(p for p in w.library.papers() if p.file_name == "a.pdf")
+    view.toggle_favorite([alpha.id])
+    assert w.library.get(alpha.id).favorite
+    view.sidebar.select_scope("favorites")
+    assert view.proxy.rowCount() == 1
+
+    # コレクション
+    c = w.library.create_collection("卒論")
+    view.reload()
+    view._add_to_collection(c.id, [alpha.id])
+    assert view.sidebar.select_scope("collection", c.id)
+    assert view.proxy.rowCount() == 1
+    view.sidebar.select_scope("all")
+
+    # 詳細パネル
+    view.select_ids([alpha.id])
+    pump(app, 0.05)
+    assert view.detail.current_id() == alpha.id
+    assert view.detail.primary.text() == "翻訳する"
+    assert b.exists()
+
+
+def test_translation_queue_runs_papers_in_order(window, tmp_path):
+    app, w = window
+    papers = [w.library.add(_distinct_paper(tmp_path / f"p{i}.pdf", f"Paper number {i}"))[0] for i in range(2)]
+    w.library_view.reload()
+    w.translate_papers([p.id for p in papers])
+    assert w.queue.state(papers[0].id) == "running"
+    assert w.queue.state(papers[1].id) == "queued"
+    pump(app, 120, until=lambda: not w._busy())
+    for p in papers:
+        t = w.library.get(p.id).translation
+        assert t is not None and t.complete and t.model == "dummy"
+    assert w.banner.isVisible()  # 完了の知らせ（読書画面を開いていないとき）
+
+
+def test_lookup_consent_is_asked_once(window, paper_path, monkeypatch):
+    app, w = window
+    w.settings.metadata_lookup_asked = False
+    asked = []
+    monkeypatch.setattr(w, "_ask_lookup", lambda: asked.append(1) or False)
+    assert w.open_file(paper_path)
+    w.show_library()
+    assert w.open_file(paper_path)
+    assert asked == [1]
+    assert w.settings.metadata_lookup is False and w.settings.metadata_lookup_asked
+
+
+def test_edit_metadata_marks_fields_as_edited(window, paper_path):
+    app, w = window
+    from spectra.ui.paper_detail import MetadataDialog, parse_authors
+
+    paper = w.library.add(paper_path)[0]
+    d = MetadataDialog(paper, w)
+    d.edits["title"].setText("A Hand-Edited Title")
+    d.edits["authors"].setText("Vaswani, Ashish; Noam Shazeer")
+    d.edits["year"].setText("2017")
+    md, changed = d.result_metadata()
+    assert {"title", "authors", "year"} <= changed
+    w.library.update_metadata(paper.id, md, manual_fields=changed)
+    p = w.library.get(paper.id)
+    assert p.metadata.title == "A Hand-Edited Title" and p.metadata.year == 2017
+    assert [a.family for a in p.metadata.authors] == ["Vaswani", "Shazeer"]
+    assert "title" in p.edited
+    assert parse_authors("Ada Lovelace")[0].given == "Ada"

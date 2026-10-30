@@ -68,10 +68,20 @@ def main() -> int:
             pass
     app = create_app()
 
+    from ..library import Library, LibraryError
     from . import theme
     from .main_window import MainWindow
 
-    window = MainWindow()
+    try:
+        library = Library()
+    except LibraryError as e:
+        # 新しいバージョンで作られたライブラリなど。壊さないよう、開かずに知らせて終了する
+        from PySide6.QtWidgets import QMessageBox
+
+        title, _, rest = e.user_message().partition("\n")
+        QMessageBox.critical(None, APP_NAME, f"{title}\n\n{rest}")
+        return 1
+    window = MainWindow(library=library)
 
     def on_scheme_changed(*_args) -> None:
         theme.apply(app)

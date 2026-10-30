@@ -218,7 +218,7 @@ QLabel a {{ color: {t.accent}; }}
 #Sidebar::item:selected {{ background: {t.selection}; color: {t.label}; }}
 #PaperTable {{
     background: {t.surface}; alternate-background-color: {t.surface_alt}; border: none;
-    selection-background-color: {t.accent}; selection-color: {t.on_accent}; outline: 0;
+    selection-background-color: {t.selection}; selection-color: {t.label}; outline: 0;
 }}
 #PaperTable::item {{ padding: 0 6px; border: none; }}
 QHeaderView {{ background: {t.surface}; border: none; }}

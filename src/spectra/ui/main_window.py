@@ -129,6 +129,7 @@ class MainWindow(QMainWindow):
         v = QVBoxLayout(root)
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(0)
+        self.library_view = LibraryView(self.library)
         v.addWidget(self._build_toolbar())
 
         banner_wrap = QWidget()
@@ -148,7 +149,6 @@ class MainWindow(QMainWindow):
         self.drop_zone.settingsRequested.connect(lambda: self.show_settings("engines"))
         self.stack.addWidget(self.drop_zone)
 
-        self.library_view = LibraryView(self.library)
         self.library_view.openRequested.connect(self.open_paper)
         self.library_view.selectionChanged.connect(self._refresh_detail)
         self.library_view.searchReset.connect(lambda: self.search.clear())
@@ -560,6 +560,8 @@ class MainWindow(QMainWindow):
             self._set_status("")
         self.settings.last_open_dir = str(pdfs[0].parent)
         self.settings.save()
+        if len(pdfs) == 1 and errors:
+            return []  # 理由はダイアログで知らせた
 
         for p in added:
             if not self.settings.metadata_lookup:
@@ -1276,6 +1278,7 @@ class MainWindow(QMainWindow):
             self.zoom_in_btn,
             self.zoom_out_btn,
             self.fit_btn,
+            self.banner._close,
         ):
             refresh_icon(b)
         self._search_icon.setIcon(icons.icon("search", theme.current().secondary, 16))

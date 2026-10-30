@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from PySide6.QtCore import QObject, Signal
 
 from ..core.options import AnalysisOptions, RenderOptions, TranslateOptions
-from ..library import Library
+from ..library import Library, LookupFailed
 from . import worker
 
 log = logging.getLogger(__name__)
@@ -198,11 +198,13 @@ class LookupQueue(QObject):
         self._start_next()
 
     def _failed(self, pid: int, err: BaseException) -> None:
+        # 通信の失敗（LookupFailed）は pending のまま残し、あとで（次回の起動時にも）取得し直す
         log.warning("metadata lookup failed for paper %s: %s", pid, err)
-        try:
-            self.library.set_meta_status(pid, "failed")
-        except Exception:
-            log.debug("could not record lookup failure", exc_info=True)
+        if not isinstance(err, LookupFailed):
+            try:
+                self.library.set_meta_status(pid, "failed")
+            except Exception:
+                log.debug("could not record lookup failure", exc_info=True)
         self._done(pid)
 
 

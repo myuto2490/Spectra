@@ -225,7 +225,7 @@ class LibraryView(QWidget):
         hh.setSectionsMovable(False)
         hh.setStretchLastSection(False)
         hh.setDefaultAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        widths = {"favorite": 32, "authors": 170, "year": 56, "venue": 160, "status": 112, "added": 96}
+        widths = {"favorite": 32, "authors": 140, "year": 52, "venue": 130, "status": 104, "added": 92}
         for key, col in COL.items():
             if key == "title":
                 hh.setSectionResizeMode(col, QHeaderView.ResizeMode.Stretch)

@@ -119,29 +119,33 @@ class _FakeKeyring:
         self.store.pop((service, account), None)
 
 
-def test_keychain_is_read_once_and_reclaimed_once(monkeypatch):
+def test_keychain_is_read_once_and_never_rewritten(monkeypatch):
     monkeypatch.setattr(sys, "platform", "darwin")
     fake = _FakeKeyring("AIzaFromDevBuild")
     store = SecretStore(use_keyring=False)
-    store._keyring = fake  # 別のアプリ（開発中の Python）が保存した項目がある状態
+    store._keyring = fake  # 別のアプリ（別のビルド）が保存した項目がある状態
 
     assert store.get("gemini") == "AIzaFromDevBuild"
     assert store.get("gemini") == "AIzaFromDevBuild"
     assert fake.reads == 1  # 2 回目以降は覚えたキーを使う
-    assert fake.writes == 1  # このアプリで保存し直して持ち主になる
+    assert fake.writes == 0  # 保存し直さない（削除の許可で 2 回目の確認が出るため）
 
-    # 次の起動（同じアプリ）：読み出しは 1 回、保存し直しはしない
-    store2 = SecretStore(use_keyring=False)
-    store2._keyring = fake
-    assert store2.get("gemini") == "AIzaFromDevBuild"
-    assert fake.writes == 1
 
-    # アップデートなどでアプリが変わると、もう一度だけ保存し直す
-    monkeypatch.setattr(SecretStore, "_identity", staticmethod(lambda: "new-app|0.1.1"))
-    store3 = SecretStore(use_keyring=False)
-    store3._keyring = fake
-    store3.get("gemini")
-    assert fake.writes == 2
+def test_has_key_does_not_read_keychain(monkeypatch):
+    # 起動時のキーの有無の確認では、キーの中身を読まない（キーチェーンの許可を求めない）
+    monkeypatch.setattr(sys, "platform", "darwin")
+    fake = _FakeKeyring("AIzaKey")
+    store = SecretStore(use_keyring=False)
+    store._keyring = fake
+    monkeypatch.setattr(store, "_keychain_has", lambda engine: engine == "gemini")
+    assert store.has("gemini")
+    assert store.source("gemini") == "macOS キーチェーン"
+    assert not store.has("other")
+    assert fake.reads == 0
+
+    # 有無を調べられないときは読み出して確かめる
+    monkeypatch.setattr(store, "_keychain_has", lambda engine: None)
+    assert store.has("gemini") and fake.reads == 1
 
 
 def test_delete_clears_cached_key():

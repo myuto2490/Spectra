@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMenu,
     QMessageBox,
+    QPushButton,
     QStackedWidget,
     QTableView,
     QVBoxLayout,
@@ -29,6 +30,8 @@ from .library_model import (
     PAPER_IDS_MIME,
     RECENT,
     TRANSLATED,
+    TRASH,
+    TRASH_DAYS,
     UNTRANSLATED,
     PaperFilterProxy,
     PaperIdRole,
@@ -70,6 +73,7 @@ class Sidebar(QListWidget):
         self.customContextMenuRequested.connect(self._context_menu)
         self.currentItemChanged.connect(self._on_current)
         self._collections: list[tuple[int, str]] = []
+        self._trash_count = 0
         self.rebuild([])
 
     def rebuild(self, collections: list[tuple[int, str]]) -> None:
@@ -83,6 +87,11 @@ class Sidebar(QListWidget):
             it = QListWidgetItem(icons.icon(icon, t.secondary, 16), text)
             it.setData(ScopeRole, scope)
             self.addItem(it)
+        # ライブラリの項目の一番下にゴミ箱（件数があれば「ゴミ箱 3」）
+        self.trash_item = QListWidgetItem(icons.icon("trash", t.secondary, 16), "")
+        self.trash_item.setData(ScopeRole, TRASH)
+        self.addItem(self.trash_item)
+        self.set_trash_count(self._trash_count)
         self._header("コレクション")
         for cid, name in collections:
             it = QListWidgetItem(icons.icon("folder", t.secondary, 16), name)
@@ -92,6 +101,11 @@ class Sidebar(QListWidget):
         self.blockSignals(False)
         if not self.select_scope(*current):
             self.select_scope(ALL)
+
+    def set_trash_count(self, n: int) -> None:
+        self._trash_count = n
+        self.trash_item.setText(f"ゴミ箱 {n}" if n else "ゴミ箱")
+        self.trash_item.setData(Qt.ItemDataRole.AccessibleTextRole, f"ゴミ箱、{n} 件" if n else "ゴミ箱、空")
 
     def _header(self, text: str) -> None:
         it = QListWidgetItem(text)
@@ -171,6 +185,9 @@ class LibraryView(QWidget):
     selectionChanged = Signal()
     searchReset = Signal()  # 検索欄を空にしてほしい
     addRequested = Signal()  # 論文を追加するダイアログを開いてほしい
+    syncSetupRequested = Signal()  # 同期の設定を開いてほしい
+    syncStatusClicked = Signal()  # サイドバーの同期の状態の行が押された
+    emptyTrashRequested = Signal()
     settingsRequested = Signal()  # 設定（API キー）を開いてほしい
 
     def __init__(self, library: Library, parent: QWidget | None = None):
@@ -195,6 +212,16 @@ class LibraryView(QWidget):
         self.sidebar.renameRequested.connect(self.rename_collection)
         self.sidebar.deleteRequested.connect(self.delete_collection)
         sl.addWidget(self.sidebar, 1)
+        status_row = QHBoxLayout()
+        status_row.setContentsMargins(8, 0, 8, 0)
+        self.sync_status = QPushButton()
+        self.sync_status.setObjectName("SyncStatus")
+        self.sync_status.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.sync_status.setIconSize(QSize(16, 16))
+        self.sync_status.clicked.connect(self.syncStatusClicked)
+        self.sync_status.hide()
+        status_row.addWidget(self.sync_status, 1)
+        sl.addLayout(status_row)
         new_row = QHBoxLayout()
         new_row.setContentsMargins(12, 6, 12, 10)
         self.new_collection_btn = link_button("＋ 新しいコレクション")
@@ -289,6 +316,13 @@ class LibraryView(QWidget):
         add_row.addWidget(self.empty_add_btn)
         add_row.addStretch(1)
         el.addLayout(add_row)
+        sync_row = QHBoxLayout()
+        sync_row.addStretch(1)
+        self.empty_sync_btn = link_button("別のパソコンのライブラリを同期…")
+        self.empty_sync_btn.clicked.connect(self.syncSetupRequested)
+        sync_row.addWidget(self.empty_sync_btn)
+        sync_row.addStretch(1)
+        el.addLayout(sync_row)
         el.addSpacing(8)
         notice_row = QHBoxLayout()
         notice_row.addStretch(1)
@@ -302,12 +336,27 @@ class LibraryView(QWidget):
         el.addStretch(2)
         self.set_engine_notice("")
 
+        self.trash_bar = QWidget()
+        tb = QHBoxLayout(self.trash_bar)
+        tb.setContentsMargins(16, 8, 16, 8)
+        tb.addWidget(label(f"ゴミ箱の論文は、{TRASH_DAYS} 日たつと完全に削除されます。", "caption"), 1)
+        self.empty_trash_btn = button("ゴミ箱を空にする…", destructive=True)
+        self.empty_trash_btn.clicked.connect(self.emptyTrashRequested)
+        tb.addWidget(self.empty_trash_btn)
+        self.trash_bar.hide()
+
         self.center = QStackedWidget()
         self.center.setObjectName("LibraryCenter")
         self.center.addWidget(self.table)
         self.center.addWidget(self.no_match)
         self.center.addWidget(self.empty)
-        lay.addWidget(self.center, 1)
+        middle = QWidget()
+        ml = QVBoxLayout(middle)
+        ml.setContentsMargins(0, 0, 0, 0)
+        ml.setSpacing(0)
+        ml.addWidget(self.trash_bar)
+        ml.addWidget(self.center, 1)
+        lay.addWidget(middle, 1)
 
         self.detail = PaperDetail()
         lay.addWidget(self.detail)
@@ -329,8 +378,10 @@ class LibraryView(QWidget):
 
     def reload(self) -> None:
         selected = self.selected_ids()
-        self.model.set_papers(self.library.papers())
+        trashed = self.library.trashed_papers()
+        self.model.set_papers(self.library.papers() + trashed)
         self.sidebar.rebuild([(c.id, c.name) for c in self.library.collections()])
+        self.sidebar.set_trash_count(len(trashed))
         self.select_ids(selected)
         self._update_empty()
 
@@ -340,6 +391,8 @@ class LibraryView(QWidget):
             self.model.remove(paper_id)
         else:
             self.model.upsert(p)
+        self.sidebar.set_trash_count(sum(1 for q in self.model.papers() if q.trashed_at is not None))
+        self._update_empty()
         self.selectionChanged.emit()
 
     def paper_count(self) -> int:
@@ -403,21 +456,35 @@ class LibraryView(QWidget):
     # -- 絞り込み ----------------------------------------------------------
 
     def _on_scope(self, scope: str, collection: int | None) -> None:
+        self.model.set_trash_mode(scope == TRASH)
         self.proxy.set_scope(scope, collection)
         self._update_empty()
+        self.selectionChanged.emit()
+
+    def in_trash(self) -> bool:
+        return self.proxy.scope()[0] == TRASH
+
+    def active_count(self) -> int:
+        """ゴミ箱に入っていない論文の数。"""
+        return sum(1 for p in self.model.papers() if p.trashed_at is None)
 
     def set_search(self, text: str) -> None:
         self.proxy.set_search(text)
         self._update_empty()
 
     def _update_empty(self, *_args) -> None:
-        if self.model.rowCount() == 0:
+        trash = self.in_trash()
+        self.trash_bar.setVisible(trash)
+        self.empty_trash_btn.setEnabled(trash and self.proxy.rowCount() > 0)
+        if not trash and self.active_count() == 0:
             self.center.setCurrentWidget(self.empty)
             return
         empty = self.proxy.rowCount() == 0
         if empty:
             if self.proxy.has_search():
                 self.no_match_text.setText("一致する論文はありません")
+            elif trash:
+                self.no_match_text.setText("ゴミ箱は空です")
             else:
                 scope, _ = self.proxy.scope()
                 self.no_match_text.setText(
@@ -493,6 +560,23 @@ class LibraryView(QWidget):
         """PDF をウィンドウの上にドラッグしている間、一覧を枠で強調する。"""
         set_prop(self.center, "dragActive", active)
 
+    def set_sync_status(self, icon: str, text: str, warning: bool = False, accessible: str = "") -> None:
+        """サイドバーの下の同期の状態の行（text が空なら隠す。同期がオフのとき）。"""
+        self._sync_icon = (icon, warning)
+        self.sync_status.setText(text)
+        self.sync_status.setVisible(bool(text))
+        self.sync_status.setAccessibleName(accessible or f"同期の状態: {text}")
+        set_prop(self.sync_status, "tone", "warning" if warning else None)
+        self._apply_sync_icon()
+
+    def _apply_sync_icon(self) -> None:
+        icon, warning = getattr(self, "_sync_icon", ("", False))
+        if icon:
+            t = theme.current()
+            self.sync_status.setIcon(icons.icon(icon, t.warning if warning else t.secondary, 16))
+
     def refresh_theme(self) -> None:
         self.sidebar.refresh_theme()
         self.empty_icon.setPixmap(icons.pixmap("books", theme.current().tertiary, 44))
+        self._apply_sync_icon()
+        self.model.refresh_icons()

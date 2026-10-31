@@ -8,6 +8,7 @@ from datetime import datetime
 from PySide6.QtCore import QAbstractTableModel, QMimeData, QModelIndex, QSortFilterProxyModel, Qt
 
 from ..library import Paper
+from . import icons, theme
 
 PAPER_IDS_MIME = "application/x-spectra-paper-ids"
 
@@ -29,6 +30,8 @@ SortRole = Qt.ItemDataRole.UserRole + 2
 
 # 絞り込み（サイドバー）
 ALL, RECENT, FAVORITES, TRANSLATED, UNTRANSLATED = "all", "recent", "favorites", "translated", "untranslated"
+TRASH = "trash"
+TRASH_DAYS = 30  # ゴミ箱に残す日数（core の purge_expired と同じ）
 RECENT_DAYS = 7
 
 
@@ -52,6 +55,33 @@ def is_translated(paper: Paper) -> bool:
     return paper.translation is not None
 
 
+def local_state(paper: Paper, download=None) -> tuple[str, str] | None:
+    """手元にない論文の (アイコン名, 説明)。手元にあれば None。download は SyncController.Download。"""
+    if download is None and paper.has_original and (paper.translation is None or paper.has_translation_file):
+        return None
+    if download is not None:
+        if download.state == "running":
+            pct = download.percent
+            return "cloud_download", f"ダウンロード中 {pct}%" if pct is not None else "ダウンロード中"
+        if download.state == "queued":
+            return "cloud_download", "ダウンロードを待っています"
+        if download.state == "waiting":
+            return "hourglass", "ほかのパソコンからファイルが届くのを待っています"
+        if download.state == "failed":
+            return "cloud", "ファイルを取得できませんでした"
+    if not paper.has_original:
+        return "cloud", "このパソコンにまだありません"
+    return "cloud", "訳文がこのパソコンにまだありません"
+
+
+def days_left(paper: Paper, now: float | None = None) -> int:
+    """ゴミ箱の論文が完全に削除されるまでの日数。"""
+    if paper.trashed_at is None:
+        return TRASH_DAYS
+    left = TRASH_DAYS - (int(now or time.time()) - int(paper.trashed_at)) / 86400
+    return max(0, int(left + 0.999))
+
+
 def format_date(ts: float | None) -> str:
     if not ts:
         return ""
@@ -67,6 +97,8 @@ class PaperTableModel(QAbstractTableModel):
         self._jobs: dict[int, str] = {}  # paper_id → running / queued / failed
         self._percent: dict[int, int] = {}
         self._looking_up: set[int] = set()
+        self._downloads: dict[int, object] = {}  # paper_id → SyncController.Download
+        self.trash_mode = False  # ゴミ箱を表示中（「追加日」の列を「削除した日」にする）
 
     # -- データの更新 ------------------------------------------------------
 
@@ -119,6 +151,27 @@ class PaperTableModel(QAbstractTableModel):
         if row is not None:
             self._row_changed(row)
 
+    def set_download(self, paper_id: int, download) -> None:
+        if download is None:
+            self._downloads.pop(paper_id, None)
+        else:
+            self._downloads[paper_id] = download
+        row = self._row.get(paper_id)
+        if row is not None:
+            self._row_changed(row)
+
+    def set_trash_mode(self, on: bool) -> None:
+        if on != self.trash_mode:
+            self.trash_mode = on
+            self.headerDataChanged.emit(Qt.Orientation.Horizontal, COL["added"], COL["added"])
+            if self._papers:
+                self.dataChanged.emit(self.index(0, COL["added"]), self.index(len(self._papers) - 1, COL["added"]))
+
+    def refresh_icons(self) -> None:
+        """テーマが変わったら、記号の色を描き直す。"""
+        if self._papers:
+            self.dataChanged.emit(self.index(0, COL["title"]), self.index(len(self._papers) - 1, COL["title"]))
+
     def job(self, paper_id: int) -> str | None:
         return self._jobs.get(paper_id)
 
@@ -144,6 +197,8 @@ class PaperTableModel(QAbstractTableModel):
     def headerData(self, section, orientation, role=Qt.ItemDataRole.DisplayRole):
         if orientation == Qt.Orientation.Horizontal:
             if role == Qt.ItemDataRole.DisplayRole:
+                if COLUMNS[section][0] == "added" and self.trash_mode:
+                    return "削除した日"
                 return COLUMNS[section][1]
             if role == Qt.ItemDataRole.ToolTipRole and COLUMNS[section][0] == "favorite":
                 return "お気に入り"
@@ -173,7 +228,14 @@ class PaperTableModel(QAbstractTableModel):
             if key == "status":
                 return translation_status(p, self._jobs.get(p.id), self._percent.get(p.id))[0]
             if key == "added":
-                return format_date(p.added_at)
+                return format_date(p.trashed_at if p.trashed_at is not None else p.added_at)
+        if role == Qt.ItemDataRole.DecorationRole and key == "title":
+            state = local_state(p, self._downloads.get(p.id))
+            if state is None:
+                return None
+            t = theme.current()
+            color = t.tertiary if state[0] == "hourglass" else t.secondary
+            return icons.pixmap(state[0], color, 14)
         if role == SortRole:
             if key == "favorite":
                 return int(p.favorite)
@@ -189,15 +251,19 @@ class PaperTableModel(QAbstractTableModel):
                 order = {"running": 0, "queued": 1, "failed": 2, "done": 3, "partial": 4, "none": 5}
                 return order[translation_status(p, self._jobs.get(p.id))[1]]
             if key == "added":
-                return p.added_at
+                return p.trashed_at if p.trashed_at is not None else p.added_at
         if role == Qt.ItemDataRole.ToolTipRole:
             if key == "title":
-                return p.display_title
+                state = local_state(p, self._downloads.get(p.id))
+                return f"{p.display_title}\n{state[1]}" if state else p.display_title
             if key == "authors" and md.authors:
                 return ", ".join(a.full() for a in md.authors)
             if key == "favorite":
                 return "お気に入り" if p.favorite else ""
         if role == Qt.ItemDataRole.AccessibleTextRole:
+            if key == "title":
+                state = local_state(p, self._downloads.get(p.id))
+                return f"{p.display_title}（{state[1]}）" if state else p.display_title
             if key == "favorite":
                 return "お気に入り" if p.favorite else "お気に入りではない"
             if key == "status":
@@ -291,6 +357,11 @@ class PaperFilterProxy(QSortFilterProxyModel):
 
     def _in_scope(self, p: Paper, model: PaperTableModel) -> bool:
         s = self._scope
+        # ゴミ箱の論文は、ゴミ箱でだけ表示する
+        if s == TRASH:
+            return p.trashed_at is not None
+        if p.trashed_at is not None:
+            return False
         if s == RECENT:
             return p.added_at >= time.time() - RECENT_DAYS * 86400
         if s == FAVORITES:

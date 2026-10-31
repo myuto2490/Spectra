@@ -256,10 +256,19 @@ class SettingsDialog(QDialog):
     settingsChanged = Signal()
     appearanceChanged = Signal()
     lookupChanged = Signal(bool)  # 書誌情報の照会のオン・オフ
+    syncChanged = Signal()  # 同期の接続・解除・オン/オフ
 
-    def __init__(self, settings: Settings, secrets: SecretStore, cache: TranslationCache | None, parent: QWidget | None = None):
+    def __init__(
+        self,
+        settings: Settings,
+        secrets: SecretStore,
+        cache: TranslationCache | None,
+        parent: QWidget | None = None,
+        sync=None,
+    ):
         super().__init__(parent)
         self.settings = settings
+        self.sync = sync
         self.secrets = secrets
         self.cache = cache
         self.setWindowTitle("設定")
@@ -268,11 +277,20 @@ class SettingsDialog(QDialog):
         lay.setContentsMargins(24, 16, 24, 20)
         lay.setSpacing(16)
 
-        self.tabs = SegmentedControl([("engines", "翻訳エンジン"), ("fonts", "フォント"), ("advanced", "詳細")])
+        self.tabs = SegmentedControl([("engines", "翻訳エンジン"), ("fonts", "フォント"), ("sync", "同期"), ("advanced", "詳細")])
         lay.addWidget(self.tabs, 0, Qt.AlignmentFlag.AlignHCenter)
         self.stack = QStackedWidget()
         lay.addWidget(self.stack, 1)
-        self._pages = {"engines": self._engines_page(), "fonts": self._fonts_page(), "advanced": self._advanced_page()}
+        from .sync_settings import SyncPage
+
+        self.sync_page = SyncPage(settings, sync)
+        self.sync_page.syncChanged.connect(self.syncChanged)
+        self._pages = {
+            "engines": self._engines_page(),
+            "fonts": self._fonts_page(),
+            "sync": self.sync_page,
+            "advanced": self._advanced_page(),
+        }
         for w in self._pages.values():
             self.stack.addWidget(w)
         self.tabs.changed.connect(lambda k: self.stack.setCurrentWidget(self._pages[k]))

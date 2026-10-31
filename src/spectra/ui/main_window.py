@@ -40,6 +40,7 @@ from ..core.options import OutputMode
 from ..core.pipeline import JobResult, Progress, TranslationJob, open_document
 from ..errors import SpectraError
 from ..library import Library, Paper, Translation
+from ..library.errors import PaperNotFound, RemoteMissing
 from ..translate import registry
 from ..translate.cache import TranslationCache
 from ..translate.errors import (
@@ -49,21 +50,24 @@ from ..translate.errors import (
     QuotaExceededError,
 )
 from ..translate.service import PartialTranslationError
-from . import icons, theme
+from . import icons, theme, worker
 from .about import AboutDialog
 from .export_dialog import ExportDialog, suffix_for
 from .inspector import Inspector
 from .jobs import LookupQueue, TranslationQueue, TranslationRequest
+from .library_model import TRASH_DAYS
 from .library_view import LibraryView
 from .paper_detail import MetadataDialog
 from .pdf_view import PreviewPair
 from .settings_dialog import SettingsDialog
+from .sync_controller import ERROR, SYNCING, UNAVAILABLE, SyncController
 from .widgets import Banner, SegmentedControl, button, label, refresh_icon, tool_button
 
 log = logging.getLogger(__name__)
 
 REPO_URL = "https://github.com/myuto2490/Spectra"
 LIBRARY, READER = "library", "reader"
+DOWNLOAD_STAGE = "download"  # 翻訳の前に原文を取得している（翻訳キューの進捗として送る）
 
 
 def _mod(key: str) -> str:
@@ -71,7 +75,13 @@ def _mod(key: str) -> str:
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, settings: Settings | None = None, secrets: SecretStore | None = None, library: Library | None = None):
+    def __init__(
+        self,
+        settings: Settings | None = None,
+        secrets: SecretStore | None = None,
+        library: Library | None = None,
+        sync_engine_factory=None,
+    ):
         super().__init__()
         self.settings = settings or Settings.load()
         self.secrets = secrets or SecretStore()
@@ -79,6 +89,7 @@ class MainWindow(QMainWindow):
         self.library = library or Library()
         self.queue = TranslationQueue(self._run_translation, self)
         self.lookups = LookupQueue(self.library, self)
+        self.sync = SyncController(self.settings, self.library, sync_engine_factory, self)
         self.setWindowTitle(APP_NAME)
         self.setMinimumSize(QSize(980, 640))
         self.setAcceptDrops(True)
@@ -109,7 +120,25 @@ class MainWindow(QMainWindow):
         self.queue.failed.connect(self._on_job_failed)
         self.lookups.updated.connect(self._on_lookup_updated)
         self.lookups.changed.connect(self._on_lookups_changed)
+        self.sync.stateChanged.connect(self._refresh_sync_status)
+        self.sync.remoteChanged.connect(self._on_remote_changes)
+        self.sync.downloadChanged.connect(self._on_download_changed)
+        self.sync.downloadFinished.connect(self._on_download_finished)
+        self.sync.downloadFailed.connect(self._on_download_failed)
+        self.sync.synced.connect(self._on_synced)
+        self._sync_clock = QTimer(self, interval=30_000, timeout=self._refresh_sync_status)  # 「2 分前」を更新する
+        self._sync_clock.start()
+        # アプリが前面に来たときにも同期する（ほかのパソコンで変えた内容をすぐ反映するため）
+        app = QApplication.instance()
+        if app is not None:
+            app.applicationStateChanged.connect(
+                lambda st: st == Qt.ApplicationState.ApplicationActive and self.sync.sync_now()
+            )
+        self._first_sync_count: int | None = None  # 接続した直後の論文の数（初回の同期の知らせに使う）
         self.library_view.reload()
+        self._refresh_sync_status()
+        # 30 日を過ぎたゴミ箱の論文を完全に削除する（同期の有無に関係なく）
+        worker.start(lambda _r, _c: self.library.purge_expired(), lambda n: n and self.library_view.reload(), lambda e: log.warning("purge failed: %s", e))
         self.refresh_engine_status()
         self._update_state()
         # 前回、照会が終わる前に閉じた論文の続き
@@ -158,6 +187,13 @@ class MainWindow(QMainWindow):
         d.enableLookupRequested.connect(self.enable_lookup)
         d.removeRequested.connect(self.remove_papers)
         d.copyBibtexRequested.connect(self.copy_bibtex)
+        d.restoreRequested.connect(self.restore_papers)
+        d.purgeRequested.connect(self.purge_papers)
+        d.cancelDownloadRequested.connect(self.sync.cancel_download)
+        d.retryDownloadRequested.connect(lambda pid: self.sync.download(pid, "open"))
+        self.library_view.syncSetupRequested.connect(lambda: self.show_settings("sync"))
+        self.library_view.syncStatusClicked.connect(self.show_sync_popover)
+        self.library_view.emptyTrashRequested.connect(self.empty_trash)
         self.stack.addWidget(self.library_view)
 
         reader = QWidget()
@@ -461,6 +497,8 @@ class MainWindow(QMainWindow):
             pct = f"（{p.done * 100 // p.total}%）" if isinstance(p, Progress) and p.stage.value == "translate" and p.total else ""
             if self.queue.is_cancelling():
                 text = "キャンセルしています…"
+            elif p == DOWNLOAD_STAGE:
+                text = "ダウンロードしています…"
             elif reader and self.paper is not None and current.paper_id == self.paper.id:
                 text = f"{p.label}…{pct}" if isinstance(p, Progress) else "準備しています…"
             else:
@@ -473,6 +511,10 @@ class MainWindow(QMainWindow):
                 self.progress.setValue(0)
         elif self.lookups.is_active() and not reader:
             text = "書誌情報を取得しています…"
+        downloads = self.sync.active_downloads()
+        if downloads:
+            # 翻訳と取得が同時に動くときは 1 行にまとめる
+            text = f"{text}（ほかに {downloads} 件をダウンロード中）" if text else f"{downloads} 件のファイルを取得しています…"
         if not text:
             text = self._status_message
         self.status.setText(text)
@@ -655,6 +697,9 @@ class MainWindow(QMainWindow):
             job=job,
             looking_up=len(papers) == 1 and self.lookups.is_waiting(papers[0].id),
             lookup_enabled=self.settings.metadata_lookup,
+            download=self.sync.download_state(papers[0].id) if len(papers) == 1 else None,
+            sync_on=self.sync.enabled(),
+            sync_available=self.sync.available() or not self.sync.enabled(),
         )
         if self.screen_mode == LIBRARY:
             self._update_state()
@@ -694,7 +739,8 @@ class MainWindow(QMainWindow):
         self._set_status(f"{len(papers)} 件の BibTeX をコピーしました" if len(papers) > 1 else "BibTeX をコピーしました")
 
     def remove_papers(self, ids: list[int]) -> None:
-        papers = [p for p in (self.library.get(i) for i in ids) if p is not None]
+        """「ライブラリから削除」：ゴミ箱に入れる（30 日以内なら戻せる。同期が有効なら、すべてのパソコンから消える）。"""
+        papers = [p for p in (self.library.get(i) for i in ids) if p is not None and p.trashed_at is None]
         if not papers:
             return
         running = [p for p in papers if self.queue.state(p.id) == "running"]
@@ -707,7 +753,8 @@ class MainWindow(QMainWindow):
             box.setText(f"「{_elide(papers[0].display_title, 60)}」をライブラリから削除しますか？")
         else:
             box.setText(f"{len(papers)} 件の論文をライブラリから削除しますか？")
-        box.setInformativeText("ライブラリ内のコピーと訳文を削除します。元のファイルは残ります。")
+        everywhere = "すべてのパソコンから削除されます。" if self.sync.enabled() else ""
+        box.setInformativeText(f"{everywhere}{TRASH_DAYS} 日以内ならゴミ箱から戻せます。元のファイルは残ります。")
         delete = box.addButton("削除", QMessageBox.ButtonRole.DestructiveRole)
         box.addButton("キャンセル", QMessageBox.ButtonRole.RejectRole)
         box.exec()
@@ -715,11 +762,58 @@ class MainWindow(QMainWindow):
             return
         for p in papers:
             self.queue.remove(p.id)
+            self.sync.cancel_download(p.id)
             if self.paper is not None and self.paper.id == p.id:
                 self._release_document()
-            self.library.remove(p.id)
-            self.library_view.model.remove(p.id)
-        self._set_status(f"{len(papers)} 件の論文を削除しました")
+            self.library.trash(p.id)
+            self.library_view.refresh_paper(p.id)
+        self._set_status(f"{len(papers)} 件の論文をゴミ箱に入れました")
+        self._update_state()
+
+    def restore_papers(self, ids: list[int]) -> None:
+        for pid in ids:
+            p = self.library.get(pid)
+            if p is not None and p.trashed_at is not None:
+                self.library.restore(pid)
+                self.library_view.refresh_paper(pid)
+        self._set_status(f"{len(ids)} 件の論文をゴミ箱から戻しました")
+        self._update_state()
+
+    def purge_papers(self, ids: list[int]) -> None:
+        papers = [p for p in (self.library.get(i) for i in ids) if p is not None and p.trashed_at is not None]
+        if not papers:
+            return
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setText("完全に削除しますか？" if len(papers) == 1 else f"{len(papers)} 件の論文を完全に削除しますか？")
+        everywhere = "すべてのパソコンから削除されます。" if self.sync.enabled() else ""
+        box.setInformativeText(f"{everywhere}この操作は取り消せません。")
+        delete = box.addButton("完全に削除", QMessageBox.ButtonRole.DestructiveRole)
+        box.addButton("キャンセル", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        if box.clickedButton() is not delete:
+            return
+        for p in papers:
+            self.library.purge(p.id)
+            self.library_view.refresh_paper(p.id)
+        self._update_state()
+
+    def empty_trash(self) -> None:
+        n = len(self.library.trashed_papers())
+        if not n:
+            return
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setText(f"ゴミ箱の {n} 件を完全に削除しますか？")
+        everywhere = "すべてのパソコンから削除されます。" if self.sync.enabled() else ""
+        box.setInformativeText(f"{everywhere}この操作は取り消せません。")
+        delete = box.addButton("ゴミ箱を空にする", QMessageBox.ButtonRole.DestructiveRole)
+        box.addButton("キャンセル", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        if box.clickedButton() is not delete:
+            return
+        self.library.empty_trash()
+        self.library_view.reload()
         self._update_state()
 
     def _table_menu(self, pos) -> None:
@@ -732,6 +826,11 @@ class MainWindow(QMainWindow):
             return
         papers = view.selected_papers()
         menu = QMenu(self)
+        if view.in_trash():
+            menu.addAction("ゴミ箱から戻す", lambda: self.restore_papers(ids))
+            menu.addAction("完全に削除…", lambda: self.purge_papers(ids))
+            menu.exec(view.table.viewport().mapToGlobal(pos))
+            return
         if len(ids) == 1:
             menu.addAction("開く", lambda: self.open_paper(ids[0]))
         if any(self.queue.state(i) for i in ids):
@@ -749,9 +848,17 @@ class MainWindow(QMainWindow):
             menu.addAction("書誌情報を編集…", lambda: self.edit_metadata(ids[0]))
         menu.addAction("書誌情報を取得し直す", lambda: self._lookup(ids, ask=True))
         menu.addAction("BibTeX をコピー", lambda: self.copy_bibtex(ids))
-        if len(ids) == 1:
+        if len(ids) == 1 and papers[0].has_original:  # 手元にない論文では出さない
             reveal = "Finder で表示" if theme.IS_MAC else "フォルダを開く"
             menu.addAction(reveal, lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(papers[0].pdf_path.parent))))
+        if self.sync.enabled():
+            menu.addSeparator()
+            missing = [p.id for p in papers if self.sync.needs_download(p)]
+            if missing:
+                menu.addAction("このパソコンに保存", lambda: [self.sync.download(i, "keep") for i in missing])
+            local = [p.id for p in papers if p.has_original and self.queue.state(p.id) is None]
+            if local:
+                menu.addAction("このパソコンのコピーを削除（クラウドには残す）", lambda: self.evict_papers(local))
         menu.addSeparator()
         menu.addAction("ライブラリから削除…", lambda: self.remove_papers(ids))
         menu.exec(view.table.viewport().mapToGlobal(pos))
@@ -761,9 +868,20 @@ class MainWindow(QMainWindow):
     # ======================================================================
 
     def open_paper(self, paper_id: int) -> bool:
+        """読書画面で開く。原文が手元になければ、取得のキューに入れ、取得できたら開く（どの入口からでも同じ動き）。"""
         paper = self.library.get(paper_id)
-        if paper is None:
+        if paper is None or paper.trashed_at is not None:
             return False
+        if not paper.has_original:
+            if not self.sync.enabled():
+                self._alert("この論文の PDF がこのパソコンにありません", "同期を有効にすると、ほかのパソコンから取得できます。")
+                return False
+            self.sync.download(paper_id, "open")
+            if self.screen_mode == LIBRARY:
+                self.library_view.reveal(paper_id)
+            return False
+        if paper.translation is not None and not paper.has_translation_file and self.sync.enabled():
+            self.sync.download(paper_id, "keep")  # 原文は先に開き、訳文は届いたら表示する
         try:
             data = paper.pdf_path.read_bytes()
             doc = open_document(data)
@@ -957,8 +1075,18 @@ class MainWindow(QMainWindow):
     def _run_translation(self, req: TranslationRequest, report, cancel) -> JobResult:
         """（バックグラウンドのスレッドで）1 本の論文を翻訳し、訳文をライブラリに保存する。"""
         paper = self.library.get(req.paper_id)
-        if paper is None:
+        if paper is None or paper.trashed_at is not None:
             raise CancelledError
+        if not paper.has_original:
+            # 手元にない論文は、翻訳の前に同期先から取得する
+            report(DOWNLOAD_STAGE)
+            try:
+                self.sync.fetch_blocking(req.paper_id, cancel)
+            except PaperNotFound:
+                raise CancelledError from None
+            paper = self.library.get(req.paper_id)
+            if paper is None:
+                raise CancelledError
         translator = registry.create(
             req.engine, api_key=req.api_key, options=req.translate_options, model=req.model, auto_fallback=req.auto_fallback
         )
@@ -992,7 +1120,10 @@ class MainWindow(QMainWindow):
             chars=result.translated_chars,
             created_at=time.time(),
         )
-        self.library.save_translation(req.paper_id, result.translated_pdf, info)
+        try:
+            self.library.save_translation(req.paper_id, result.translated_pdf, info)
+        except PaperNotFound:
+            raise CancelledError from None  # 翻訳中に別のパソコンで削除された
         return result
 
     def cancel_translation(self) -> None:
@@ -1190,7 +1321,8 @@ class MainWindow(QMainWindow):
     # ======================================================================
 
     def show_settings(self, tab: str = "engines") -> None:
-        dlg = SettingsDialog(self.settings, self.secrets, self.cache, self)
+        dlg = SettingsDialog(self.settings, self.secrets, self.cache, self, sync=self.sync)
+        dlg.syncChanged.connect(self._on_sync_setting)
         dlg.keysChanged.connect(self.refresh_engine_status)
         dlg.settingsChanged.connect(lambda: self._on_settings_changed(True))
         dlg.appearanceChanged.connect(self.apply_appearance)
@@ -1198,6 +1330,147 @@ class MainWindow(QMainWindow):
         dlg.show_tab(tab)
         dlg.exec()
         self.refresh_engine_status()
+
+    # ======================================================================
+    # 同期
+    # ======================================================================
+
+    def _on_sync_setting(self) -> None:
+        was = self.sync.enabled()
+        self.sync.configure()
+        if self.sync.enabled() and not was:
+            self._first_sync_count = self.library_view.active_count()
+        self._refresh_sync_status()
+        self._refresh_detail()
+
+    def _refresh_sync_status(self) -> None:
+        """サイドバーの下の 1 行（同期がオフで、保存先もなければ出さない）。"""
+        s = self.sync
+        downloads = s.active_downloads()
+        if not self.settings.sync_folder:
+            icon, text, warn = "", "", False
+        elif not s.enabled():
+            icon, text, warn = "pause", "同期を一時停止中", False
+        elif downloads:
+            icon, text, warn = "cloud_download", f"取得中… {downloads} 件", False
+        elif s.state == SYNCING:
+            icon, text, warn = "sync", "同期中…", False
+        elif s.state in (ERROR, UNAVAILABLE):
+            icon, text, warn = "warning", "同期できませんでした", True
+        else:
+            # Spectra に分かるのは「同期フォルダに書いた」ところまでなので、「同期済み」ではなく「保存済み」
+            from .sync_settings import format_ago
+
+            icon, text, warn = "check", f"保存済み · {format_ago(s.last_saved)}", False
+        self.library_view.set_sync_status(icon, text, warn)
+        self._refresh_footer()
+
+    def show_sync_popover(self) -> None:
+        from .sync_popover import SyncPopover
+
+        pop = SyncPopover(self.settings, self.sync, self)
+        pop.settingsRequested.connect(lambda: self.show_settings("sync"))
+        pop.downloadAllRequested.connect(self._download_all)
+        btn = self.library_view.sync_status
+        pop.show_below(btn)
+
+    def _download_all(self) -> None:
+        n = self.sync.download_all()
+        self._set_status(f"{n} 件の論文をこのパソコンに取得します" if n else "すべての論文がこのパソコンにあります")
+
+    def evict_papers(self, ids: list[int]) -> None:
+        def done():
+            for pid in ids:
+                self.library_view.refresh_paper(pid)
+            self._set_status(f"{len(ids)} 件の論文のコピーを、このパソコンから削除しました（クラウドには残っています）")
+
+        def failed(err):
+            for pid in ids:
+                self.library_view.refresh_paper(pid)
+            if isinstance(err, RemoteMissing):
+                self._alert(
+                    "まだ同期先に保存されていないため、このパソコンのコピーを削除できません",
+                    "同期先への保存が終わってから、もう一度お試しください。",
+                )
+            else:
+                title, _, rest = err.user_message().partition("\n") if isinstance(err, SpectraError) else (str(err), "", "")
+                self._alert(title, rest)
+
+        self.sync.evict(ids, done, failed)
+
+    def _on_synced(self, report) -> None:
+        if self._first_sync_count is not None and not getattr(report, "errors", None):
+            before, self._first_sync_count = self._first_sync_count, None
+            self.library_view.reload()
+            total = self.library_view.active_count()
+            if total > before:
+                body = "論文を開くと、ファイルをダウンロードします。"
+                if before:
+                    body = f"このパソコンの {before} 件と合わせて {total} 件になりました。" + body
+                self._show_banner("info", f"ライブラリを同期しました（論文 {total} 件）", body)
+        if getattr(report, "read_only", False):
+            self._show_banner(
+                "warning",
+                "別のパソコンで新しい Spectra が使われています",
+                "このパソコンの Spectra を更新してください。それまでは、ほかのパソコンの変更を読むだけにします。",
+            )
+
+    def _on_remote_changes(self, changes) -> None:
+        """ほかのパソコンの変更を反映した（同期のワーカーから、Qt のシグナルで届く）。"""
+        if any(c.kind == "collections" for c in changes) or len(changes) > 50:
+            self.library_view.reload()
+        for c in changes:
+            pid = c.paper_id
+            if pid is None and c.sha256:
+                found = self.library.find_by_sha(c.sha256)
+                pid = found.id if found else None
+            if pid is None:
+                continue
+            here = self.screen_mode == READER and self.paper is not None and self.paper.id == pid
+            if c.kind == "removed":
+                self.queue.remove(pid)  # 翻訳中なら、ワーカーが PaperNotFound で静かに終わる
+                self.sync.cancel_download(pid)
+                if here:
+                    self.show_library()
+                    self._show_banner("info", "この論文は別のパソコンで削除されました")
+            elif c.kind == "translation" and here:
+                self._show_banner(
+                    "info", "別のパソコンで新しい訳文が作られました", "", "開き直す", lambda p=pid: self.open_paper(p)
+                )
+            elif c.kind == "metadata" and here:
+                self.paper = self.library.get(pid) or self.paper
+                self._update_state()
+            if c.kind != "collections":
+                self.library_view.refresh_paper(pid)
+        self._refresh_detail()
+
+    def _on_download_changed(self, paper_id: int) -> None:
+        self.library_view.model.set_download(paper_id, self.sync.download_state(paper_id))
+        ids = self.library_view.selected_ids()
+        if ids == [paper_id]:
+            self._refresh_detail()
+        self._refresh_sync_status()
+
+    def _on_download_finished(self, paper_id: int, purpose: str) -> None:
+        self.library_view.refresh_paper(paper_id)
+        here = self.screen_mode == READER and self.paper is not None and self.paper.id == paper_id
+        if purpose == "open" and not here:
+            self.open_paper(paper_id)
+        elif here and self.translated_pdf is None:
+            # 開いている論文の訳文が届いた
+            paper = self.library.get(paper_id)
+            if paper is not None and self._load_saved_translation(paper):
+                self.paper = paper
+                self.view_mode.set_current("both")
+                self.preview.set_mode("both")
+                self._update_state()
+
+    def _on_download_failed(self, paper_id: int, err: BaseException) -> None:
+        # 理由は行の記号と詳細パネルに出る（再試行もそこから）。開こうとしていた論文なら、その論文を選んで見せる
+        if self.screen_mode == LIBRARY:
+            self.library_view.reveal(paper_id)
+        title = getattr(err, "title", "") or "ファイルを取得できませんでした"
+        self._set_status(title)
 
     def _on_lookup_setting(self, on: bool) -> None:
         if on:
@@ -1322,6 +1595,7 @@ class MainWindow(QMainWindow):
                 event.ignore()
                 return
             self.queue.cancel_all()
+        self.sync.close()
         self.settings.window = {
             "geometry": bytes(self.saveGeometry().toBase64()).decode(),
             "inspector": self.inspector_btn.isChecked(),

@@ -37,3 +37,8 @@ class RemoteMissing(SyncError):
 class HashMismatch(SyncError):
     title = "ファイルの同期が終わっていないか、ファイルが壊れています"
     hint = "しばらく待ってから再試行してください。"
+
+
+class LocalDiskFull(SyncError):
+    title = "このパソコンの空き容量が足りません"
+    hint = "不要なファイルを削除して空き容量を増やしてから、もう一度試してください。"

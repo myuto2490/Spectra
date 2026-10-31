@@ -6,8 +6,9 @@ import os
 from pathlib import Path
 
 from PySide6.QtCore import QSize, Qt, QUrl, Signal
-from PySide6.QtGui import QDesktopServices, QFont, QFontDatabase
+from PySide6.QtGui import QDesktopServices, QFont, QFontDatabase, QGuiApplication
 from PySide6.QtWidgets import (
+    QAbstractButton,
     QButtonGroup,
     QComboBox,
     QDialog,
@@ -40,6 +41,7 @@ from .widgets import (
     button,
     label,
     link_button,
+    refresh_icon,
     set_prop,
     tool_button,
 )
@@ -69,12 +71,13 @@ class KeyField(QWidget):
         titles.addWidget(label(self.info.description, "caption", wrap=True))
         head.addLayout(titles, 1)
         get_key = link_button("キーを取得")
-        get_key.setIcon(icons.icon("external", theme.current().accent, 14))
+        self.get_key = get_key
         get_key.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
         get_key.setToolTip(self.info.key_url)
         get_key.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(self.info.key_url)))
         head.addWidget(get_key, 0, Qt.AlignmentFlag.AlignTop)
         lay.addLayout(head)
+        self.refresh_theme()
 
         row = QHBoxLayout()
         row.setSpacing(6)
@@ -111,6 +114,9 @@ class KeyField(QWidget):
             self._set_status(f"{src} の値が使われます。", "info")
         elif src:
             self._set_status(f"保存済み（{src}）", "success")
+
+    def refresh_theme(self) -> None:
+        self.get_key.setIcon(icons.icon("external", theme.current().accent, 14))
 
     def _toggle_reveal(self, on: bool) -> None:
         self.edit.setEchoMode(QLineEdit.EchoMode.Normal if on else QLineEdit.EchoMode.Password)
@@ -236,6 +242,15 @@ class FontOption(QFrame):
             self.sample.setFont(f)
 
 
+def _scrollable(page: QWidget) -> QScrollArea:
+    """ページを縦スクロールで包む。高さが足りないときに行が潰れないようにする。"""
+    scroll = QScrollArea()
+    scroll.setWidgetResizable(True)
+    scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    scroll.setWidget(page)
+    return scroll
+
+
 class SettingsDialog(QDialog):
     keysChanged = Signal()
     settingsChanged = Signal()
@@ -262,6 +277,8 @@ class SettingsDialog(QDialog):
             self.stack.addWidget(w)
         self.tabs.changed.connect(lambda k: self.stack.setCurrentWidget(self._pages[k]))
         self.tabs.set_current("engines")
+        # 開いたままテーマが変わったとき（この画面での切り替え・システムの外観の変更）にアイコンの色を合わせる
+        QGuiApplication.styleHints().colorSchemeChanged.connect(self.refresh_theme)
 
         footer = QHBoxLayout()
         footer.addStretch(1)
@@ -269,6 +286,12 @@ class SettingsDialog(QDialog):
         done.clicked.connect(self.accept)
         footer.addWidget(done)
         lay.addLayout(footer)
+
+    def refresh_theme(self) -> None:
+        for b in self.findChildren(QAbstractButton):
+            refresh_icon(b)
+        for field in self.key_fields.values():
+            field.refresh_theme()
 
     def show_tab(self, key: str) -> None:
         self.tabs.set_current(key)
@@ -319,11 +342,7 @@ class SettingsDialog(QDialog):
         self._refresh_model_desc()
         lay.addWidget(model_group)
         lay.addStretch(1)
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        scroll.setWidget(page)
-        return scroll
+        return _scrollable(page)
 
     def _refresh_model_desc(self) -> None:
         info = MODELS[self.settings.gemini_model]
@@ -462,7 +481,8 @@ class SettingsDialog(QDialog):
             folders.add_row(title, b, str(path))
         lay.addWidget(folders)
         lay.addStretch(1)
-        return page
+        # 項目が多くダイアログの高さに収まらないので、行を潰さずにスクロールさせる
+        return _scrollable(page)
 
     def _refresh_cache_info(self) -> None:
         if self.cache is None:
@@ -485,6 +505,7 @@ class SettingsDialog(QDialog):
         self.settings.appearance = value
         self.settings.save()
         self.appearanceChanged.emit()
+        self.refresh_theme()
 
     def _on_lookup_toggle(self, on: bool) -> None:
         self.settings.metadata_lookup = on

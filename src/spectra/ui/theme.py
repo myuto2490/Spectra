@@ -123,6 +123,10 @@ _appearance = "auto"  # auto / light / dark
 def set_appearance(value: str) -> None:
     global _appearance
     _appearance = value if value in ("auto", "light", "dark") else "auto"
+    # タイトルバーなどネイティブの部分も合わせる。自動のときは指定を外してシステムに従う
+    if QGuiApplication.instance() is not None:
+        schemes = {"light": Qt.ColorScheme.Light, "dark": Qt.ColorScheme.Dark}
+        QGuiApplication.styleHints().setColorScheme(schemes.get(_appearance, Qt.ColorScheme.Unknown))
 
 
 def is_dark() -> bool:

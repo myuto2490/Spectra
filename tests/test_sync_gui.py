@@ -855,3 +855,24 @@ def test_device_name_can_be_changed_while_sync_is_paused(make_window, cloud):
     w.settings.sync_enabled = True
     w._on_sync_setting()
     assert w.sync.device().name == "自宅の Mac"
+
+
+def test_device_name_unchanged_focus_out_does_nothing(make_window, cloud):
+    (cloud / "Spectra Sync").mkdir(parents=True)
+    app, w = make_window()
+    from spectra.ui.sync_settings import SyncPage
+
+    page = SyncPage(w.settings, w.sync)
+    page.name_edit.setText("研究室のノート")
+    page.name_edit.editingFinished.emit()
+    calls = []
+    original = w.sync.set_device_name
+    w.sync.set_device_name = lambda name: calls.append(name) or original(name)
+    page.name_edit.setText("  研究室のノート ")  # 前後の空白だけが違う（正規化すると同じ）
+    page.name_edit.editingFinished.emit()
+    assert calls == [] and page.name_edit.text() == "研究室のノート"
+    long_name = "MacBook Pro 16 インチ（2026）共用の研究室のノートパソコン"
+    page.name_edit.setText(long_name)
+    page.name_edit.editingFinished.emit()
+    assert len(calls) == 1 and page.name_edit.cursorPosition() == 0
+    assert "\n例: 自宅の Mac" in page.name_caption.text()

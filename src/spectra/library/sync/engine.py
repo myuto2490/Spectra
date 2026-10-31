@@ -17,6 +17,7 @@ import contextlib
 import hashlib
 import logging
 import os
+import sqlite3
 import threading
 import time
 import uuid
@@ -26,7 +27,7 @@ from pathlib import Path
 
 from ... import __version__
 from ...translate.errors import CancelledError
-from ..errors import HashMismatch, PaperNotFound, RemoteMissing, SyncUnavailable
+from ..errors import HashMismatch, LocalDiskFull, PaperNotFound, RemoteMissing, SyncUnavailable
 from ..models import Author, Metadata, Paper, Translation
 from ..store import Library
 from . import files as F
@@ -67,6 +68,18 @@ class SyncReport:
     changes: list[RemoteChange] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     read_only: bool = False  # 同期フォルダの形式が新しすぎる
+    disk_full: int = 0  # このパソコンの空き容量が足りずに書き出し・取り込みできなかった件数
+
+
+@dataclass(frozen=True)
+class DeviceSummary:
+    """同期している端末の要約（ポップオーバーの表示用）。name はほかの端末から来た文字列なので、リッチテキストとして解釈しないこと。"""
+
+    id: str
+    name: str
+    app: str
+    last_seen: float | None  # その端末が最後に書いた時刻（秒）
+    is_self: bool
 
 
 def snapshot(p: Paper) -> dict:
@@ -138,6 +151,7 @@ class SyncEngine:
         self._listeners: list[Callable[[list[RemoteChange]], None]] = []
         self._lock = threading.Lock()
         self._sync_lock = threading.Lock()
+        self._devices: list[DeviceSummary] = []
 
     # -- 通知 ------------------------------------------------------------------
 
@@ -164,6 +178,11 @@ class SyncEngine:
             except Exception:
                 log.exception("remote listener failed")
 
+    def devices(self) -> list[DeviceSummary]:
+        """最後の sync_now で求めた端末の一覧（自分を含む）。同期フォルダには触らないので、UI のスレッドから呼んでよい。"""
+        with self._lock:
+            return list(self._devices)
+
     # -- 同期 ------------------------------------------------------------------
 
     def sync_now(self, cancel: threading.Event | None = None) -> SyncReport:
@@ -180,7 +199,10 @@ class SyncEngine:
                 report.read_only = True
                 return report
             if "format.json" not in names:
-                self.storage.write_atomic("format.json", F.encode({"format": FORMAT}))
+                try:
+                    self.storage.write_atomic("format.json", F.encode({"format": FORMAT}))
+                except LocalDiskFull:
+                    report.disk_full += 1
             self._check_cancel(cancel)
             self.backup_before_first_sync()
             self._first_join(remote)
@@ -188,8 +210,14 @@ class SyncEngine:
             self._check_cancel(cancel)
             self._export(names, report)
             changes = self._merge(remote, report)
-            self._write_device(names)
+            try:
+                self._write_device(names)
+            except LocalDiskFull:
+                report.disk_full += 1
             self.state.set_meta("clock", str(self.clock.last))
+            if report.exported:
+                self.state.set_meta("last_write", str(time.time()))
+            self._summarize_devices(remote)
             report.changes = changes
         self._notify(changes)
         return report
@@ -277,7 +305,13 @@ class SyncEngine:
             fmt = obj.get("format")
             if not isinstance(fmt, int) or isinstance(fmt, bool):
                 return None
-            return {"_kind": "device", "device": str(obj.get("device") or obj.get("id") or "")[:32], "format": fmt}
+            return {
+                "_kind": "device",
+                "device": str(obj.get("device") or obj.get("id") or "")[:32],
+                "format": fmt,
+                "name": str(obj.get("name") or "")[:100],
+                "app": str(obj.get("app") or "")[:40],
+            }
         if data is None:
             return None
         return {**data, "_kind": kind, "_key": k}
@@ -293,6 +327,32 @@ class SyncEngine:
         for s in stamps:
             with contextlib.suppress(ValueError):
                 self.clock.observe(HLC.parse(s))
+
+    def _summarize_devices(self, remote: dict) -> None:
+        last: dict[str, float] = {}
+        for area in ("papers", "translations", "collections"):
+            for entries in remote[area].values():
+                for data in entries:
+                    stamps = [e[1] for e in data.get("fields", {}).values()]
+                    stamps += [data[k][1] for k in ("life", "name") if data.get(k)]
+                    stamps += [e[1] for e in data.get("collections", {}).values()]
+                    if data.get("hlc"):
+                        stamps.append(data["hlc"])
+                    for s in stamps:
+                        with contextlib.suppress(ValueError):
+                            wall = HLC.parse(s).wall_ms / 1000
+                            last[data["device"]] = max(last.get(data["device"], 0.0), wall)
+        summaries = {
+            d["device"]: DeviceSummary(d["device"], d.get("name", ""), d.get("app", ""), last.get(d["device"]), False)
+            for d in remote["devices"]
+            if F.HEX32_RE.match(d.get("device", "")) and d["device"] != self.device.id
+        }
+        for dev, seen in last.items():
+            summaries.setdefault(dev, DeviceSummary(dev, "", "", seen, False))
+        mine = self.state.get_meta("last_write")
+        me = DeviceSummary(self.device.id, self.device.name, __version__, float(mine) if mine else None, True)
+        with self._lock:
+            self._devices = [me, *sorted(summaries.values(), key=lambda d: -(d.last_seen or 0))]
 
     def _newer_format(self, remote: dict) -> bool:
         """ほかの端末が、この版より新しい形式を書いていれば True（同期を読み取り専用にする）。"""
@@ -515,15 +575,19 @@ class SyncEngine:
         for r in self.state.query("SELECT sha, own FROM papers WHERE exported = 0"):
             sha, own = r["sha"], loads(r["own"], {})
             paper = self.library.find_by_sha(sha)
-            if paper is not None and paper.has_original and F.original_path(sha) not in names:
-                self.storage.put_file(F.original_path(sha), paper.pdf_path)
-                names.add(F.original_path(sha))
             body = {
                 "kind": "paper", "v": F.FILE_VERSION, "device": self.device.id, "sha": sha,
                 "fields": own.get("fields", {}), "life": own.get("life"), "file": own.get("file", {}),
                 "opened": own.get("opened"), "collections": members.get(sha, {}),
             }
-            self.storage.write_atomic(F.state_path(sha, self.device.id), F.encode(body))
+            try:
+                if paper is not None and paper.has_original and F.original_path(sha) not in names:
+                    self.storage.put_file(F.original_path(sha), paper.pdf_path)
+                    names.add(F.original_path(sha))
+                self.storage.write_atomic(F.state_path(sha, self.device.id), F.encode(body))
+            except LocalDiskFull:
+                report.disk_full += 1  # 次の同期で書き出し直す（exported は 0 のまま）
+                continue
             with self.state.tx() as db:
                 db.execute("UPDATE papers SET exported = 1 WHERE sha = ?", (sha,))
             report.exported += 1
@@ -531,15 +595,19 @@ class SyncEngine:
             sha, own = r["sha"], loads(r["own"], {})
             if own:
                 pdf = F.translation_pdf_path(sha, self.device.id)
-                if own.get("alive"):
-                    paper = self.library.find_by_sha(sha)
-                    if paper is None or not paper.has_translation_file:
-                        continue
-                    self.storage.put_file(pdf, paper.translated_path)
-                elif pdf in names:
-                    self.storage.delete(pdf)
-                body = {"kind": "translation", "v": F.FILE_VERSION, "device": self.device.id, "sha": sha, **own}
-                self.storage.write_atomic(F.translation_json_path(sha, self.device.id), F.encode(body))
+                try:
+                    if own.get("alive"):
+                        paper = self.library.find_by_sha(sha)
+                        if paper is None or not paper.has_translation_file:
+                            continue
+                        self.storage.put_file(pdf, paper.translated_path)
+                    elif pdf in names:
+                        self.storage.delete(pdf)
+                    body = {"kind": "translation", "v": F.FILE_VERSION, "device": self.device.id, "sha": sha, **own}
+                    self.storage.write_atomic(F.translation_json_path(sha, self.device.id), F.encode(body))
+                except LocalDiskFull:
+                    report.disk_full += 1
+                    continue
                 report.exported += 1
             with self.state.tx() as db:
                 db.execute("UPDATE translations SET exported = 1 WHERE sha = ?", (sha,))
@@ -572,6 +640,10 @@ class SyncEngine:
                 changes += self._merge_paper(sha, own, entries, own_members.get(sha, {}), report)
             except PaperNotFound:
                 continue
+            except sqlite3.OperationalError as e:
+                if "full" not in str(e).lower():
+                    raise
+                report.disk_full += 1  # 「database or disk is full」: 次の同期で取り込み直す
         changes += self._merge_translations(remote)
         return changes
 

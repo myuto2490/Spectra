@@ -69,6 +69,7 @@ def _shoot(out: Path, scenes: list[str]) -> int:
     from spectra.config.secrets import SecretStore
     from spectra.config.settings import Settings
     from spectra.library import Library
+    from spectra.library import lookup as lookup_module
     from spectra.library.models import Author, Metadata
     from spectra.translate import registry
     from spectra.ui import theme
@@ -81,6 +82,8 @@ def _shoot(out: Path, scenes: list[str]) -> int:
     drive.mkdir(parents=True)
     # 擬似翻訳の代わりに、デモ論文の書き下ろしの訳文を使う
     registry.create = lambda *_a, **_k: demo_paper.DemoTranslator()
+    # 書誌情報の照会は既定でオンなので、画面もオンのときの見た目にする。ただし通信はしない
+    lookup_module.lookup = lambda *_a, **_k: None
 
     app = create_app([])
     work = home / "papers"
@@ -97,11 +100,13 @@ def _shoot(out: Path, scenes: list[str]) -> int:
         _blank_pdf(f, title)
         p, _ = lib.add(f, Metadata(title=title, authors=[Author(a, b) for a, b in authors], year=year, venue=venue, doi=doi))
         ids.append(p.id)
+    for pid in ids:
+        lib.set_meta_status(pid, "done")  # 照会済みの扱いにして「照会を有効にする」の案内を出さない
     lib.set_favorite(ids[1], True)
     col = lib.create_collection("修士論文")
     lib.add_to_collection(col.id, ids[:3])
 
-    settings = Settings(engine="gemini", metadata_lookup=False)
+    settings = Settings(engine="gemini", metadata_lookup=True)
     secrets = SecretStore(use_keyring=False)
     secrets.set("gemini", "demo-key-not-used")  # 一時フォルダの設定ファイルに入るだけで、どこにも送らない
     win = MainWindow(settings=settings, secrets=secrets, library=lib)

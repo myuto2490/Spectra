@@ -55,5 +55,5 @@ body:
     id: logs
     attributes:
       label: ログ
-      description: 設定 → 詳細 → フォルダ「ログ」の spectra.log の該当部分（API キーは記録されません）
+      description: 設定 → 詳細 → フォルダ「ログ」の spectra.log の該当部分（API キーは記録されません。ホームフォルダのパスとメールアドレスは伏せて記録されます）
       render: text

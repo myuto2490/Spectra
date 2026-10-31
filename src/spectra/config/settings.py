@@ -14,7 +14,7 @@ from . import paths
 
 log = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 3  # 2: 既定モデルを 3.8 Flash から 3.5 Flash-Lite に変更 / 3: 書誌情報の照会を既定でオンに変更
+SCHEMA_VERSION = 5  # 2: 既定モデルを 3.8 Flash から 3.5 Flash-Lite に変更 / 3: 書誌情報の照会を既定でオンに変更 / 4: 同期の設定を追加 / 5: 端末名
 
 
 @dataclass
@@ -33,6 +33,9 @@ class Settings:
     use_cache: bool = True
     appearance: str = "auto"  # auto / light / dark
     metadata_lookup: bool = True  # 書誌情報を Crossref / arXiv に照会する（DOI・arXiv ID だけを送る）
+    sync_enabled: bool = False  # クラウド同期（同期フォルダ方式）。既定はオフ
+    sync_folder: str = ""  # 同期フォルダ（この中に「Spectra Sync」を作る）
+    device_name: str = ""  # 同期でほかのパソコンに表示するこの端末の名前（空なら「Mac（1a2b）」の形の既定）
     last_open_dir: str = ""
     last_save_dir: str = ""
     window: dict = field(default_factory=dict)

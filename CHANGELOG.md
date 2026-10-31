@@ -7,6 +7,21 @@
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-01
+
+### 追加
+
+- ライブラリの同期：Google Drive・Dropbox・OneDrive・iCloud Drive・Syncthing などの同期フォルダを使って、複数のパソコンでライブラリ（原文・訳文・書誌情報・コレクション）を同期できるようにします。
+  初期状態では無効で、設定の「同期」から有効にします。Spectra 自身は通信せず、そのフォルダの同期は各サービスのアプリが行います。API キー・設定・翻訳キャッシュは同期しません
+- 初めて同期する前のライブラリを自動でバックアップし、設定の「同期」の「同期前の状態に戻す…」で戻せます
+- 設定の「同期」で、「このパソコンの名前」を変えられます（ほかのパソコンに表示される名前。既定は「Mac（1a2b）」のような名前で、ホスト名は使いません）
+- 同期しているとき、論文の右クリックの「このパソコンのコピーを削除（クラウドには残す）」と「このパソコンに保存」で、手元の容量を調整できます
+- ゴミ箱：削除した論文は、同期の有無にかかわらずゴミ箱に入り、30 日以内ならサイドバーの「ゴミ箱」から戻せます
+
+### 変更
+
+- 「ライブラリから削除」は、論文をすぐに消さずゴミ箱に移すようになりました。30 日たつと完全に削除されます（以前は削除するとすぐに消えていました）
+
 ## [0.2.0] - 2026-10-31
 
 ### 追加
@@ -106,7 +121,7 @@
 **コマンドラインツール**
 - `spectra translate` / `spectra estimate` / `spectra key`
 
-[Unreleased]: https://github.com/myuto2490/Spectra/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/myuto2490/Spectra/compare/v0.3.0...HEAD
 [0.1.0]: https://github.com/myuto2490/Spectra/releases/tag/v0.1.0
 [0.1.1]: https://github.com/myuto2490/Spectra/compare/v0.1.0...v0.1.1
 [0.1.2]: https://github.com/myuto2490/Spectra/compare/v0.1.1...v0.1.2
@@ -114,3 +129,4 @@
 [0.1.4]: https://github.com/myuto2490/Spectra/compare/v0.1.3...v0.1.4
 [0.1.5]: https://github.com/myuto2490/Spectra/compare/v0.1.4...v0.1.5
 [0.2.0]: https://github.com/myuto2490/Spectra/compare/v0.1.5...v0.2.0
+[0.3.0]: https://github.com/myuto2490/Spectra/compare/v0.2.0...v0.3.0

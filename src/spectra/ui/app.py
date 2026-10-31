@@ -21,7 +21,10 @@ def _setup_logging() -> None:
         )
     except OSError:
         handler = logging.StreamHandler()
-    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    # ログはバグ報告に貼られることがあるので、ユーザー名を含むパスやメールアドレスを伏せて書く
+    from .privacy import RedactingFormatter
+
+    handler.setFormatter(RedactingFormatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
     root = logging.getLogger()
     root.setLevel(logging.INFO)
     root.addHandler(handler)
@@ -79,7 +82,11 @@ def main() -> int:
         from PySide6.QtWidgets import QMessageBox
 
         title, _, rest = e.user_message().partition("\n")
-        QMessageBox.critical(None, APP_NAME, f"{title}\n\n{rest}")
+        from .widgets import plain_box
+
+        box = QMessageBox(QMessageBox.Icon.Critical, APP_NAME, title)
+        box.setInformativeText(rest)
+        plain_box(box).exec()
         return 1
     window = MainWindow(library=library)
 

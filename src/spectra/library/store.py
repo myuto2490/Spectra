@@ -2,6 +2,7 @@
 
 library_dir()/
     library.sqlite3
+    state.sqlite3                     この端末だけの状態（ゴミ箱）。library.sqlite3 の版を上げずに済むよう別ファイルにする
     files/<paper_id>/original.pdf     取り込んだ PDF のコピー
     files/<paper_id>/translated.pdf   訳文のみの版（出力形式は PDF出力のときに作り直す）
 """
@@ -16,19 +17,30 @@ import shutil
 import sqlite3
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
 from ..config import paths
 from ..core.pipeline import open_document
-from .errors import LibraryError
+from .errors import LibraryError, PaperNotFound
 from .metadata import extract_local
-from .models import META_STATUSES, Author, Collection, Metadata, Paper, Translation
+from .models import (
+    META_STATUSES,
+    AddResult,
+    Author,
+    Collection,
+    LibraryEvent,
+    Metadata,
+    Paper,
+    Translation,
+)
 
 log = logging.getLogger(__name__)
 
 DB_NAME = "library.sqlite3"
+STATE_DB_NAME = "state.sqlite3"
+TRASH_DAYS = 30
 
 # 1 要素が 1 バージョン。PRAGMA user_version に適用済みの数を記録し、足りない分を順に流す。
 # 既存の要素は書き換えず、変更は末尾に追加すること。
@@ -85,6 +97,16 @@ MIGRATIONS: list[str] = [
     """,
 ]
 
+# state.sqlite3（ATTACH して "state" として使う）の移行。考え方は MIGRATIONS と同じ
+STATE_MIGRATIONS: list[str] = [
+    """
+    CREATE TABLE state.trash (
+        paper_id INTEGER PRIMARY KEY,
+        trashed_at REAL NOT NULL
+    );
+    """,
+]
+
 _TEXT_FIELDS = ("title", "venue", "volume", "issue", "pages", "doi", "arxiv_id", "abstract", "url")
 
 
@@ -95,10 +117,17 @@ class Library:
         self._lock = threading.RLock()
         self._db = sqlite3.connect(str(self.root / DB_NAME), check_same_thread=False, isolation_level=None)
         self._db.row_factory = sqlite3.Row
+        self._listeners: list[Callable[[LibraryEvent], None]] = []
+        self._quiet = threading.local()
         with self._lock:
             self._db.execute("PRAGMA foreign_keys=ON")
             self._db.execute("PRAGMA journal_mode=WAL")
             self._migrate()
+            self._db.execute("ATTACH DATABASE ? AS state", (str(self.root / STATE_DB_NAME),))
+            self._db.execute("PRAGMA state.journal_mode=WAL")
+            self._migrate_state()
+            # 完全に削除するときは 2 つの DB にまたがるので、途中で落ちた分の残りを掃除する
+            self._db.execute("DELETE FROM state.trash WHERE paper_id NOT IN (SELECT id FROM main.papers)")
 
     # -- 接続・移行 ----------------------------------------------------------
 
@@ -130,6 +159,81 @@ class Library:
                     self._db.execute("ROLLBACK")
                 raise
 
+    def _migrate_state(self) -> None:
+        version = int(self._db.execute("PRAGMA state.user_version").fetchone()[0])
+        if version > len(STATE_MIGRATIONS):
+            self._db.close()
+            raise LibraryError(
+                "新しいバージョンの Spectra で作成されたライブラリです。",
+                hint="Spectra を最新版に更新してください。",
+            )
+        for number, script in enumerate(STATE_MIGRATIONS[version:], version + 1):
+            try:
+                self._db.executescript(
+                    f"BEGIN;\n{script.strip().rstrip(';')};\nPRAGMA state.user_version = {number};\nCOMMIT;"
+                )
+            except sqlite3.Error:
+                if self._db.in_transaction:
+                    self._db.execute("ROLLBACK")
+                raise
+
+    # -- 変更の合図 ------------------------------------------------------------
+
+    def add_listener(self, fn: Callable[[LibraryEvent], None]) -> Callable[[], None]:
+        """変更の合図を受け取る関数を登録し、登録を解除する関数を返す。
+
+        約束: コミットしてロックを離した後に呼ぶ。呼ばれるスレッドは決まっていない。
+        例外はログに書いて握りつぶす（変更の操作は失敗させない）。受け取る側は合図だけを受け取り、重い処理はしない。
+        """
+        with self._lock:
+            self._listeners.append(fn)
+
+        def remove() -> None:
+            with self._lock:
+                if fn in self._listeners:
+                    self._listeners.remove(fn)
+
+        return remove
+
+    @contextmanager
+    def quiet(self) -> Iterator[None]:
+        """このスレッドでの変更の合図を止める（同期が他の端末の変更を反映するときに使う）。
+
+        合図は「走査してほしい」というきっかけにすぎず、走査は全件を比べるので、止めても変更は失われない。
+        """
+        self._quiet.on = getattr(self._quiet, "on", 0) + 1
+        try:
+            yield
+        finally:
+            self._quiet.on -= 1
+
+    def _emit(self, kind: str, paper_id: int | None = None, sha256: str = "") -> None:
+        if getattr(self._quiet, "on", 0):
+            return
+        with self._lock:
+            listeners = list(self._listeners)
+        event = LibraryEvent(kind, paper_id, sha256)
+        for fn in listeners:
+            try:
+                fn(event)
+            except Exception:
+                log.exception("library listener failed")
+
+    # -- バックアップ ------------------------------------------------------------
+
+    def backup_to(self, folder: Path) -> Path:
+        """DB（library.sqlite3・state.sqlite3）を folder にコピーする（PDF はコピーしない）。WAL のままでも一貫した写しを作る。"""
+        folder = Path(folder)
+        folder.mkdir(parents=True, exist_ok=True)
+        with self._lock:
+            for schema, name in (("main", DB_NAME), ("state", STATE_DB_NAME)):
+                dest = sqlite3.connect(str(folder / name))
+                try:
+                    self._db.backup(dest, name=schema)
+                finally:
+                    dest.close()
+        return folder
+
     @property
     def schema_version(self) -> int:
         with self._lock:
@@ -143,11 +247,19 @@ class Library:
 
     def add(self, path: Path, metadata: Metadata | None = None) -> tuple[Paper, bool]:
         """PDF を取り込む。同じ内容のファイルが既にあれば (既存の論文, True) を返す。"""
+        result = self.add_detailed(path, metadata)
+        return result.paper, result.status != "new"
+
+    def add_detailed(self, path: Path, metadata: Metadata | None = None) -> AddResult:
+        """add と同じだが、新規・既存・ゴミ箱から戻した、を区別して返す。"""
         path = Path(path)
         data = path.read_bytes()
         sha = hashlib.sha256(data).hexdigest()
         if existing := self.find_by_sha(sha):
-            return existing, True
+            if existing.trashed_at is None:
+                return AddResult(existing, "existing")
+            self.restore(existing.id)  # ゴミ箱の論文をもう一度追加したら、ゴミ箱から戻す
+            return AddResult(self._require(existing.id), "restored")
         doc = open_document(data)
         try:
             page_count = doc.page_count
@@ -171,17 +283,22 @@ class Library:
         except sqlite3.IntegrityError:
             # 別スレッドが同じファイルを先に取り込んだ
             if existing := self.find_by_sha(sha):
-                return existing, True
+                return AddResult(existing, "existing")
             raise
-        return self._require(paper_id), False
+        self._emit("added", paper_id, sha)
+        return AddResult(self._require(paper_id), "new")
 
     def get(self, paper_id: int) -> Paper | None:
         papers = self._load("WHERE p.id = ?", (paper_id,))
         return papers[0] if papers else None
 
     def papers(self) -> list[Paper]:
-        """全件を追加日時の新しい順に返す。"""
-        return self._load("ORDER BY p.added_at DESC, p.id DESC")
+        """ゴミ箱にない論文を、追加日時の新しい順に返す。"""
+        return self._load("WHERE t.trashed_at IS NULL ORDER BY p.added_at DESC, p.id DESC")
+
+    def trashed_papers(self) -> list[Paper]:
+        """ゴミ箱の論文を、入れた時刻の新しい順に返す。"""
+        return self._load("WHERE t.trashed_at IS NOT NULL ORDER BY t.trashed_at DESC, p.id DESC")
 
     def find_by_sha(self, sha256: str) -> Paper | None:
         papers = self._load("WHERE p.sha256 = ?", (sha256,))
@@ -193,7 +310,8 @@ class Library:
         if not md.doi and not md.arxiv_id:
             return []
         return self._load(
-            "WHERE p.id != ? AND ((p.doi != '' AND p.doi = ?) OR (p.arxiv_id != '' AND p.arxiv_id = ?))"
+            "WHERE p.id != ? AND t.trashed_at IS NULL"
+            " AND ((p.doi != '' AND p.doi = ?) OR (p.arxiv_id != '' AND p.arxiv_id = ?))"
             " ORDER BY p.added_at DESC",
             (paper.id, md.doi, md.arxiv_id),
         )
@@ -230,24 +348,128 @@ class Library:
             db.execute("UPDATE papers SET edited = ? WHERE id = ?", (json.dumps(sorted(edited)), paper_id))
             if status is not None:
                 db.execute("UPDATE papers SET meta_status = ? WHERE id = ?", (status, paper_id))
+        self._emit("metadata", paper_id, current.sha256)
         return self._require(paper_id)
 
     def set_meta_status(self, paper_id: int, status: str) -> None:
+        """照会の状態はこの端末だけのものなので、updated_at を進めず、合図も出さない。"""
         _check_status(status)
-        self._update(paper_id, "meta_status = ?", (status,))
+        with self._tx() as db:
+            db.execute("UPDATE papers SET meta_status = ? WHERE id = ?", (status, paper_id))
 
     def set_favorite(self, paper_id: int, on: bool) -> None:
         self._update(paper_id, "favorite = ?", (int(bool(on)),))
+        self._emit("favorite", paper_id)
 
     def touch_opened(self, paper_id: int) -> None:
         with self._tx() as db:
             db.execute("UPDATE papers SET last_opened_at = ? WHERE id = ?", (time.time(), paper_id))
+        self._emit("opened", paper_id)
 
-    def remove(self, paper_id: int) -> None:
-        """レコードと PDF ファイルを削除する。"""
+    # -- ゴミ箱と削除 ----------------------------------------------------------
+
+    def trash(self, paper_id: int) -> None:
+        """ゴミ箱に入れる（「ライブラリから削除」）。ファイルと書誌情報は purge するまで残す。"""
+        paper = self._require(paper_id)
+        if paper.trashed_at is not None:
+            return
+        with self._tx() as db:
+            db.execute("INSERT OR REPLACE INTO state.trash (paper_id, trashed_at) VALUES (?, ?)", (paper_id, time.time()))
+        self._emit("removed", paper_id, paper.sha256)
+
+    def restore(self, paper_id: int) -> None:
+        """ゴミ箱から戻す。"""
+        paper = self._require(paper_id)
+        if paper.trashed_at is None:
+            return
+        with self._tx() as db:
+            db.execute("DELETE FROM state.trash WHERE paper_id = ?", (paper_id,))
+            # 戻した操作も変更なので、同期で時刻を付けられるよう updated_at を進める
+            db.execute("UPDATE papers SET updated_at = ? WHERE id = ?", (time.time(), paper_id))
+        self._emit("added", paper_id, paper.sha256)
+
+    def purge(self, paper_id: int) -> None:
+        """レコードと PDF ファイルを完全に削除する（ゴミ箱を経ない）。"""
+        with self._lock:
+            row = self._db.execute("SELECT sha256 FROM papers WHERE id = ?", (paper_id,)).fetchone()
+        if row is None:
+            return
         with self._tx() as db:
             db.execute("DELETE FROM papers WHERE id = ?", (paper_id,))
+        with self._tx() as db:  # 別の DB。落ちても起動時に掃除する
+            db.execute("DELETE FROM state.trash WHERE paper_id = ?", (paper_id,))
         shutil.rmtree(self.root / "files" / str(paper_id), ignore_errors=True)
+        self._emit("removed", paper_id, row["sha256"])
+
+    remove = purge  # v0.2.0 からの名前
+
+    # -- 同期からの反映（spectra.library.sync だけが使う） --------------------------
+
+    def sync_insert(self, sha256: str, file_name: str, page_count: int, added_at: float) -> Paper:
+        """他の端末にある論文を、PDF なしで登録する（PDF は開くときに取得する）。"""
+        now = time.time()
+        with self._tx() as db:
+            cur = db.execute(
+                "INSERT INTO papers (sha256, file_name, source_path, page_count, added_at, updated_at, meta_status)"
+                " VALUES (?, ?, '', ?, ?, ?, 'done')",
+                (sha256, file_name, int(page_count), added_at, now),
+            )
+            paper_id = int(cur.lastrowid)
+        self._emit("added", paper_id, sha256)
+        return self._require(paper_id)
+
+    def sync_apply(
+        self,
+        paper_id: int,
+        *,
+        metadata: Metadata,
+        edited: set[str],
+        favorite: bool,
+        last_opened_at: float | None,
+    ) -> Paper:
+        """他の端末の変更を反映した結果を、そのまま書き込む（edited も含めて置き換える）。"""
+        self._require(paper_id)
+        with self._tx() as db:
+            self._write_metadata(paper_id, metadata)
+            db.execute(
+                "UPDATE papers SET edited = ?, favorite = ?, last_opened_at = ? WHERE id = ?",
+                (json.dumps(sorted(edited & set(Metadata.FIELDS))), int(bool(favorite)), last_opened_at, paper_id),
+            )
+        self._emit("metadata", paper_id)
+        return self._require(paper_id)
+
+    def sync_set_translation(self, paper_id: int, info: Translation | None) -> None:
+        """他の端末の訳文の情報を記録する。手元の訳文ファイルは別物になるので消す（開くときに取得する）。"""
+        with self._tx() as db:
+            if info is None:
+                db.execute("DELETE FROM translations WHERE paper_id = ?", (paper_id,))
+            else:
+                db.execute(
+                    "INSERT OR REPLACE INTO translations (paper_id, model, formality, first_page, last_page, options,"
+                    " segments, untranslated, chars, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        paper_id, info.model, info.formality, info.first_page, info.last_page,
+                        json.dumps(info.options, ensure_ascii=False), info.segments, info.untranslated, info.chars,
+                        info.created_at,
+                    ),
+                )
+        (self.root / "files" / str(paper_id) / "translated.pdf").unlink(missing_ok=True)
+        self._emit("translation", paper_id)
+
+    def empty_trash(self) -> int:
+        """ゴミ箱を空にし、消した件数を返す。"""
+        papers = self.trashed_papers()
+        for p in papers:
+            self.purge(p.id)
+        return len(papers)
+
+    def purge_expired(self, max_age_days: float = TRASH_DAYS, *, now: float | None = None) -> int:
+        """ゴミ箱に入れてから max_age_days を過ぎた論文を完全に削除し、件数を返す（起動時に呼ぶ）。"""
+        limit = (now if now is not None else time.time()) - max_age_days * 86400
+        expired = [p for p in self.trashed_papers() if p.trashed_at is not None and p.trashed_at <= limit]
+        for p in expired:
+            self.purge(p.id)
+        return len(expired)
 
     # -- コレクション ----------------------------------------------------------
 
@@ -260,17 +482,20 @@ class Library:
         name = _collection_name(name)
         with self._tx() as db:
             cur = db.execute("INSERT INTO collections (name) VALUES (?)", (name,))
+        self._emit("collections")
         return Collection(int(cur.lastrowid), name)
 
     def rename_collection(self, collection_id: int, name: str) -> None:
         name = _collection_name(name)
         with self._tx() as db:
             db.execute("UPDATE collections SET name = ? WHERE id = ?", (name, collection_id))
+        self._emit("collections")
 
     def delete_collection(self, collection_id: int) -> None:
         """コレクションだけを消す（中の論文は残る）。"""
         with self._tx() as db:
             db.execute("DELETE FROM collections WHERE id = ?", (collection_id,))
+        self._emit("collections")
 
     def add_to_collection(self, collection_id: int, paper_ids) -> None:
         with self._tx() as db:
@@ -278,6 +503,7 @@ class Library:
                 "INSERT OR IGNORE INTO collection_papers (collection_id, paper_id) VALUES (?, ?)",
                 [(collection_id, pid) for pid in paper_ids],
             )
+        self._emit("collections")
 
     def remove_from_collection(self, collection_id: int, paper_ids) -> None:
         with self._tx() as db:
@@ -285,6 +511,7 @@ class Library:
                 "DELETE FROM collection_papers WHERE collection_id = ? AND paper_id = ?",
                 [(collection_id, pid) for pid in paper_ids],
             )
+        self._emit("collections")
 
     # -- 訳文 ------------------------------------------------------------------
 
@@ -303,19 +530,21 @@ class Library:
             )
             db.execute("UPDATE papers SET updated_at = ? WHERE id = ?", (time.time(), paper_id))
             _write_atomic(paper.translated_path, translated_pdf)
+        self._emit("translation", paper_id, paper.sha256)
         return self._require(paper_id)
 
     def remove_translation(self, paper_id: int) -> None:
         with self._tx() as db:
             db.execute("DELETE FROM translations WHERE paper_id = ?", (paper_id,))
         (self.root / "files" / str(paper_id) / "translated.pdf").unlink(missing_ok=True)
+        self._emit("translation", paper_id)
 
     # -- 内部 ------------------------------------------------------------------
 
     def _require(self, paper_id: int) -> Paper:
         paper = self.get(paper_id)
         if paper is None:
-            raise LibraryError(f"論文が見つかりません（id={paper_id}）")
+            raise PaperNotFound(f"論文が見つかりません（id={paper_id}）")
         return paper
 
     def _update(self, paper_id: int, assignment: str, params: tuple) -> None:
@@ -338,7 +567,10 @@ class Library:
 
     def _load(self, where: str, params: tuple = ()) -> list[Paper]:
         with self._lock:
-            rows = self._db.execute(f"SELECT p.* FROM papers p {where}", params).fetchall()
+            rows = self._db.execute(
+                f"SELECT p.*, t.trashed_at AS trashed_at FROM papers p LEFT JOIN state.trash t ON t.paper_id = p.id {where}",
+                params,
+            ).fetchall()
             if not rows:
                 return []
             ids = [int(r["id"]) for r in rows]
@@ -391,8 +623,30 @@ class Library:
             collection_ids=collection_ids,
             translation=translation,
             root=self.root,
+            has_original=(self.root / "files" / str(r["id"]) / "original.pdf").exists(),
+            has_translation_file=translation is not None
+            and (self.root / "files" / str(r["id"]) / "translated.pdf").exists(),
+            trashed_at=r["trashed_at"],
         )
 
+
+
+def restore_backup(backup: Path, root: Path | None = None) -> None:
+    """backup_to で作ったバックアップを、ライブラリの DB に書き戻す。Library を閉じてから呼ぶこと。
+
+    同期の記録（sync.sqlite3）も消すので、同期は初回の状態に戻る（同期を続けるかは利用者が選び直す）。
+    PDF は戻さない（バックアップの後に消えた論文は、手元にファイルがない状態になる）。
+    """
+    backup = Path(backup)
+    root = Path(root) if root else paths.library_dir()
+    for name in (DB_NAME, STATE_DB_NAME):
+        if not (backup / name).is_file():
+            raise LibraryError("バックアップが見つかりません。", hint=str(backup))
+    for name in (DB_NAME, STATE_DB_NAME, "sync.sqlite3"):
+        for suffix in ("", "-wal", "-shm"):
+            (root / f"{name}{suffix}").unlink(missing_ok=True)
+    for name in (DB_NAME, STATE_DB_NAME):
+        shutil.copy2(backup / name, root / name)
 
 def _write_atomic(path: Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)

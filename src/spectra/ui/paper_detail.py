@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPlainTextEdit,
+    QProgressBar,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -25,8 +26,8 @@ from PySide6.QtWidgets import (
 )
 
 from ..library import Author, Metadata, Paper
-from .library_model import format_date, translation_status
-from .widgets import FormGroup, button, label, link_button, set_prop
+from .library_model import days_left, format_date, local_short, local_state, translation_status
+from .widgets import FormGroup, button, label, link_button, plain_tooltip, set_prop
 
 
 def _selectable(lb: QLabel) -> QLabel:
@@ -36,8 +37,11 @@ def _selectable(lb: QLabel) -> QLabel:
 
 def _value(text: str = "") -> QLabel:
     lb = QLabel(text)
+    lb.setTextFormat(Qt.TextFormat.PlainText)  # ファイル名なども出すので、HTML として解釈しない
     lb.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
     lb.setProperty("role", "secondary")
+    # 長い値でパネルの幅が広がらないよう、幅の上限を決める（値は短く保ち、説明はツールチップに回す）
+    lb.setMaximumWidth(180)
     return lb
 
 
@@ -71,7 +75,7 @@ META_SOURCES = {
 
 FORMALITY_NAMES = {"default": "である調", "prefer_less": "である調", "prefer_more": "です・ます調"}
 
-PAPER_TAB, TRANSLATION_TAB = 0, 1
+PAPER_TAB, TRANSLATION_TAB, OTHER_PAGE, TRASH_PAGE = 0, 1, 2, 3
 
 
 class _InfoGrid(QWidget):
@@ -135,12 +139,19 @@ class PaperDetail(QWidget):
     enableLookupRequested = Signal()
     removeRequested = Signal(list)
     copyBibtexRequested = Signal(list)
+    restoreRequested = Signal(list)  # ゴミ箱から戻す
+    purgeRequested = Signal(list)  # 完全に削除
+    cancelDownloadRequested = Signal(int)
+    retryDownloadRequested = Signal(int)
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         self.setObjectName("Inspector")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setFixedWidth(324)
+        self._download = None
+        self._sync_on = False
+        self._sync_available = True
         self._ids: list[int] = []
         self._paper: Paper | None = None
         self._job: str | None = None
@@ -176,6 +187,7 @@ class PaperDetail(QWidget):
         self.pages.addWidget(self._build_paper_page())
         self.pages.addWidget(self._build_translation_page())
         self.pages.addWidget(self._build_other_page())
+        self.pages.addWidget(self._build_trash_page())
         self.show_papers([])
 
     # -- 「論文の詳細」タブ ------------------------------------------------------
@@ -197,6 +209,27 @@ class PaperDetail(QWidget):
         read_row.addWidget(self.read_btn)
         read_row.addStretch(1)
         lay.addLayout(read_row)
+
+        # 手元にない論文の取得（割合が分かれば割合、分からなければ動き続けるバー）
+        self.fetch_box = QWidget()
+        fl = QVBoxLayout(self.fetch_box)
+        fl.setContentsMargins(0, 0, 0, 0)
+        fl.setSpacing(4)
+        frow = QHBoxLayout()
+        frow.setSpacing(8)
+        self.fetch_bar = QProgressBar()
+        self.fetch_bar.setAccessibleName("ファイルの取得の進捗")
+        self.fetch_cancel = link_button("キャンセル")
+        self.fetch_cancel.clicked.connect(lambda: self._paper and self.cancelDownloadRequested.emit(self._paper.id))
+        frow.addWidget(self.fetch_bar, 1)
+        frow.addWidget(self.fetch_cancel)
+        fl.addLayout(frow)
+        self.fetch_text = label("", "caption", wrap=True)
+        fl.addWidget(self.fetch_text)
+        self.fetch_retry = link_button("再試行")
+        self.fetch_retry.clicked.connect(lambda: self._paper and self.retryDownloadRequested.emit(self._paper.id))
+        fl.addWidget(self.fetch_retry, 0, Qt.AlignmentFlag.AlignLeft)
+        lay.addWidget(self.fetch_box)
 
         # 書誌情報の取得状況
         self.notice = QWidget()
@@ -273,6 +306,9 @@ class PaperDetail(QWidget):
         actions.addWidget(self.translate_btn, 1)
         actions.addWidget(self.tr_read_btn, 1)
         lay.addLayout(actions)
+        self.tr_blocked = label("", "caption", wrap=True)  # 翻訳できない理由（ファイルが届いていないなど）
+        self.tr_blocked.hide()
+        lay.addWidget(self.tr_blocked)
 
         tr = FormGroup("翻訳")
         self.tr_status = _value()
@@ -300,6 +336,8 @@ class PaperDetail(QWidget):
         info.add_row("ページ数", self.file_pages)
         info.add_row("追加した日", self.added)
         self.opened_row = info.add_row("最後に開いた日", self.opened)
+        self.local = _value()
+        self.local_row = info.add_row("このパソコン", self.local)
         lay.addWidget(info)
         lay.addStretch(1)
         return area
@@ -325,11 +363,38 @@ class PaperDetail(QWidget):
         self.multi_bibtex.clicked.connect(lambda: self.copyBibtexRequested.emit(list(self._ids)))
         self.multi_remove = button("ライブラリから削除…", destructive=True)
         self.multi_remove.clicked.connect(lambda: self.removeRequested.emit(list(self._ids)))
-        for b in (self.multi_translate, self.multi_bibtex, self.multi_remove):
+        self.multi_restore = button("ゴミ箱から戻す", primary=True)
+        self.multi_restore.clicked.connect(lambda: self.restoreRequested.emit(list(self._ids)))
+        self.multi_purge = button("完全に削除…", destructive=True)
+        self.multi_purge.clicked.connect(lambda: self.purgeRequested.emit(list(self._ids)))
+        for b in (self.multi_translate, self.multi_bibtex, self.multi_remove, self.multi_restore, self.multi_purge):
             ml.addWidget(b)
         lay.addWidget(self.multi)
         lay.addStretch(1)
         return page
+
+    # -- ゴミ箱の論文 ----------------------------------------------------------
+
+    def _build_trash_page(self) -> QWidget:
+        area, lay = _scroll_page()
+        lay.addWidget(label("ゴミ箱", "section"))
+        self.trash_title = _selectable(label("", "title", wrap=True))
+        self.trash_authors = _selectable(label("", "secondary", wrap=True))
+        self.trash_left = label("", "caption", wrap=True)
+        lay.addWidget(self.trash_title)
+        lay.addWidget(self.trash_authors)
+        lay.addWidget(self.trash_left)
+        actions = QHBoxLayout()
+        actions.setSpacing(8)
+        self.restore_btn = button("ゴミ箱から戻す", primary=True)
+        self.restore_btn.clicked.connect(lambda: self.restoreRequested.emit(list(self._ids)))
+        self.purge_btn = button("完全に削除…", destructive=True)
+        self.purge_btn.clicked.connect(lambda: self.purgeRequested.emit(list(self._ids)))
+        actions.addWidget(self.restore_btn, 1)
+        actions.addWidget(self.purge_btn, 1)
+        lay.addLayout(actions)
+        lay.addStretch(1)
+        return area
 
     # -- タブ ------------------------------------------------------------
 
@@ -338,7 +403,7 @@ class PaperDetail(QWidget):
 
     def set_tab(self, index: int) -> None:
         self.tab_buttons[index].setChecked(True)
-        if self._paper is not None:
+        if self._paper is not None and self._paper.trashed_at is None:
             self.pages.setCurrentIndex(index)
 
     # -- 表示 ------------------------------------------------------------
@@ -349,14 +414,29 @@ class PaperDetail(QWidget):
         job: str | None = None,
         looking_up: bool = False,
         lookup_enabled: bool = False,
+        download=None,
+        sync_on: bool = False,
+        sync_available: bool = True,
     ) -> None:
         self._ids = [p.id for p in papers]
         self._paper = papers[0] if len(papers) == 1 else None
         self._job = job
-        self.tabs.setVisible(self._paper is not None)
+        self._download = download
+        self._sync_on = sync_on
+        self._sync_available = sync_available
+        trashed = bool(papers) and all(p.trashed_at is not None for p in papers)
+        self.tabs.setVisible(self._paper is not None and not trashed)
+        if self._paper is not None and trashed:
+            self.pages.setCurrentIndex(TRASH_PAGE)
+            self._show_trashed(self._paper)
+            return
         if self._paper is None:
-            self.pages.setCurrentIndex(2)
+            self.pages.setCurrentIndex(OTHER_PAGE)
             self.multi.setVisible(len(papers) > 1)
+            for b in (self.multi_translate, self.multi_bibtex, self.multi_remove):
+                b.setVisible(not trashed)
+            for b in (self.multi_restore, self.multi_purge):
+                b.setVisible(trashed)
             self.placeholder.setText(
                 f"{len(papers)} 件の論文を選択しています" if papers else "論文を選ぶと、ここに詳細が表示されます。"
             )
@@ -364,6 +444,69 @@ class PaperDetail(QWidget):
         self.pages.setCurrentIndex(self.current_tab())
         self._show_paper(self._paper, looking_up, lookup_enabled)
         self._show_translation(self._paper, job)
+        self._show_local(self._paper)
+
+    def _show_trashed(self, p: Paper) -> None:
+        self.trash_title.setText(p.display_title)
+        self.trash_authors.setText(", ".join(a.full() for a in p.metadata.authors))
+        self.trash_authors.setVisible(bool(p.metadata.authors))
+        n = days_left(p)
+        self.trash_left.setText(f"あと {n} 日で完全に削除されます。戻すと、読んだり翻訳したりできます。")
+
+    def _show_local(self, p: Paper) -> None:
+        """手元にない論文の取得の状態（「読む」の下と、ファイルの欄の「このパソコン」）。"""
+        d = self._download
+        state = local_state(p, d)
+        missing = not p.has_original
+        self.local_row.setVisible(self._sync_on)
+        if self.local_row.separator is not None:
+            self.local_row.separator.setVisible(self._sync_on)
+        self.local.setText(local_short(p, d))
+        self.local.setToolTip(state[1] if state else "")
+        running = d is not None and d.state in ("queued", "running")
+        problem = d is not None and d.state in ("waiting", "failed")
+        self.fetch_box.setVisible(running or problem)
+        self.fetch_bar.setVisible(running)
+        self.fetch_cancel.setVisible(running)
+        self.fetch_retry.setVisible(problem)
+        if running:
+            pct = d.percent
+            if d.state == "running" and pct is not None:
+                self.fetch_bar.setRange(0, 100)
+                self.fetch_bar.setValue(pct)
+                self.fetch_text.setText(f"ファイルを取得中… {pct}%")
+            else:
+                self.fetch_bar.setRange(0, 0)  # 割合が分からないときは動き続けるバー
+                self.fetch_text.setText("ファイルを取得中…" if d.state == "running" else "取得の順番を待っています…")
+        elif problem:
+            err = d.error
+            title = getattr(err, "title", "") or "ファイルを取得できませんでした"
+            hint = getattr(err, "hint", "")
+            self.fetch_text.setText(f"{title}。{hint}" if hint else title)
+        # 手元になく、同期先も読めないときは、読む・翻訳するを止める（手元にある論文は今までどおり）
+        waiting = d is not None and d.state == "waiting"
+        blocked = missing and (not self._sync_available or waiting)
+        if waiting:
+            reason = "ほかのパソコンからファイルが届いてから、読んだり翻訳したりできます"
+        elif blocked:
+            reason = "同期先のフォルダを読めないため、このパソコンにない論文は開けません"
+        else:
+            reason = ""
+        for b in (self.read_btn, self.tr_read_btn):
+            b.setEnabled(not blocked and not running)
+            b.setToolTip(reason)
+        if self._job is None:
+            self.translate_btn.setEnabled(not blocked and not running)
+            self.translate_btn.setToolTip(reason)
+        # 翻訳できない理由はボタンの下に出す（取得中は、同じファイルを二重に取得しないよう、終わるまで待ってもらう）
+        if waiting and missing:
+            caption = "ファイルが届いてから翻訳できます"
+        elif running and self._job is None:
+            caption = "取得が終わると翻訳できます"
+        else:
+            caption = reason if blocked else ""
+        self.tr_blocked.setText(caption)
+        self.tr_blocked.setVisible(bool(caption))
 
     def _show_paper(self, p: Paper, looking_up: bool, lookup_enabled: bool) -> None:
         md = p.metadata
@@ -450,7 +593,7 @@ class PaperDetail(QWidget):
         # 長いファイル名でパネルの幅が広がらないよう、中央を省略する
         fm = self.file_name.fontMetrics()
         self.file_name.setText(fm.elidedText(p.file_name, Qt.TextElideMode.ElideMiddle, 170))
-        self.file_name.setToolTip(p.file_name)
+        self.file_name.setToolTip(plain_tooltip(p.file_name))
         self.file_pages.setText(f"{p.page_count}")
         self.added.setText(format_date(p.added_at))
         self.opened.setText(format_date(p.last_opened_at))

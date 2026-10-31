@@ -250,6 +250,8 @@ def test_missing_paper_shows_cloud_and_opens_after_download(make_window, tmp_pat
     pump(app, 0.3)
     assert w.library_view.detail.fetch_box.isVisible()
     assert not w.library_view.detail.read_btn.isEnabled()
+    assert not w.library_view.detail.translate_btn.isEnabled()
+    assert w.library_view.detail.tr_blocked.text() == "取得が終わると翻訳できます"
     assert "取得中" in w.library_view.sync_status.text()
     w.engines[-1].gate.set()
     assert pump(app, 10, until=lambda: w.screen_mode == "reader")

@@ -82,7 +82,11 @@ def main() -> int:
         from PySide6.QtWidgets import QMessageBox
 
         title, _, rest = e.user_message().partition("\n")
-        QMessageBox.critical(None, APP_NAME, f"{title}\n\n{rest}")
+        from .widgets import plain_box
+
+        box = QMessageBox(QMessageBox.Icon.Critical, APP_NAME, title)
+        box.setInformativeText(rest)
+        plain_box(box).exec()
         return 1
     window = MainWindow(library=library)
 

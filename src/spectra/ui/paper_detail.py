@@ -27,7 +27,7 @@ from PySide6.QtWidgets import (
 
 from ..library import Author, Metadata, Paper
 from .library_model import days_left, format_date, local_short, local_state, translation_status
-from .widgets import FormGroup, button, label, link_button, set_prop
+from .widgets import FormGroup, button, label, link_button, plain_tooltip, set_prop
 
 
 def _selectable(lb: QLabel) -> QLabel:
@@ -37,6 +37,7 @@ def _selectable(lb: QLabel) -> QLabel:
 
 def _value(text: str = "") -> QLabel:
     lb = QLabel(text)
+    lb.setTextFormat(Qt.TextFormat.PlainText)  # ファイル名なども出すので、HTML として解釈しない
     lb.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
     lb.setProperty("role", "secondary")
     # 長い値でパネルの幅が広がらないよう、幅の上限を決める（値は短く保ち、説明はツールチップに回す）
@@ -592,7 +593,7 @@ class PaperDetail(QWidget):
         # 長いファイル名でパネルの幅が広がらないよう、中央を省略する
         fm = self.file_name.fontMetrics()
         self.file_name.setText(fm.elidedText(p.file_name, Qt.TextElideMode.ElideMiddle, 170))
-        self.file_name.setToolTip(p.file_name)
+        self.file_name.setToolTip(plain_tooltip(p.file_name))
         self.file_pages.setText(f"{p.page_count}")
         self.added.setText(format_date(p.added_at))
         self.opened.setText(format_date(p.last_opened_at))

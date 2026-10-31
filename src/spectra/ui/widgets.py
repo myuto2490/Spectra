@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 from collections.abc import Sequence
 
 from PySide6.QtCore import (
@@ -32,7 +33,10 @@ from . import icons, theme
 
 
 def label(text: str = "", role: str | None = None, tone: str | None = None, wrap: bool = False) -> QLabel:
+    """文字を表示するラベル。論文のタイトルやほかの端末の名前など、外から来た文字列も出すので、
+    既定ではリッチテキスト（HTML）として解釈しない。HTML が必要なところだけ、呼び出し側で RichText にする。"""
     lb = QLabel(text)
+    lb.setTextFormat(Qt.TextFormat.PlainText)
     if role:
         lb.setProperty("role", role)
     if tone:
@@ -40,6 +44,25 @@ def label(text: str = "", role: str | None = None, tone: str | None = None, wrap
     lb.setWordWrap(wrap)
     lb.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
     return lb
+
+
+def plain_tooltip(text: str) -> str:
+    """外から来た文字列をツールチップに出すとき用。ツールチップは HTML らしい文字列を自動でリッチテキストとして描くので、
+    エスケープして包み、書かれたとおりの文字で見せる。"""
+    if not text:
+        return ""
+    return f"<p style='white-space:pre-wrap'>{html.escape(text)}</p>"
+
+
+def plain_box(box):
+    """QMessageBox の本文と補足をプレーンテキストにする（論文のタイトルなどを含む確認で、HTML として解釈しない）。"""
+    from PySide6.QtWidgets import QLabel as _QLabel
+
+    for name in ("qt_msgbox_label", "qt_msgbox_informativelabel"):
+        lb = box.findChild(_QLabel, name)
+        if lb is not None:
+            lb.setTextFormat(Qt.TextFormat.PlainText)
+    return box
 
 
 def set_prop(widget: QWidget, name: str, value) -> None:

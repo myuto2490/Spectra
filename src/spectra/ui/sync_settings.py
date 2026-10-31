@@ -26,7 +26,7 @@ from ..config.settings import Settings
 from . import worker
 from .privacy import display_path, mask_email
 from .sync_controller import ERROR, OFF, SYNCING, UNAVAILABLE, SyncController, sync_root
-from .widgets import FormGroup, Switch, button, label, link_button
+from .widgets import FormGroup, Switch, button, label, link_button, plain_box, plain_tooltip
 
 CONSENT_TEXT = (
     "同期をオンにすると、ライブラリの論文の PDF（原文・訳文）・書誌情報・コレクションを、選んだフォルダに保存します。"
@@ -208,7 +208,7 @@ class SyncPage(QScrollArea):
             b.setAccessibleName(f"{name}を使う")
             b.clicked.connect(lambda _c=False, p=path: self.connect_folder(p))
             row = group.add_row(name, b)
-            row.setToolTip(display_path(path))
+            row.setToolTip(plain_tooltip(display_path(path)))
             self.choose_buttons[name] = path
         other = link_button("ほかのフォルダを選択…")
         other.clicked.connect(self._choose_other)
@@ -230,7 +230,7 @@ class SyncPage(QScrollArea):
         dl.setContentsMargins(0, 0, 0, 0)
         dl.setSpacing(8)
         self.dest_label = label(folder_name(self.settings.sync_folder, self.candidates), "secondary")
-        self.dest_label.setToolTip(display_path(sync_root(self.settings)))
+        self.dest_label.setToolTip(plain_tooltip(display_path(sync_root(self.settings))))
         change = button("変更…")
         change.clicked.connect(self._choose_other)
         dl.addWidget(self.dest_label)
@@ -334,7 +334,7 @@ class SyncPage(QScrollArea):
         start = box.addButton("同期を始める", QMessageBox.ButtonRole.AcceptRole)
         box.addButton("キャンセル", QMessageBox.ButtonRole.RejectRole)
         box.setDefaultButton(start)
-        box.exec()
+        plain_box(box).exec()
         return box.clickedButton() is start
 
     def connect_folder(self, folder: Path) -> bool:
@@ -348,7 +348,7 @@ class SyncPage(QScrollArea):
             box.setInformativeText("Google Drive などのアプリで同期しているフォルダを選ぶと、ほかのパソコンでも開けます。このまま使いますか？")
             use = box.addButton("このまま使う", QMessageBox.ButtonRole.AcceptRole)
             box.addButton("キャンセル", QMessageBox.ButtonRole.RejectRole)
-            box.exec()
+            plain_box(box).exec()
             if box.clickedButton() is not use:
                 return False
         if not self.connected() and not self.confirm_consent():
@@ -356,7 +356,9 @@ class SyncPage(QScrollArea):
         try:
             (folder / "Spectra Sync").mkdir(parents=True, exist_ok=True)
         except OSError as e:
-            QMessageBox.warning(self, "同期", f"フォルダを作成できませんでした。\n{e}")
+            box = QMessageBox(QMessageBox.Icon.Warning, "同期", "フォルダを作成できませんでした。", parent=self)
+            box.setInformativeText(str(e))
+            plain_box(box).exec()
             return False
         self.settings.sync_folder = str(folder)
         self.settings.sync_enabled = True
@@ -384,7 +386,7 @@ class SyncPage(QScrollArea):
         )
         restore = box.addButton("戻す", QMessageBox.ButtonRole.DestructiveRole)
         box.addButton("キャンセル", QMessageBox.ButtonRole.RejectRole)
-        box.exec()
+        plain_box(box).exec()
         if box.clickedButton() is restore:
             self.restoreBackupRequested.emit(path)
             self.rebuild()
@@ -396,7 +398,7 @@ class SyncPage(QScrollArea):
         box.setInformativeText("このパソコンのライブラリはそのまま残り、同期先のデータも削除しません。")
         stop = box.addButton("同期をやめる", QMessageBox.ButtonRole.DestructiveRole)
         box.addButton("キャンセル", QMessageBox.ButtonRole.RejectRole)
-        box.exec()
+        plain_box(box).exec()
         if box.clickedButton() is not stop:
             return
         self.settings.sync_enabled = False

@@ -119,3 +119,72 @@ def test_settings_folders_show_tilde_and_sync_tooltips_hide_account(app, monkeyp
     for w in d.findChildren(type(d)):
         assert "alice@" not in w.toolTip()
     d.close()
+
+
+HTML_TITLE = "<b>Bold</b> <img src='file:///etc/passwd'> & <a href='https://evil.example'>click</a>"
+
+
+def test_html_in_paper_metadata_is_shown_as_plain_text(app, tmp_path, monkeypatch):
+    """ほかの端末や PDF のメタデータから来たタイトル・著者・概要を、HTML として解釈しない。"""
+    monkeypatch.setenv("SPECTRA_DEV", "1")
+    from pdf_factory import make_paper
+    from PySide6.QtCore import Qt
+
+    from spectra.config.secrets import SecretStore
+    from spectra.config.settings import Settings
+    from spectra.library import Author, Metadata
+    from spectra.ui.library_model import COL, PaperIdRole
+    from spectra.ui.main_window import MainWindow
+    from spectra.ui.widgets import Banner
+
+    w = MainWindow(settings=Settings(engine="dummy", metadata_lookup=False), secrets=SecretStore(use_keyring=False))
+    try:
+        path = tmp_path / "a.pdf"
+        make_paper(str(path))
+        paper = w.library.add(path)[0]
+        w.library.update_metadata(
+            paper.id, Metadata(title=HTML_TITLE, authors=[Author("<i>Evil</i>", "X")], abstract="<h1>Big</h1>")
+        )
+        w.library_view.reload()
+        w.library_view.select_ids([paper.id])
+        d = w.library_view.detail
+        for lb in (d.title, d.abstract):
+            assert lb.textFormat() == Qt.TextFormat.PlainText
+        assert d.title.text() == HTML_TITLE
+        # 一覧のツールチップ（ツールチップは HTML らしい文字列をリッチテキストとして描く）
+        m = w.library_view.model
+        idx = next(m.index(r, COL["title"]) for r in range(m.rowCount()) if m.index(r, 0).data(PaperIdRole) == paper.id)
+        tip = idx.data(Qt.ItemDataRole.ToolTipRole)
+        assert "&lt;b&gt;Bold&lt;/b&gt;" in tip and "<b>Bold</b>" not in tip
+        # ゴミ箱の詳細
+        w.library.trash(paper.id)
+        w.library_view.refresh_paper(paper.id)
+        w.library_view.sidebar.select_scope("trash")
+        w.library_view.select_ids([paper.id])
+        assert d.trash_title.textFormat() == Qt.TextFormat.PlainText and d.trash_title.text() == HTML_TITLE
+        assert d.trash_authors.textFormat() == Qt.TextFormat.PlainText
+        # バナー（論文のタイトルを含む知らせ）
+        banner = w.findChild(Banner)
+        w._show_banner("success", f"「{HTML_TITLE}」の翻訳が完了しました", HTML_TITLE)
+        assert banner._title.textFormat() == Qt.TextFormat.PlainText
+        assert banner._body.textFormat() == Qt.TextFormat.PlainText
+    finally:
+        w.close()
+        w.library.close()
+
+
+def test_message_boxes_are_plain_text(app):
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QLabel, QMessageBox
+
+    from spectra.ui.widgets import label, plain_box, plain_tooltip
+
+    box = QMessageBox()
+    box.setText(f"「{HTML_TITLE}」をライブラリから削除しますか？")
+    box.setInformativeText(HTML_TITLE)
+    plain_box(box)
+    for name in ("qt_msgbox_label", "qt_msgbox_informativelabel"):
+        assert box.findChild(QLabel, name).textFormat() == Qt.TextFormat.PlainText
+    assert label(HTML_TITLE).textFormat() == Qt.TextFormat.PlainText
+    assert plain_tooltip("<b>x</b>") == "<p style='white-space:pre-wrap'>&lt;b&gt;x&lt;/b&gt;</p>"
+    assert plain_tooltip("") == ""

@@ -11,7 +11,7 @@ from ..config.settings import Settings
 from .privacy import display_path
 from .sync_controller import ERROR, SYNCING, UNAVAILABLE, SyncController
 from .sync_settings import candidate_folders, folder_name, format_ago
-from .widgets import button, label, link_button
+from .widgets import button, label, link_button, plain_tooltip
 
 NAME_LIMIT = 40  # ほかのパソコンの名前を表示する最大の文字数
 
@@ -51,7 +51,7 @@ class SyncPopover(QFrame):
             lay.addWidget(detail)
         lay.addWidget(label(f"最後に保存: {format_ago(sync.last_saved)}", "caption"))
         dest = label(f"保存先: {folder_name(settings.sync_folder, candidate_folders())}", "caption", wrap=True)
-        dest.setToolTip(display_path(settings.sync_folder))
+        dest.setToolTip(plain_tooltip(display_path(settings.sync_folder)))
         lay.addWidget(dest)
         other = self._last_other_device()
         if other is not None:

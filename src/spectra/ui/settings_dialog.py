@@ -42,6 +42,7 @@ from .widgets import (
     button,
     label,
     link_button,
+    plain_tooltip,
     refresh_icon,
     set_prop,
     tool_button,
@@ -501,7 +502,7 @@ class SettingsDialog(QDialog):
             b.clicked.connect(lambda _c=False, p=path: self._open_folder(p))
             # 表示ではホームを「~」に（スクリーンショットにユーザー名が写らないように）。元のパスはツールチップに
             row = folders.add_row(title, b, home_to_tilde(str(path)))
-            row.setToolTip(str(path))
+            row.setToolTip(plain_tooltip(str(path)))
         lay.addWidget(folders)
         lay.addStretch(1)
         # 項目が多くダイアログの高さに収まらないので、行を潰さずにスクロールさせる

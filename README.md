@@ -16,7 +16,10 @@
 </p>
 
 <p align="center">
-  <img src="docs/images/screenshot-light.png" alt="原文と訳文を左右に並べて表示している Spectra の画面">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/screenshot-library-dark.png">
+    <img src="docs/images/screenshot-library-light.png" width="960" alt="Spectra のライブラリ画面。左にコレクション、中央に論文の一覧（タイトル・著者・年・翻訳の状態）、右に選んだ論文の書誌情報が並んでいる">
+  </picture>
 </p>
 
 Spectra は、英語の論文 PDF を **PDF のまま** 日本語に翻訳するデスクトップアプリです。
@@ -70,6 +73,13 @@ Intel 搭載の Mac では、[ソースから実行](#開発)してください�
   <img src="docs/images/screenshot-export.png" width="560" alt="PDF出力の形式を 3 枚のカードから選ぶ画面">
 </p>
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/screenshot-reader-dark.png">
+    <img src="docs/images/screenshot-reader-light.png" width="960" alt="読書画面。原文と訳文のページが左右に並び、右のパネルでモデル・文体・ページ・翻訳する内容を選べる">
+  </picture>
+</p>
+
 読書画面の右側のパネルでは、モデル、文体（である調 / です・ます調）、翻訳するページの範囲、キャプション・脚注・参考文献を訳すかどうかを変えられます。
 
 ### ライブラリ
@@ -80,6 +90,10 @@ Intel 搭載の Mac では、[ソースから実行](#開発)してください�
 - 書誌情報は、PDF に書かれた DOI・arXiv ID から Crossref / arXiv に照会して自動で取得します。送るのは DOI・arXiv ID だけで、本文やファイルは送りません。取得しない場合は ⚙ →「詳細」でオフにできます（PDF から読み取れた情報だけで整理します）。
 - ⚙ →「同期」で同期フォルダを選ぶと、ライブラリを複数のパソコンで同期できます（初期状態では無効）。Spectra 自身は通信せず、フォルダの同期は各サービスのアプリが行います。Gemini の API キー・設定・翻訳キャッシュは同期しないので、別のパソコンでも翻訳するときは、そのパソコンで API キーを設定します。購読契約で入手した論文など、共有が認められていないものがあるときは、同期フォルダをほかの人と共有しないでください。
 - ライブラリから削除すると、論文はゴミ箱に移ります。30 日以内ならサイドバーの「ゴミ箱」から戻せ、30 日たつとライブラリ内のコピーと訳文が完全に削除されます。追加した元のファイルはそのまま残ります。
+
+<p align="center">
+  <img src="docs/images/screenshot-trash-light.png" width="960" alt="ゴミ箱の画面。削除した論文が「削除した日」とともに並び、右のパネルに「ゴミ箱から戻す」と「完全に削除…」のボタンがある">
+</p>
 
 ### キーボードショートカット
 
@@ -162,6 +176,10 @@ Elsevier・A&A・AAS・AGU/Wiley・Springer・IEEE などの論文 20 本で、�
 
 <details>
 <summary>ほかのパソコンでもライブラリを読むには？（同期の始め方）</summary>
+
+<p align="center">
+  <img src="docs/images/screenshot-sync-light.png" width="480" alt="設定の「同期」タブ。見つかった同期フォルダ（Google Drive）の「このフォルダを使う」ボタンと、「ほかのフォルダを選択…」がある">
+</p>
 
 1. Google Drive・Dropbox・OneDrive・iCloud Drive などのアプリを、両方のパソコンにインストールして同じアカウントでサインインします。
 2. どちらのパソコンでも、⚙ →「同期」（論文が 1 本もないときは、ライブラリの「別のパソコンのライブラリを同期…」からも開けます）を開き、同期フォルダの候補の「このフォルダを使う」を押します。見つからなければ「ほかのフォルダを選択…」でフォルダを選びます。表示される説明を読んで「同期を始める」を押すと、始まります。

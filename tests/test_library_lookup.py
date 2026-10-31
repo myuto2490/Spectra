@@ -121,6 +121,21 @@ def test_lookup_falls_back_to_arxiv(crossref_status):
     assert md.source == "arxiv"
 
 
+def test_lookup_arxiv_doi_goes_straight_to_arxiv():
+    """arXiv の DOI しか分からなくても、arXiv ID を導いて arXiv に照会する（Crossref には無い）。"""
+    hosts = []
+
+    def handler(request):
+        hosts.append(request.url.host)
+        return httpx.Response(200, text=fixture("arxiv_entry.xml"))
+
+    with client_for(handler) as client:
+        md = lookup(Metadata(doi="10.48550/arxiv.2401.00001"), client)
+    assert hosts == ["export.arxiv.org"]
+    assert md.source == "arxiv" and md.arxiv_id == "2401.00001"
+    assert md.doi == "10.1234/spectra.2024.002"  # 出版版の DOI が arXiv に登録されていればそれを使う
+
+
 def test_lookup_results():
     assert lookup(Metadata(title="no identifiers")) is None  # 通信しない
     with client_for(lambda r: httpx.Response(404)) as client:

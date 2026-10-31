@@ -2,6 +2,7 @@ import json
 import os
 import stat
 import sys
+from dataclasses import asdict
 
 import pytest
 
@@ -58,6 +59,13 @@ def test_settings_to_core_options():
     # 以前の既定（3.8 Flash）のままの設定は移行し、新しい形式で自分で選んだ場合は尊重する
     assert Settings.from_dict({"gemini_model": "gemini-3.8-flash"}).gemini_model == "gemini-3.5-flash-lite"
     assert Settings.from_dict({"gemini_model": "gemini-3.8-flash", "schema": 2}).gemini_model == "gemini-3.8-flash"
+    # 書誌情報の照会は既定でオン。以前の確認で選んだ値（metadata_lookup_asked）は尊重し、尋ねる前のオフは既定に戻す
+    assert Settings().metadata_lookup is True
+    assert Settings.from_dict({"metadata_lookup": False, "metadata_lookup_asked": False, "schema": 2}).metadata_lookup is True
+    assert Settings.from_dict({"metadata_lookup": False, "metadata_lookup_asked": True, "schema": 2}).metadata_lookup is False
+    assert Settings.from_dict({"metadata_lookup": True, "metadata_lookup_asked": True, "schema": 2}).metadata_lookup is True
+    assert Settings.from_dict({"metadata_lookup": False, "schema": 3}).metadata_lookup is False
+    assert "metadata_lookup_asked" not in asdict(Settings.from_dict({"metadata_lookup_asked": True}))
     assert s.translate_options().formality == Formality.POLITE
     assert s.render_options().output_mode == OutputMode.INTERLEAVE
     assert s.analysis_options(1, 3).translate_captions is False

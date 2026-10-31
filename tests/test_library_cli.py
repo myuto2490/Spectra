@@ -10,17 +10,17 @@ def test_library_add_and_list(tmp_path, capsys):
     a, b = tmp_path / "a.pdf", tmp_path / "b.pdf"
     make_library_paper(str(a), seed=1)
     make_library_paper(str(b), seed=2, title="Second Paper Title")
-    assert main(["library", "add", str(a), str(b)]) == 0
+    assert main(["library", "add", "--no-lookup", str(a), str(b)]) == 0
     out = capsys.readouterr().out
     assert "追加しました" in out and "Second Paper Title" in out
 
-    assert main(["library", "add", str(a)]) == 0
+    assert main(["library", "add", "--no-lookup", str(a)]) == 0
     assert "既にライブラリにあります" in capsys.readouterr().out
 
     assert main(["library", "list", "--json"]) == 0
     rows = json.loads(capsys.readouterr().out)
     assert [r["title"] for r in rows] == ["Second Paper Title", "Attention Is All You Need"]
-    assert {r["meta_status"] for r in rows} == {"local"}  # 照会は既定でオフ
+    assert {r["meta_status"] for r in rows} == {"local"}
 
     assert main(["library", "list"]) == 0
     assert "Attention Is All You Need" in capsys.readouterr().out
@@ -68,3 +68,12 @@ def test_library_add_reports_bad_files(tmp_path, capsys):
     assert main(["library", "add", "--no-lookup", str(bad), str(tmp_path / "missing.pdf")]) == 1
     err = capsys.readouterr().err
     assert err.count("取り込めませんでした") == 2
+
+
+def test_library_add_looks_up_by_default(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr("spectra.library.lookup.lookup", lambda md, client=None: calls.append(md.doi))
+    path = tmp_path / "a.pdf"
+    make_library_paper(str(path), body=["doi:10.1000/default"])
+    assert main(["library", "add", str(path)]) == 0
+    assert calls == ["10.1000/default"]

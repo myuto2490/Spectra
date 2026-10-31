@@ -399,7 +399,15 @@ PDF と書誌情報を保存先に置きます。API キーと設定は同期し
 | 完全に削除 | 「完全に削除しますか？ この操作は取り消せません。」（同期ありなら「すべてのパソコンから」を加える） |
 | ゴミ箱を空にする | 「ゴミ箱の N 件を完全に削除しますか？ この操作は取り消せません。」 |
 
-core の API（f3）: `trash`・`restore`・`purge`・`empty_trash`・`trashed_papers`・`Paper.trashed_at`。
+core の API（f3）: `trash`・`restore`・`purge`・`empty_trash`・`purge_expired`（30 日）・`trashed_papers`・`Paper.trashed_at`。
+
+- ゴミ箱の状態は、`library.sqlite3` の隣の **`library/state.sqlite3`** に `trash(paper_id, trashed_at)` として持ち、`Library` の接続で ATTACH する（f3 案 a）。
+  `library.sqlite3` の `user_version` は 1 のまま。ゴミ箱は同期が無効でも使うので、`sync.sqlite3` とは分ける。
+  - 入れる・戻すは片方の DB に 1 行書くだけなので原子的。完全に削除は 2 つの DB にまたがるので、起動時に、論文がなくなった `trash` の行を掃除する。
+  - v0.2.0 に戻すと、ライブラリは開け、ゴミ箱の論文が普通の論文として見える（データは失われない）。
+- `papers()` はゴミ箱の論文を含めない。今の `remove()` は `purge` の別名として残す（CLI と今までの呼び出し元のため。画面の「削除」は `trash` を呼ぶ）。
+- ゴミ箱にある PDF をもう一度取り込んだら、ゴミ箱から戻して `(既存の論文, True)` を返す。
+- 同期の層では、ゴミ箱に入れたら tombstone を書き、戻したら tombstone より新しい追加のイベントを書く。完全に削除しても tombstone は残す。
 
 ### 7.5.1 他の端末の変更を反映したとき（e7）
 

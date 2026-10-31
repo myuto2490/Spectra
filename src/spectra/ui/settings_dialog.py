@@ -34,6 +34,7 @@ from ..translate.cache import TranslationCache
 from ..translate.errors import TranslatorError
 from ..translate.gemini import MODELS
 from . import icons, theme, worker
+from .privacy import home_to_tilde
 from .widgets import (
     FormGroup,
     SegmentedControl,
@@ -41,6 +42,7 @@ from .widgets import (
     button,
     label,
     link_button,
+    plain_tooltip,
     refresh_icon,
     set_prop,
     tool_button,
@@ -498,7 +500,9 @@ class SettingsDialog(QDialog):
         for title, path in (("ライブラリ", paths.library_dir()), ("設定", paths.config_dir()), ("ログ", paths.log_dir())):
             b = button("開く")
             b.clicked.connect(lambda _c=False, p=path: self._open_folder(p))
-            folders.add_row(title, b, str(path))
+            # 表示ではホームを「~」に（スクリーンショットにユーザー名が写らないように）。元のパスはツールチップに
+            row = folders.add_row(title, b, home_to_tilde(str(path)))
+            row.setToolTip(plain_tooltip(str(path)))
         lay.addWidget(folders)
         lay.addStretch(1)
         # 項目が多くダイアログの高さに収まらないので、行を潰さずにスクロールさせる

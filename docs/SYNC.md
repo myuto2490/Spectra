@@ -21,7 +21,7 @@
 | 同期の形式 | 論文ごと・端末ごとの状態ファイル（JSON）＋ 内容のハッシュを名前にした PDF。SQLite は同期フォルダに置かない | f3・e7 |
 | マージ | 項目ごとの LWW。時刻はハイブリッド論理時計（HLC）。手で編集した値を優先 | f3・e7 |
 | 同期するもの | 書誌情報・お気に入り・コレクション・原文 PDF・訳文 PDF | f3・e7・5d |
-| 同期しないもの | API キー・設定・翻訳キャッシュ・端末ごとの状態（照会の状態、最後に開いた日時、取り込み元のパス） | f3・e7・5d |
+| 同期しないもの | API キー・設定・翻訳キャッシュ・端末ごとの状態（照会の状態、取り込み元のパス） | f3・e7・5d |
 | 書き手 | 各端末は自分の名前のファイルにだけ書く（端末ごとに単一の書き手）。共有ファイルは、内容が変わらない `original.pdf` を「まだ無いときだけ」作る場合だけ | f3・e7 |
 | ローカルの同期情報 | 別ファイルの `sync.sqlite3` に置き、`library.sqlite3` は変えない（v0.2.0 に戻してもライブラリが開ける） | f3・e7 |
 | 同期フォルダの読み書き | UI のスレッドから決して直接読まない。すべてワーカーで行い、PDF は手元のライブラリにコピーして sha256 を検証してから開く | f3・e7・5d |
@@ -37,7 +37,7 @@ e7 がコードで確認した内容。
 | 論文の識別 | `papers.id`（端末ごとの AUTOINCREMENT）、`papers.sha256`（UNIQUE） | id は端末で違う → 同期の層では **sha256 で識別** |
 | PDF | `files/<paper_id>/original.pdf`・`translated.pdf` | フォルダ名が端末ごとの id → 同期先では `papers/<sha256>/` に置く |
 | 取り込み元のパス | `papers.source_path`（絶対パス。表示と記録のみ） | 端末に固有 → 同期しない |
-| コレクション | `collections(id, name)`・`collection_papers(collection_id, paper_id)` | 端末をまたいで対応させるキーがなく、name は UNIQUE ではない → **uid（UUID）列を追加** |
+| コレクション | `collections(id, name)`・`collection_papers(collection_id, paper_id)` | 端末をまたいで対応させるキーがなく、name は UNIQUE ではない → **`sync.sqlite3` で uid（UUID）と対応づける**（`library.sqlite3` は変えない） |
 | 書誌情報 | `papers` の列。`edited`（手で直した項目）、`updated_at` は 1 つだけ | 項目ごとの更新時刻がない → 項目ごとの時計を追加 |
 | 照会の状態 | `meta_status`（pending / done / failed / local） | 端末の状態 → 同期しない（結果の書誌情報だけを同期） |
 | 訳文 | `translations`（1 論文 1 件）、`translated.pdf` は端末のフォント設定で組んだもの | 2 台で同時に翻訳すると衝突 → 端末ごとのファイルにし、規則で 1 つを選ぶ（§5.4） |
@@ -134,7 +134,7 @@ Spectra Sync/
 
   | 状態 | 判定 |
   |---|---|
-  | 取り込み済み | 手元にコピーがあり、sha が一致する |
+  | 取り込み済み | 手元にコピーがある（コピーするときに sha を検証してから名前を変えるので、手元にあれば一致している。開くたびには計算しない） |
   | 取得中 | コピーの途中 |
   | 未取得 | 同期フォルダに実体がある（または `.icloud` のプレースホルダーだけがある）が、手元にない |
   | 到着待ち | 書誌情報は届いたが、PDF がまだ同期フォルダに届いていない（5d） |
@@ -186,14 +186,17 @@ Spectra Sync/
     （`removed` のときの `paper_id` は削除する前の id、`fields` は `metadata` のとき）
 - リスナーの約束（両方に共通）: ① コミットしてロックを離した後に呼ぶ ② 例外は `log.exception` に書いて握りつぶす ③ リスナーは合図だけを受け取り、重い処理はしない ④ 呼ばれるスレッドは決まっていない（UI は Qt のシグナルに乗せ換える）。
 - 新しい例外 `PaperNotFound(LibraryError)`: 論文が見つからないときに送出する。翻訳のワーカーの中では `CancelledError` と同じに扱う（他の端末から削除された場合にエラーのダイアログを出さない）。
-- `SyncEngine.fetch(paper_id, kind: "original" | "translation", progress=None, cancel=None) -> Path` — 1 件を取得する、処理が終わるまで戻らない関数（ワーカーから呼ぶ）。
-  手元にあればすぐに返す。手順は `.tmp` にコピー → sha256 で検証 → rename → `"file"` の `RemoteChange` を出す。
-  - 例外: `SyncError(SpectraError)` の子として `SyncUnavailable`・`RemoteMissing`・`HashMismatch`（それぞれ日本語の title と hint を持つ）。論文が無いときは `PaperNotFound`、キャンセルは `CancelledError`。
+- `SyncEngine.fetch(paper_id, kind: "original" | "translation", progress: Callable[[int, int], None] | None = None, cancel: threading.Event | None = None) -> Path`
+  — 1 件を取得する、処理が終わるまで戻らない関数（ワーカーから呼ぶ）。手元にあれば、同期フォルダに触らずすぐに返す。
+  手順は `.tmp` にコピー（`progress` は (読んだバイト数, 全体)。全体が分からなければ 0）→ sha256 で検証 → rename → `"file"` の `RemoteChange` を出す。
+  - 例外: `SyncError(SpectraError)` の子として、`SyncUnavailable`（同期フォルダを読めない）、`RemoteMissing`（同期先にまだファイルがない）、
+    `HashMismatch`（同期の途中か、壊れている）。それぞれ日本語の title と hint を持ち、UI はそのまま表示する（文言は §7 に合わせる）。
+    論文が無いときは `PaperNotFound`、キャンセルは翻訳と同じ `CancelledError` で、`.tmp` は消す。
   - 取得の待ち行列と進捗の表示は UI 側に持つ（翻訳キューと同じ作り）。
-- `Paper.has_original` / `Paper.has_translation_file`（bool）: 読み込むときに、手元のファイルがあるかで 1 回だけ決める。一覧の ☁ の表示に使う。
+- `Paper.has_original` / `Paper.has_translation_file`（bool）: 読み込むときに、手元のファイルがあるかだけで 1 回決める（同期フォルダには触らない）。一覧の ☁ の表示に使う。
   - `has_original`: 同期が無効なら常に True。
   - `has_translation_file`: 「訳文があり、かつ訳文のファイルが手元にある」。未翻訳の論文は、同期の有無に関係なく False。
-  - UI は `translation is not None and not has_translation_file` のときに、訳文を ☁ と判断する。
+  - UI は、`has_original` が False なら原文が ☁、`translation is not None and not has_translation_file` なら訳文が ☁ と判断する。
 
 ### 5.6 初回の同期と既存ライブラリの統合
 
@@ -411,7 +414,7 @@ PDF と書誌情報を保存先に置きます。API キーと設定は同期し
 - 同期フォルダの読み込みが遅い・止まる（ストリーミングの疑似）ときに UI が固まらないこと
 - 外部入力: パストラバーサル、巨大な JSON、不正な sha
 - プライバシー: 同期がオフのとき同期フォルダに何も書かないこと、API キー・設定・翻訳キャッシュが書き出されないこと
-- 移行: v0.2.0 のライブラリから v2 への移行、古いアプリでも DB が開けること（同期の format と DB の版を分けている）
+- 移行: 同期をオンにすると `sync.sqlite3` が作られ、`library.sqlite3` の `user_version` は 1 のまま変わらず、v0.2.0 でも開けること
 
 ## 11. 担当の間で調整した点
 

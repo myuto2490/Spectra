@@ -773,3 +773,21 @@ def test_waiting_paper_cannot_be_translated_and_wording_is_consistent(make_windo
     assert detail.local.text() == "到着待ち"  # 短い値（説明はツールチップ）
     assert "届くのを待っています" in detail.local.toolTip()
     assert detail.width() == 324  # パネルが横に広がらない
+
+
+def test_popover_truncates_long_device_names(two_computers, tmp_path):
+    app, lib_a, engine_a, w = two_computers
+    long_name = "<i>研究室</i>" + "の共有パソコン" * 40
+    engine_a.device = DeviceInfo("1" * 32, long_name)
+    lib_a.add(_paper(tmp_path, "a.pdf", "Shared"))
+    engine_a.sync_now()
+    _sync_b(app, w)
+    from spectra.ui.sync_popover import NAME_LIMIT, SyncPopover
+
+    pop = SyncPopover(w.settings, w.sync, w)
+    shown = pop.other_label.text()
+    assert "…" in shown and long_name not in shown
+    assert shown.count("の共有パソコン") <= NAME_LIMIT // 7
+    tip = pop.other_label.toolTip()
+    assert "&lt;i&gt;研究室&lt;/i&gt;" in tip  # タグはエスケープされ、文字のまま見える
+    pop.close()

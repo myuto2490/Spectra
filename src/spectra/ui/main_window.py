@@ -1323,6 +1323,7 @@ class MainWindow(QMainWindow):
     def show_settings(self, tab: str = "engines") -> None:
         dlg = SettingsDialog(self.settings, self.secrets, self.cache, self, sync=self.sync)
         dlg.syncChanged.connect(self._on_sync_setting)
+        dlg.restoreBackupRequested.connect(self.restore_backup)
         dlg.keysChanged.connect(self.refresh_engine_status)
         dlg.settingsChanged.connect(lambda: self._on_settings_changed(True))
         dlg.appearanceChanged.connect(self.apply_appearance)
@@ -1342,6 +1343,37 @@ class MainWindow(QMainWindow):
             self._first_sync_count = self.library_view.active_count()
         self._refresh_sync_status()
         self._refresh_detail()
+
+    def restore_backup(self, path) -> bool:
+        """同期を始める前のライブラリに戻す（同期はオフになる）。"""
+        from ..library.store import restore_backup
+
+        if self._busy():
+            self._alert("翻訳中は戻せません", "翻訳が終わるか、キャンセルしてから、もう一度お試しください。")
+            return False
+        for pid in list(self.sync.downloads):
+            self.sync.cancel_download(pid)
+        self._release_document()
+        self._show_screen(LIBRARY)
+        root = self.library.root
+        self.settings.sync_enabled = False
+        self.settings.save()
+        self.sync.close()
+        self.library.close()
+        try:
+            restore_backup(path, root)
+        except SpectraError as e:
+            title, _, rest = e.user_message().partition("\n")
+            self._alert(title, rest)
+        self.library = Library(root)
+        self.library_view.library = self.library
+        self.lookups.library = self.library
+        self.sync.rebind(self.library)
+        self.library_view.reload()
+        self._refresh_sync_status()
+        self._update_state()
+        self._show_banner("info", "同期を始める前のライブラリに戻しました", "同期はオフになっています。")
+        return True
 
     def _refresh_sync_status(self) -> None:
         """サイドバーの下の 1 行（同期がオフで、保存先もなければ出さない）。"""

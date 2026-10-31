@@ -144,6 +144,7 @@ class SyncPage(QScrollArea):
     """設定の「同期」タブ。"""
 
     syncChanged = Signal()  # 接続・解除・オン/オフを変えた
+    restoreBackupRequested = Signal(object)  # Path（同期前の状態に戻す）
 
     def __init__(self, settings: Settings, sync: SyncController | None, parent: QWidget | None = None):
         super().__init__(parent)
@@ -259,6 +260,12 @@ class SyncPage(QScrollArea):
         disconnect = link_button("接続を解除…")
         disconnect.clicked.connect(self.disconnect)
         rl.addWidget(disconnect)
+        # 初回の同期の前に自動で作ったバックアップがあれば、目立たない場所に一度だけ出す
+        self.restore_btn = link_button("同期前の状態に戻す…")
+        self.restore_btn.clicked.connect(self.restore_backup)
+        self.restore_btn.setVisible(bool(self.sync and self.sync.backup_path()))
+        rl.addSpacing(16)
+        rl.addWidget(self.restore_btn)
         rl.addStretch(1)
         self._add(row)
         self._refresh_status()
@@ -354,6 +361,24 @@ class SyncPage(QScrollArea):
         self.settings.save()
         self.syncChanged.emit()
         self._refresh_status()
+
+    def restore_backup(self) -> None:
+        path = self.sync.backup_path() if self.sync else None
+        if path is None:
+            return
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setText("同期を始める前のライブラリに戻しますか？")
+        box.setInformativeText(
+            "同期はオフになります。同期を始めてから追加・編集した内容は、このパソコンでは失われます（同期先のデータは消えません）。"
+            "その間に完全に削除した論文は、PDF が戻らないことがあります。"
+        )
+        restore = box.addButton("戻す", QMessageBox.ButtonRole.DestructiveRole)
+        box.addButton("キャンセル", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        if box.clickedButton() is restore:
+            self.restoreBackupRequested.emit(path)
+            self.rebuild()
 
     def disconnect(self) -> None:
         box = QMessageBox(self)

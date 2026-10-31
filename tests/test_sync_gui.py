@@ -603,3 +603,54 @@ def test_real_sync_edit_on_this_computer_reaches_other(two_computers, tmp_path):
     assert [p.sha256 for p in a_papers] == [b_paper.sha256]
     assert a_papers[0].favorite
     assert any(c.kind == "added" for c in report.changes)
+
+
+def test_restore_to_before_first_sync(tmp_path, monkeypatch, cloud, dialogs):
+    """同期をオンにした時点で手元に論文があれば、core が初回の同期の前にバックアップを作り、それに戻せる。"""
+    monkeypatch.setenv("SPECTRA_DEV", "1")
+    from spectra.config import paths
+    from spectra.config.secrets import SecretStore
+    from spectra.config.settings import Settings
+    from spectra.library import Library
+    from spectra.ui.app import create_app
+    from spectra.ui.main_window import MainWindow
+
+    root = cloud / "Spectra Sync"
+    root.mkdir(parents=True)
+    mine = Library(paths.library_dir())  # 同期を始める前から、このパソコンにある論文
+    mine.add(_paper(tmp_path, "mine.pdf", "Mine"))
+    mine.close()
+    lib_a = Library(tmp_path / "A" / "library")
+    engine_a = SyncEngine(lib_a, FakeFolderStorage(root), DeviceInfo("1" * 32, "MacBook Pro"))
+    lib_a.add(_paper(tmp_path, "theirs.pdf", "Theirs"))
+    engine_a.sync_now()
+
+    app = create_app([])
+    settings = Settings(engine="dummy", metadata_lookup=False, sync_enabled=True, sync_folder=str(cloud))
+    w = MainWindow(
+        settings=settings,
+        secrets=SecretStore(use_keyring=False),
+        sync_engine_factory=lambda s, lib: SyncEngine(lib, FakeFolderStorage(root), DeviceInfo("2" * 32, "Windows")),
+    )
+    w.show()
+    try:
+        assert pump(app, 10, until=lambda: len(w.library.papers()) == 2)
+        assert w.sync.backup_path() is not None
+
+        from spectra.ui.sync_settings import SyncPage
+
+        page = SyncPage(w.settings, w.sync)
+        page.restoreBackupRequested.connect(w.restore_backup)
+        assert page.restore_btn.isVisibleTo(page)
+        page.restore_backup()
+        assert "同期を始める前のライブラリに戻しますか？" in dialogs[-1] and "同期先のデータは消えません" in dialogs[-1]
+        assert [p.file_name for p in w.library.papers()] == ["mine.pdf"]
+        assert not w.settings.sync_enabled and not w.sync.enabled()
+        assert w.library_view.library is w.library and w.sync.library is w.library
+        assert "同期を始める前のライブラリに戻しました" in w.banner._title.text()
+        w.library_view.toggle_favorite([w.library.papers()[0].id])  # 開き直したライブラリも使える
+    finally:
+        w.close()
+        w.library.close()
+        engine_a.close()
+        lib_a.close()

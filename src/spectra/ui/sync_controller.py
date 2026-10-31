@@ -143,6 +143,20 @@ class SyncController(QObject):
         self._stop_engine()
         self._library_unsub()
 
+    def rebind(self, library: Library) -> None:
+        """ライブラリを開き直したとき（同期前の状態に戻したときなど）に、新しいライブラリにつなぎ直す。"""
+        self.library = library
+        self._library_unsub = library.add_listener(lambda _e: self._local.emit())
+        self.configure()
+
+    def backup_path(self):
+        """初回の同期の前に作ったバックアップ（なければ None）。"""
+        try:
+            return self.engine.backup_path if self.engine is not None else None
+        except Exception:
+            log.debug("backup_path failed", exc_info=True)
+            return None
+
     # -- 同期 ------------------------------------------------------------------
 
     def sync_now(self) -> None:

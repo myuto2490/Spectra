@@ -257,6 +257,7 @@ class SettingsDialog(QDialog):
     appearanceChanged = Signal()
     lookupChanged = Signal(bool)  # 書誌情報の照会のオン・オフ
     syncChanged = Signal()  # 同期の接続・解除・オン/オフ
+    restoreBackupRequested = Signal(object)  # 同期前の状態に戻す（バックアップのパス）
 
     def __init__(
         self,
@@ -285,6 +286,7 @@ class SettingsDialog(QDialog):
 
         self.sync_page = SyncPage(settings, sync)
         self.sync_page.syncChanged.connect(self.syncChanged)
+        self.sync_page.restoreBackupRequested.connect(self.restoreBackupRequested)
         self._pages = {
             "engines": self._engines_page(),
             "fonts": self._fonts_page(),

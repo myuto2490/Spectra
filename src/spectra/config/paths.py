@@ -51,3 +51,8 @@ def fonts_dir() -> Path:
 
 def library_dir() -> Path:
     return data_dir() / "library"
+
+
+def device_file() -> Path:
+    """この端末の ID（同期で使う）。"""
+    return config_dir() / "device.json"

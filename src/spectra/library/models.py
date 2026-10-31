@@ -86,6 +86,24 @@ class Translation:
 
 
 @dataclass(frozen=True)
+class LibraryEvent:
+    """ライブラリの変更の合図（同期の層が受け取る）。中身は最小限で、詳しくは読み直してもらう。
+
+    kind: added / metadata / favorite / opened / removed / translation / collections
+    """
+
+    kind: str
+    paper_id: int | None = None
+    sha256: str = ""
+
+
+@dataclass(frozen=True)
+class AddResult:
+    paper: Paper
+    status: str  # new（新しく追加）/ existing（既にあった）/ restored（ゴミ箱から戻した）
+
+
+@dataclass(frozen=True)
 class Collection:
     id: int
     name: str
@@ -108,6 +126,10 @@ class Paper:
     collection_ids: frozenset[int]
     translation: Translation | None
     root: Path
+    # 手元にファイルがあるか（読み込むときに 1 回だけ決める。同期フォルダには触らない）
+    has_original: bool = True
+    has_translation_file: bool = False  # 訳文があり、かつ訳文のファイルが手元にある
+    trashed_at: float | None = None  # ゴミ箱に入れた時刻（None なら通常の論文）
 
     @property
     def folder(self) -> Path:

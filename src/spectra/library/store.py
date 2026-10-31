@@ -3,7 +3,7 @@
 library_dir()/
     library.sqlite3
     files/<paper_id>/original.pdf     取り込んだ PDF のコピー
-    files/<paper_id>/translated.pdf   訳文のみの版（出力形式は書き出し時に作り直す）
+    files/<paper_id>/translated.pdf   訳文のみの版（出力形式は PDF出力のときに作り直す）
 """
 
 from __future__ import annotations

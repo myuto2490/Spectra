@@ -377,7 +377,9 @@ def test_sync_now_on_empty_library(engine):
 
 def test_settings_schema_4():
     s = Settings()
-    assert s.sync_enabled is False and s.sync_folder == "" and s.schema == 4
+    from spectra.config.settings import SCHEMA_VERSION
+
+    assert s.sync_enabled is False and s.sync_folder == "" and s.schema == SCHEMA_VERSION
     assert Settings.from_dict({"sync_enabled": True, "sync_folder": "/x", "schema": 3}).sync_enabled is True
 
 

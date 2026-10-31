@@ -499,7 +499,7 @@ def test_candidate_folders_and_names(tmp_path):
     gd.mkdir(parents=True)
     (tmp_path / "Dropbox").mkdir()
     found = candidate_folders(tmp_path)
-    assert ("Google Drive（me@example.com）", gd) in found
+    assert ("Google Drive", gd) in found  # アカウントが 1 つなら、メールアドレスは出さない
     assert any(name == "Dropbox" for name, _ in found)
     assert folder_name(str(gd / "論文"), found) == "Google Drive › 論文 › Spectra Sync"
     assert format_ago(time.time() - 120) == "2 分前"

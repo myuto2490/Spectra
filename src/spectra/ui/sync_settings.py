@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 
 from ..config.settings import Settings
 from . import worker
+from .privacy import display_path, mask_email
 from .sync_controller import ERROR, OFF, SYNCING, UNAVAILABLE, SyncController, sync_root
 from .widgets import FormGroup, Switch, button, label, link_button
 
@@ -56,16 +57,20 @@ def candidate_folders(home: Path | None = None) -> list[tuple[str, Path]]:
         entries = sorted(cloud.iterdir()) if cloud.is_dir() else []
     except OSError:
         entries = []
+    # Google Drive のフォルダ名にはアカウントのメールアドレスが入っている。表示は「Google Drive」だけにし、
+    # アカウントが 2 つ以上あるときだけ、区別できる最小限（my•••@gmail.com）を添える。アドレスはどこにも保存しない
+    accounts = [e.name.removeprefix("GoogleDrive-") for e in entries if e.name.startswith("GoogleDrive-")]
     for entry in entries:
         n = entry.name
         if n.startswith("GoogleDrive-"):
             account = n.removeprefix("GoogleDrive-")
+            name = "Google Drive" if len(accounts) < 2 else f"Google Drive（{mask_email(account, accounts)}）"
             for sub in ("マイドライブ", "My Drive"):
                 if (entry / sub).is_dir():
-                    add(f"Google Drive（{account}）", entry / sub)
+                    add(name, entry / sub)
                     break
             else:
-                add(f"Google Drive（{account}）", entry)
+                add(name, entry)
         elif n.startswith("Dropbox"):
             add("Dropbox", entry)
         elif n.startswith("OneDrive"):
@@ -203,7 +208,7 @@ class SyncPage(QScrollArea):
             b.setAccessibleName(f"{name}を使う")
             b.clicked.connect(lambda _c=False, p=path: self.connect_folder(p))
             row = group.add_row(name, b)
-            row.setToolTip(str(path))
+            row.setToolTip(display_path(path))
             self.choose_buttons[name] = path
         other = link_button("ほかのフォルダを選択…")
         other.clicked.connect(self._choose_other)
@@ -225,7 +230,7 @@ class SyncPage(QScrollArea):
         dl.setContentsMargins(0, 0, 0, 0)
         dl.setSpacing(8)
         self.dest_label = label(folder_name(self.settings.sync_folder, self.candidates), "secondary")
-        self.dest_label.setToolTip(str(sync_root(self.settings)))
+        self.dest_label.setToolTip(display_path(sync_root(self.settings)))
         change = button("変更…")
         change.clicked.connect(self._choose_other)
         dl.addWidget(self.dest_label)

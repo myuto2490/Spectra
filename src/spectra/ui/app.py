@@ -21,7 +21,10 @@ def _setup_logging() -> None:
         )
     except OSError:
         handler = logging.StreamHandler()
-    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    # ログはバグ報告に貼られることがあるので、ユーザー名を含むパスやメールアドレスを伏せて書く
+    from .privacy import RedactingFormatter
+
+    handler.setFormatter(RedactingFormatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
     root = logging.getLogger()
     root.setLevel(logging.INFO)
     root.addHandler(handler)

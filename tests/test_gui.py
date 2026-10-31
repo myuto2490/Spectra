@@ -501,3 +501,31 @@ def test_added_papers_are_revealed_even_when_search_hides_them(window, tmp_path)
     assert len(papers) == 2
     assert w.search.text() == ""
     assert set(w.library_view.selected_ids()) == {p.id for p in papers}
+
+
+def test_opening_settings_does_not_read_the_saved_key(window, monkeypatch):
+    """設定を開いただけでは、保存済みの API キーを読まない（macOS のキーチェーンの許可を求めない）。"""
+    app, w = window
+    from spectra.ui.settings_dialog import KeyField, SettingsDialog
+
+    w.secrets.set("gemini", "AIzaSaved")
+    w.secrets._cache.clear()
+    reads = []
+    original = w.secrets.get
+    monkeypatch.setattr(w.secrets, "get", lambda engine, use_env=True: reads.append(engine) or original(engine, use_env))
+    # macOS では、キーの有無はキーチェーンに属性だけを問い合わせて調べる（中身を読まないので許可を求めない）。それを再現する
+    monkeypatch.setattr(w.secrets, "has", lambda engine, use_env=True: engine == "gemini")
+    verified = []
+    monkeypatch.setattr(KeyField, "verify", lambda self: verified.append(self.engine_id))
+
+    d = SettingsDialog(w.settings, w.secrets, w.cache, w)
+    field = d.key_fields["gemini"]
+    assert reads == []
+    assert field.edit.text() == "" and "保存済み" in field.edit.placeholderText()
+    assert "保存済み" in field.status.text()
+    field._save()  # 何も入力せずに欄を離れても、キーは消えない
+    assert w.secrets.get("gemini", use_env=False) == "AIzaSaved"
+    reads.clear()
+    field.reveal.setChecked(True)  # 表示したときに初めて読む
+    assert reads == ["gemini"] and field.edit.text() == "AIzaSaved"
+    d.close()

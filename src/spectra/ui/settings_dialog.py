@@ -34,6 +34,7 @@ from ..translate.cache import TranslationCache
 from ..translate.errors import TranslatorError
 from ..translate.gemini import MODELS
 from . import icons, theme, worker
+from .privacy import home_to_tilde
 from .widgets import (
     FormGroup,
     SegmentedControl,
@@ -41,6 +42,7 @@ from .widgets import (
     button,
     label,
     link_button,
+    plain_tooltip,
     refresh_icon,
     set_prop,
     tool_button,
@@ -59,6 +61,10 @@ class KeyField(QWidget):
         self.settings = settings
         self.info = registry.ENGINES[engine_id]
         self._task: worker.Task | None = None
+        # 保存済みのキーは、設定を開いただけでは読まない（macOS ではキーチェーンの許可を求められるため）。
+        # 目のアイコンで表示したとき・接続を確認したときに初めて読む
+        self._saved = secrets.has(engine_id, use_env=False)
+        self._loaded: str | None = None  # 読み出したキー（読んでいなければ None）
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -83,9 +89,10 @@ class KeyField(QWidget):
         row.setSpacing(6)
         self.edit = QLineEdit()
         self.edit.setEchoMode(QLineEdit.EchoMode.Password)
-        self.edit.setPlaceholderText(f"{self.info.key_label}を貼り付け")
+        self.edit.setPlaceholderText(
+            "保存済み（目のアイコンで表示）" if self._saved else f"{self.info.key_label}を貼り付け"
+        )
         self.edit.setAccessibleName(f"{self.info.name} の {self.info.key_label}")
-        self.edit.setText(secrets.get(engine_id, use_env=False))
         self.edit.editingFinished.connect(self._save)
         self.edit.textEdited.connect(lambda _t: self._set_status("", None))
         row.addWidget(self.edit, 1)
@@ -118,7 +125,16 @@ class KeyField(QWidget):
     def refresh_theme(self) -> None:
         self.get_key.setIcon(icons.icon("external", theme.current().accent, 14))
 
+    def _load_saved(self) -> str:
+        """保存済みのキーを読み出して欄に入れる（ここで初めてキーチェーンに問い合わせる）。"""
+        if self._loaded is None and self._saved and not self.edit.text():
+            self._loaded = self.secrets.get(self.engine_id, use_env=False)
+            self.edit.setText(self._loaded)
+        return self.edit.text().strip()
+
     def _toggle_reveal(self, on: bool) -> None:
+        if on:
+            self._load_saved()
         self.edit.setEchoMode(QLineEdit.EchoMode.Normal if on else QLineEdit.EchoMode.Password)
         self.reveal.setProperty("iconName", "eye_off" if on else "eye")
         self.reveal.setToolTip("キーを隠す" if on else "キーを表示")
@@ -139,9 +155,12 @@ class KeyField(QWidget):
 
     def _save(self) -> None:
         value = self.edit.text().strip()
-        if value == self.secrets.get(self.engine_id, use_env=False):
+        if not value and self._saved and self._loaded is None:
+            return  # 保存済みのキーを読んでいない（欄が空なのは、まだ表示していないだけ）
+        if value == (self._loaded or ""):
             return
         self.secrets.set(self.engine_id, value)
+        self._loaded, self._saved = value, bool(value)
         self._set_status(f"保存しました（{self.secrets.backend_name}）" if value else "削除しました", "success" if value else None)
         self.changed.emit(self.engine_id)
         if value:
@@ -150,16 +169,19 @@ class KeyField(QWidget):
     def _delete(self) -> None:
         self.edit.clear()
         self.secrets.delete(self.engine_id)
+        self._loaded, self._saved = None, False
+        self.edit.setPlaceholderText(f"{self.info.key_label}を貼り付け")
         self._set_status("削除しました", None)
         self.changed.emit(self.engine_id)
 
     def verify(self) -> None:
-        key = self.edit.text().strip()
+        key = self._load_saved()  # 確認を押したときに初めて、保存済みのキーを読む
         if not key:
             self._set_status("キーを入力してください。", "danger")
             return
-        if key != self.secrets.get(self.engine_id, use_env=False):
+        if key != (self._loaded or ""):
             self.secrets.set(self.engine_id, key)
+            self._loaded, self._saved = key, True
             self.changed.emit(self.engine_id)
         self.verify_btn.setEnabled(False)
         self._set_status("確認しています…", "busy")
@@ -498,7 +520,9 @@ class SettingsDialog(QDialog):
         for title, path in (("ライブラリ", paths.library_dir()), ("設定", paths.config_dir()), ("ログ", paths.log_dir())):
             b = button("開く")
             b.clicked.connect(lambda _c=False, p=path: self._open_folder(p))
-            folders.add_row(title, b, str(path))
+            # 表示ではホームを「~」に（スクリーンショットにユーザー名が写らないように）。元のパスはツールチップに
+            row = folders.add_row(title, b, home_to_tilde(str(path)))
+            row.setToolTip(plain_tooltip(str(path)))
         lay.addWidget(folders)
         lay.addStretch(1)
         # 項目が多くダイアログの高さに収まらないので、行を潰さずにスクロールさせる

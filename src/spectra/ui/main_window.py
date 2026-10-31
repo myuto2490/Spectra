@@ -61,7 +61,16 @@ from .paper_detail import MetadataDialog
 from .pdf_view import PreviewPair
 from .settings_dialog import SettingsDialog
 from .sync_controller import ERROR, SYNCING, UNAVAILABLE, SyncController
-from .widgets import Banner, SegmentedControl, button, label, refresh_icon, tool_button
+from .widgets import (
+    Banner,
+    SegmentedControl,
+    button,
+    label,
+    plain_box,
+    plain_tooltip,
+    refresh_icon,
+    tool_button,
+)
 
 log = logging.getLogger(__name__)
 
@@ -477,7 +486,7 @@ class MainWindow(QMainWindow):
 
         if reader and self.paper is not None:
             self.doc_title.setText(_elide(self.paper.display_title, 80))
-            self.doc_title.setToolTip(self.paper.display_title)
+            self.doc_title.setToolTip(plain_tooltip(self.paper.display_title))
             sub = [s for s in (self.paper.authors_short, f"{self.original_doc.page_count} ページ") if s]
             self.doc_subtitle.setText(" · ".join(sub))
             self.setWindowTitle(f"{self.paper.display_title} — {APP_NAME}")
@@ -761,7 +770,7 @@ class MainWindow(QMainWindow):
         box.setInformativeText(f"{everywhere}{TRASH_DAYS} 日以内ならゴミ箱から戻せます。元のファイルは残ります。")
         delete = box.addButton("削除", QMessageBox.ButtonRole.DestructiveRole)
         box.addButton("キャンセル", QMessageBox.ButtonRole.RejectRole)
-        box.exec()
+        plain_box(box).exec()
         if box.clickedButton() is not delete:
             return
         for p in papers:
@@ -794,7 +803,7 @@ class MainWindow(QMainWindow):
         box.setInformativeText(f"{everywhere}この操作は取り消せません。")
         delete = box.addButton("完全に削除", QMessageBox.ButtonRole.DestructiveRole)
         box.addButton("キャンセル", QMessageBox.ButtonRole.RejectRole)
-        box.exec()
+        plain_box(box).exec()
         if box.clickedButton() is not delete:
             return
         for p in papers:
@@ -813,7 +822,7 @@ class MainWindow(QMainWindow):
         box.setInformativeText(f"{everywhere}この操作は取り消せません。")
         delete = box.addButton("ゴミ箱を空にする", QMessageBox.ButtonRole.DestructiveRole)
         box.addButton("キャンセル", QMessageBox.ButtonRole.RejectRole)
-        box.exec()
+        plain_box(box).exec()
         if box.clickedButton() is not delete:
             return
         self.library.empty_trash()
@@ -1019,7 +1028,7 @@ class MainWindow(QMainWindow):
         box.setInformativeText(f"{info.free_quota}で使えます。キーは設定画面から入力できます。")
         open_btn = box.addButton("設定を開く", QMessageBox.ButtonRole.AcceptRole)
         box.addButton("キャンセル", QMessageBox.ButtonRole.RejectRole)
-        box.exec()
+        plain_box(box).exec()
         if box.clickedButton() is open_btn:
             self.show_settings("engines")
         return None
@@ -1239,7 +1248,7 @@ class MainWindow(QMainWindow):
             )
             make = box.addButton("翻訳できた分で作成", QMessageBox.ButtonRole.AcceptRole)
             box.addButton("キャンセル", QMessageBox.ButtonRole.RejectRole)
-            box.exec()
+            plain_box(box).exec()
             if box.clickedButton() is make:
                 req.allow_partial = True
                 self.queue.enqueue(req, front=True)
@@ -1257,7 +1266,7 @@ class MainWindow(QMainWindow):
                 box.setInformativeText(rest + dropped_note)
                 open_btn = box.addButton("設定を開く", QMessageBox.ButtonRole.AcceptRole)
                 box.addButton("閉じる", QMessageBox.ButtonRole.RejectRole)
-                box.exec()
+                plain_box(box).exec()
                 if box.clickedButton() is open_btn:
                     self.show_settings("engines")
             else:
@@ -1542,7 +1551,7 @@ class MainWindow(QMainWindow):
         box.setIcon(QMessageBox.Icon.Warning)
         box.setText(title)
         box.setInformativeText(body)
-        box.exec()
+        plain_box(box).exec()
 
     def _zoom_by(self, factor: float) -> None:
         view = self.preview.active_view()
@@ -1636,7 +1645,7 @@ class MainWindow(QMainWindow):
             box.setInformativeText(note + "翻訳済みの段落はキャッシュに保存されているため、次回は続きから翻訳できます。")
             quit_btn = box.addButton("終了", QMessageBox.ButtonRole.DestructiveRole)
             box.addButton("キャンセル", QMessageBox.ButtonRole.RejectRole)
-            box.exec()
+            plain_box(box).exec()
             if box.clickedButton() is not quit_btn:
                 event.ignore()
                 return

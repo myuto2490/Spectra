@@ -38,7 +38,7 @@ from .library_model import (
     PaperTableModel,
 )
 from .paper_detail import PaperDetail
-from .widgets import button, label, link_button, set_prop
+from .widgets import button, label, link_button, plain_box, set_prop
 
 ScopeRole = Qt.ItemDataRole.UserRole + 10
 CollectionRole = Qt.ItemDataRole.UserRole + 11
@@ -522,7 +522,7 @@ class LibraryView(QWidget):
         box.setInformativeText("コレクションの中の論文は、ライブラリに残ります。")
         delete = box.addButton("削除", QMessageBox.ButtonRole.DestructiveRole)
         box.addButton("キャンセル", QMessageBox.ButtonRole.RejectRole)
-        box.exec()
+        plain_box(box).exec()
         if box.clickedButton() is delete:
             self.library.delete_collection(cid)
             self.reload()

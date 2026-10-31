@@ -11,6 +11,7 @@ from PySide6.QtCore import QAbstractTableModel, QMimeData, QModelIndex, QSortFil
 
 from ..library import Paper
 from . import icons, theme
+from .widgets import plain_tooltip
 
 PAPER_IDS_MIME = "application/x-spectra-paper-ids"
 
@@ -307,11 +308,12 @@ class PaperTableModel(QAbstractTableModel):
             if key == "added":
                 return p.trashed_at if p.trashed_at is not None else p.added_at
         if role == Qt.ItemDataRole.ToolTipRole:
+            # ツールチップは HTML らしい文字列をリッチテキストとして描くので、外から来た文字列はエスケープする
             if key == "title":
                 state = local_state(p, self._downloads.get(p.id))
-                return f"{p.display_title}\n{state[1]}" if state else p.display_title
+                return plain_tooltip(f"{p.display_title}\n{state[1]}" if state else p.display_title)
             if key == "authors" and md.authors:
-                return ", ".join(a.full() for a in md.authors)
+                return plain_tooltip(", ".join(a.full() for a in md.authors))
             if key == "favorite":
                 return "お気に入り" if p.favorite else ""
         if role == Qt.ItemDataRole.AccessibleTextRole:

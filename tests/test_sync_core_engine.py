@@ -258,3 +258,35 @@ def test_icloud_placeholder_requests_download(devs, pdf, monkeypatch):
         b.engine.fetch(b.lib.find_by_sha(p.sha256).id, "original")
     assert "iCloud" in info.value.hint
     assert calls and calls[0][:2] == ["brctl", "download"]
+
+
+
+def test_backup_before_first_sync_and_restore(devs, pdf):
+    from spectra.library.store import DB_NAME, restore_backup
+
+    a, b = devs("A", A), devs("B", B)
+    a.lib.add(pdf("a.pdf", seed=1))
+    a.sync()
+    pb, _ = b.lib.add(pdf("b.pdf", seed=2))
+    b.sync()
+    backup = b.engine.backup_path
+    assert backup is not None and (backup / DB_NAME).exists()
+    assert not list(backup.glob("*.pdf"))  # PDF はコピーしない
+    assert len(b.lib.papers()) == 2  # A の論文が統合された
+    assert b.engine.backup_before_first_sync() is None  # 2 回目以降は作らない
+    root = b.lib.root
+    b.engine.close()
+    b.lib.close()
+    restore_backup(backup, root)
+    assert not (root / "sync.sqlite3").exists()
+    lib = Library(root)
+    try:
+        assert [p.sha256 for p in lib.papers()] == [pb.sha256]
+    finally:
+        lib.close()
+
+
+def test_no_backup_for_empty_library(devs):
+    a = devs("A", A)
+    a.sync()
+    assert a.engine.backup_path is None

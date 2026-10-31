@@ -59,6 +59,7 @@ from .library_model import TRASH_DAYS
 from .library_view import LibraryView
 from .paper_detail import MetadataDialog
 from .pdf_view import PreviewPair
+from .privacy import display_path
 from .settings_dialog import SettingsDialog
 from .sync_controller import ERROR, SYNCING, UNAVAILABLE, SyncController
 from .widgets import (
@@ -251,6 +252,8 @@ class MainWindow(QMainWindow):
             icons.icon("search", theme.current().secondary, 16), QLineEdit.ActionPosition.LeadingPosition
         )
         self.search.textChanged.connect(self.library_view.set_search)
+        # Esc（検索を消す）を押せるかは検索語の有無で決まるので、打つたびに状態を更新する
+        self.search.textChanged.connect(lambda _t: self._update_state())
         h.addWidget(self.search, 1)
 
         # 読書画面
@@ -617,6 +620,8 @@ class MainWindow(QMainWindow):
             return papers
 
         self._show_screen(LIBRARY)
+        for p in papers:
+            self.library_view.reveal(p.id)  # 検索や絞り込みで隠れていたら解除する
         self.library_view.select_ids([p.id for p in papers])
         notes = []
         if existing:
@@ -1543,10 +1548,11 @@ class MainWindow(QMainWindow):
             cb()
 
     def _alert(self, title: str, body: str = "") -> None:
+        # エラー文に含まれるパスも、ホームは「~」に（スクリーンショットや問い合わせにユーザー名が写らないように）
         box = QMessageBox(self)
         box.setIcon(QMessageBox.Icon.Warning)
-        box.setText(title)
-        box.setInformativeText(body)
+        box.setText(display_path(title))
+        box.setInformativeText(display_path(body))
         plain_box(box).exec()
 
     def _zoom_by(self, factor: float) -> None:

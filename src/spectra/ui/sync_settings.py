@@ -341,17 +341,27 @@ class SyncPage(QScrollArea):
         return (
             "この名前は同期先のフォルダに保存され、ほかのパソコンの Spectra に表示されます。"
             "氏名やメールアドレスなど、個人が分かる情報は入れないでください。"
-            f"空にすると「{default}」に戻ります。例: 自宅の Mac、研究室のノート"
+            f"空にすると「{default}」に戻ります。\n例: 自宅の Mac、研究室のノート"
         )
 
     def _on_name(self) -> None:
         if self.sync is None or self.name_edit is None:
             return
+        from ..library.sync import clean_device_name
+
+        # フォーカスを外しただけ（名前が変わっていない）なら、保存も同期もしない
+        if clean_device_name(self.name_edit.text()) == self.settings.device_name:
+            if self.name_edit.text() != self.settings.device_name:
+                self._show_name(self.settings.device_name)
+            return
         # 貼り付けた制御文字や前後の空白は core の規則で取り除き、取り除いた結果を欄に戻す
         shown = self.sync.set_device_name(self.name_edit.text())
-        text = "" if shown == self.sync.default_device_name() else shown
+        self._show_name("" if shown == self.sync.default_device_name() else shown)
+
+    def _show_name(self, text: str) -> None:
         if self.name_edit.text() != text:
             self.name_edit.setText(text)
+        self.name_edit.setCursorPosition(0)  # 長い名前も先頭から読めるように
 
     def focus_device_name(self) -> None:
         if self.name_edit is not None:

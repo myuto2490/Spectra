@@ -528,3 +528,27 @@ PDF と書誌情報を保存先に置きます。API キーと設定は同期し
 | Q10 | 最初の接続で、両方のパソコンに同じ名前のコレクションがあるとき | ① 1 つにまとめる ② 別のまま 2 つ | ①（初回だけ。その後に作った同じ名前のものは別のまま） |
 | Q11 | 同期する範囲 | ① 書誌情報・原文・訳文のすべて ② 訳文だけも選べる（容量の節約） | ①。原文と訳文を並べて読むには原文が必要。②は段階 3 の選択肢 |
 | Q12 | 段階 1 で、読むだけのパソコンにもともと論文がある場合 | ① 同じ一覧に混ぜ、同期した論文だけを読むだけにする（手元の論文は今までどおり編集でき、同期はされない）② 接続している間は同期した論文だけを表示し、手元の論文は解除すると戻る ③ サイドバーで「このパソコン」と「同期（MacBook Pro）」を分ける | ①。手元の論文が見えなくなる不安がなく、論文ごとに操作の可否を決めるだけで済む。段階 2 で自然に 1 つのライブラリになる。行に「読むだけ」の印を付けて区別する |
+
+## 13. フェーズ 2（実装）の分担
+
+コミットの作者は myuto2490 のみで、AI の表記は入れない。push・main へのマージ・リリースは、ユーザーの明示の指示があるまでしない。
+各ブランチは、この文書を取り込んだ develop から切る。担当ファイルの外を変える必要が出たら、自分で変えずに持ち主に頼む（調整は 97）。
+
+| 担当 | ブランチ・作業場所 | 持ち主のファイル | 内容 |
+|---|---|---|---|
+| f3（core） | `feature/sync-core`・`Spectra-sync-core` | `src/spectra/library/`（`sync/` パッケージを新設。`store.py`・`models.py`・`errors.py` を含む）、`src/spectra/config/paths.py`・`settings.py`（schema 4）、`src/spectra/cli.py`、`tests/test_sync_core*.py` | §5 のすべて、ゴミ箱の core、§5.5.3 の API、単体テスト |
+| e7（画面） | `feature/sync-ui`・メインの作業ツリー | `src/spectra/ui/`（`icons.py`・`theme.py` を除く）、`tests/test_gui*.py`・`tests/test_sync_gui.py` | §7（§7.3.1 を除く）、ゴミ箱の画面、画面のテスト |
+| 5d（デザイン・目視） | `feature/sync-ui-design`・`Spectra-sync-design` | `src/spectra/ui/icons.py`・`theme.py` | 新しいアイコン（☁・↓・⏳・ゴミ箱など）とスタイル、e7 の画面の目視確認（ライト・ダーク） |
+| 97（独立したテスト） | `test/sync-scenarios`・`Spectra-sync-docs` | `tests/test_sync_scenarios.py`、`docs/SYNC.md` | §10 の 2 台のシナリオを、§5.5.3 の公開 API だけでブラックボックスに書く（実装者とは別の人が書く） |
+| fe（統合・CI・文書） | `docs/sync-user-docs`・`Spectra-integration`（develop を持つ） | `README.md`・`SECURITY.md`・`docs/DESIGN.md`・`CHANGELOG.md`、`.github/` | §8.1 の文書の追記、develop への取り込み、取り込みごとの回帰テスト（pytest・ruff）、CI の確認 |
+
+**レビュー**: f3 の単体テストは e7 が、e7 の画面のテストは f3 が見る。97 のシナリオのテストは f3 が見る（仕様の読み違いの確認）。
+
+**順番**:
+
+1. f3: API の骨組み（§5.5.3 の型・例外・`add_listener`・`Paper.has_*`・`FakeFolderStorage`・何もしない `SyncEngine`）を先にコミットし、develop に取り込む。
+   これで e7・97 が、本体の完成を待たずに作業を始められる。
+2. f3: 本体（段階 1 → 段階 2 → ゴミ箱）。97: シナリオのテスト。5d: アイコンとスタイル。e7: 画面。fe: 文書。並行して進める。
+3. develop への取り込みの順: core の骨組み → 5d のアイコン → core の本体 → 97 のシナリオのテスト → e7 の画面 → fe の文書。取り込みのたびに fe が回帰テストを流す。
+
+**節目の報告**（97 から ff へ）: core の同期の動作（シナリオのテストが通る）、画面（5d の目視確認を含む）、全体のテストの結果。

@@ -497,8 +497,15 @@ class PaperDetail(QWidget):
         if self._job is None:
             self.translate_btn.setEnabled(not blocked and not running)
             self.translate_btn.setToolTip(reason)
-        self.tr_blocked.setText("ファイルが届いてから翻訳できます" if waiting and missing else reason if blocked else "")
-        self.tr_blocked.setVisible(blocked)
+        # 翻訳できない理由はボタンの下に出す（取得中は、同じファイルを二重に取得しないよう、終わるまで待ってもらう）
+        if waiting and missing:
+            caption = "ファイルが届いてから翻訳できます"
+        elif running and self._job is None:
+            caption = "取得が終わると翻訳できます"
+        else:
+            caption = reason if blocked else ""
+        self.tr_blocked.setText(caption)
+        self.tr_blocked.setVisible(bool(caption))
 
     def _show_paper(self, p: Paper, looking_up: bool, lookup_enabled: bool) -> None:
         md = p.metadata

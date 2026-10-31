@@ -304,7 +304,7 @@ class MainWindow(QMainWindow):
 
         file_menu = mb.addMenu("ファイル")
         self.act_open = act("論文を追加…", self.open_dialog, QKeySequence.StandardKey.Open)
-        self.act_save = act("PDF を書き出す…", self.save_dialog, QKeySequence.StandardKey.Save)
+        self.act_save = act("PDF出力…", self.save_dialog, QKeySequence.StandardKey.Save)
         self.act_close = act("ライブラリに戻る", self.close_document, QKeySequence.StandardKey.Close)
         file_menu.addActions([self.act_open, self.act_save])
         file_menu.addSeparator()
@@ -427,7 +427,7 @@ class MainWindow(QMainWindow):
             self.secondary_btn.setEnabled(True)
             self.secondary_btn.setVisible(True)
         elif has_result:
-            self.primary_btn.setText("書き出す…")
+            self.primary_btn.setText("PDF出力")
             self.primary_btn.setEnabled(True)
             self.secondary_btn.setText("再翻訳")
             self.secondary_btn.setEnabled(True)
@@ -1047,13 +1047,13 @@ class MainWindow(QMainWindow):
             self.preview.set_mode("both")
             self._status_message = summary
             if result.warnings:
-                self._show_banner("warning", "翻訳が完了しました", "\n".join(result.warnings), "書き出す…", self.save_dialog)
+                self._show_banner("warning", "翻訳が完了しました", "\n".join(result.warnings), "PDF出力", self.save_dialog)
             else:
                 self._show_banner(
                     "success",
                     "翻訳が完了しました",
                     "図表とレイアウトが元のままであることを確認しました。" if result.qa.pages_checked else "",
-                    "書き出す…",
+                    "PDF出力",
                     self.save_dialog,
                 )
             self._start_estimate()
@@ -1139,7 +1139,7 @@ class MainWindow(QMainWindow):
     # -- 保存 --------------------------------------------------------------
 
     def save_dialog(self) -> None:
-        """書き出す形式を選んでから保存先を決める。"""
+        """PDF出力：形式を選んでから保存先を決める。"""
         if self.translated_pdf is None or self.paper is None or self.original_doc is None:
             return
         pages = len(self._output_pages())
@@ -1152,7 +1152,7 @@ class MainWindow(QMainWindow):
         source = Path(self.paper.source_path) if self.paper.source_path else Path.home()
         directory = Path(self.settings.last_save_dir) if self.settings.last_save_dir else source.parent
         suggested = directory / f"{Path(self.paper.file_name).stem}{suffix_for(mode)}.pdf"
-        path, _ = QFileDialog.getSaveFileName(self, "PDF を書き出す", str(suggested), "PDF (*.pdf)")
+        path, _ = QFileDialog.getSaveFileName(self, "PDF出力", str(suggested), "PDF (*.pdf)")
         if not path:
             return
         target = Path(path)
@@ -1161,13 +1161,13 @@ class MainWindow(QMainWindow):
         try:
             target.write_bytes(self._output_bytes(mode))
         except OSError as e:
-            self._alert("書き出せませんでした", str(e))
+            self._alert("PDF を出力できませんでした", str(e))
             return
         self.settings.last_save_dir = str(target.parent)
         self.settings.save()
         folder = "Finder で表示" if theme.IS_MAC else "フォルダを開く"
         self._show_banner(
-            "success", "PDF を書き出しました", str(target), folder, lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(target.parent)))
+            "success", "PDF を出力しました", str(target), folder, lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(target.parent)))
         )
 
     def _output_pages(self) -> range:

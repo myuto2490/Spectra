@@ -1,6 +1,6 @@
-"""PDF の書き出し：形式をカードで選んでから保存先を決める。
+"""PDF出力：形式をカードで選んでから保存先を決める。
 
-翻訳結果から作り直すだけなので、形式を変えて何度でも書き出せる（再翻訳は不要）。
+翻訳結果から作り直すだけなので、形式を変えて何度でも出力できる（再翻訳は不要）。
 """
 
 from __future__ import annotations
@@ -142,13 +142,13 @@ class ExportDialog(QDialog):
 
     def __init__(self, current: OutputMode, pages: int, parent: QWidget | None = None):
         super().__init__(parent)
-        self.setWindowTitle("PDF を書き出す")
+        self.setWindowTitle("PDF出力")
         self.pages = pages
         lay = QVBoxLayout(self)
         lay.setContentsMargins(28, 26, 28, 22)
         lay.setSpacing(6)
-        lay.addWidget(label("PDF を書き出す", "title"))
-        lay.addWidget(label("形式を選んでください。翻訳し直さずに、何度でも別の形式で書き出せます。", "secondary"))
+        lay.addWidget(label("PDF出力", "title"))
+        lay.addWidget(label("形式を選んでください。翻訳し直さずに、何度でも別の形式で出力できます。", "secondary"))
         lay.addSpacing(16)
         row = QHBoxLayout()
         row.setSpacing(14)
@@ -170,7 +170,7 @@ class ExportDialog(QDialog):
         buttons.addStretch(1)
         cancel = button("キャンセル")
         cancel.clicked.connect(self.reject)
-        self.ok = button("書き出す…", primary=True)
+        self.ok = button("PDF出力…", primary=True)
         self.ok.clicked.connect(self.accept)
         buttons.addWidget(cancel)
         buttons.addWidget(self.ok)

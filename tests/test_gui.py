@@ -77,7 +77,7 @@ def test_open_translate_and_export(window, paper_path):
     assert w._busy()
     pump(app, 60, until=lambda: not w._busy())
     assert w.result is not None and w.result.qa.ok
-    assert w.primary_btn.text() == "書き出す…"
+    assert w.primary_btn.text() == "PDF出力"
     assert w.preview.translated.document() is not None
 
     # 出力形式だけを変えた場合は再翻訳せずに作り直せる
@@ -96,7 +96,7 @@ def test_open_translate_and_export(window, paper_path):
     assert "翻訳済み" in w.library_view.model.data(w.library_view.model.index(0, 5))
     assert w.open_paper(paper.id)
     assert w.preview.translated.document() is not None
-    assert w.primary_btn.text() == "書き出す…"
+    assert w.primary_btn.text() == "PDF出力"
 
 
 def test_invalid_file_is_rejected(window, tmp_path, monkeypatch):

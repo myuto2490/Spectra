@@ -230,7 +230,7 @@ def test_library_add_filter_and_collections(window, tmp_path):
     view.select_ids([alpha.id])
     pump(app, 0.05)
     assert view.detail.current_id() == alpha.id
-    assert view.detail.primary.text() == "翻訳する"
+    assert view.detail.translate_btn.text() == "翻訳する"
     assert b.exists()
 
 
@@ -361,8 +361,8 @@ def test_cancel_running_translation_updates_at_once(window, tmp_path):
     pump(app, 0.2)
     w.library_view.select_ids([paper.id])
     pump(app, 0.1)
-    assert w.library_view.detail.secondary.text() == "翻訳をキャンセル"
-    w.library_view.detail.secondary.click()
+    assert w.library_view.detail.translate_btn.text() == "翻訳をキャンセル"
+    w.library_view.detail.translate_btn.click()
     assert w.queue.is_cancelling()
     assert w.status.text() == "キャンセルしています…"
     pump(app, 10, until=lambda: not w._busy())
@@ -393,3 +393,48 @@ def test_enable_lookup_from_detail_without_asking(window, paper_path, monkeypatc
     assert w.settings.metadata_lookup is True
     pump(app, 5, until=lambda: looked_up and not w.lookups.is_active())
     assert looked_up == [paper.id]
+
+
+def test_detail_tabs_keep_selection(window, tmp_path):
+    """詳細パネルは「論文の詳細」と「AI翻訳の詳細」のタブに分かれ、論文を選び直してもタブはそのまま。"""
+    app, w = window
+    from spectra.library import Author, Metadata
+    from spectra.ui.paper_detail import PAPER_TAB, TRANSLATION_TAB
+
+    papers = _queue_papers(w, tmp_path, 2)
+    md = Metadata(
+        title="A spatially resolved study",
+        authors=[Author("Greathouse", "Thomas K."), Author("Richter", "Matthew")],
+        year=2011, venue="Icarus", volume="214", issue="2", pages="606-621",
+        doi="10.1016/j.icarus.2011.05.028", abstract="Using TEXES ...", source="crossref",
+    )
+    w.library.update_metadata(papers[0].id, md, status="done")
+    view, detail = w.library_view, w.library_view.detail
+    view.reload()
+
+    view.select_ids([papers[0].id])
+    pump(app, 0.05)
+    assert detail.tabs.isVisible() and detail.current_tab() == PAPER_TAB
+    assert detail.pages.currentIndex() == PAPER_TAB
+    assert detail.title.text() == "A spatially resolved study"
+    assert detail.info._rows["venue"][1].text() == "Icarus"
+    assert "10.1016" in detail.info._rows["doi"][1].text()
+    assert detail.read_btn.isVisible()
+    assert not detail.info._rows["volume"][1].isHidden()
+
+    detail.tab_buttons[TRANSLATION_TAB].click()
+    assert detail.pages.currentIndex() == TRANSLATION_TAB
+    assert detail.translate_btn.text() == "翻訳する"
+    assert detail.file_pages.text() == str(papers[0].page_count)
+
+    # 別の論文を選び直しても、複数選択を挟んでも、AI翻訳の詳細のまま
+    view.select_ids([papers[1].id])
+    pump(app, 0.05)
+    assert detail.current_tab() == TRANSLATION_TAB and detail.pages.currentIndex() == TRANSLATION_TAB
+    assert detail.info._rows["volume"][1].isHidden()  # 空の項目は隠す
+    view.select_ids([p.id for p in papers])
+    pump(app, 0.05)
+    assert not detail.tabs.isVisible() and detail.multi.isVisible()
+    view.select_ids([papers[0].id])
+    pump(app, 0.05)
+    assert detail.pages.currentIndex() == TRANSLATION_TAB

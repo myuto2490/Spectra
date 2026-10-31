@@ -223,6 +223,15 @@ QHeaderView::section {{
 QHeaderView::section:last {{ border-right: none; }}
 #LibraryCenter[dragActive="true"] {{ border: 2px dashed {t.accent}; border-radius: {RADIUS_CARD}px; }}
 QLineEdit#Search {{ border-radius: 9px; padding-left: 4px; }}
+#DetailTabs {{ background: {t.window}; border-bottom: 1px solid {t.separator}; }}
+#DetailTabs QPushButton {{
+    background: transparent; border: none; border-bottom: 2px solid transparent; border-radius: 0;
+    padding: 10px 2px 8px 2px; color: {t.secondary}; font-weight: 600; min-height: 18px;
+}}
+#DetailTabs QPushButton:hover {{ color: {t.label}; background: transparent; }}
+#DetailTabs QPushButton:checked {{ color: {t.label}; border-bottom: 2px solid {t.accent}; background: transparent; }}
+#DetailTabs QPushButton:focus {{ color: {t.accent}; border: none; border-bottom: 2px solid {t.focus}; padding: 10px 2px 8px 2px; }}
+QLabel[role="tertiary"] {{ color: {t.tertiary}; }}
 QLineEdit#Search:focus {{ padding-left: 3px; }}
 
 /* ---- カード・グループ ---- */

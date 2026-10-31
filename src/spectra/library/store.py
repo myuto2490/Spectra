@@ -118,6 +118,7 @@ class Library:
         self._db = sqlite3.connect(str(self.root / DB_NAME), check_same_thread=False, isolation_level=None)
         self._db.row_factory = sqlite3.Row
         self._listeners: list[Callable[[LibraryEvent], None]] = []
+        self._quiet = threading.local()
         with self._lock:
             self._db.execute("PRAGMA foreign_keys=ON")
             self._db.execute("PRAGMA journal_mode=WAL")
@@ -194,7 +195,21 @@ class Library:
 
         return remove
 
+    @contextmanager
+    def quiet(self) -> Iterator[None]:
+        """このスレッドでの変更の合図を止める（同期が他の端末の変更を反映するときに使う）。
+
+        合図は「走査してほしい」というきっかけにすぎず、走査は全件を比べるので、止めても変更は失われない。
+        """
+        self._quiet.on = getattr(self._quiet, "on", 0) + 1
+        try:
+            yield
+        finally:
+            self._quiet.on -= 1
+
     def _emit(self, kind: str, paper_id: int | None = None, sha256: str = "") -> None:
+        if getattr(self._quiet, "on", 0):
+            return
         with self._lock:
             listeners = list(self._listeners)
         event = LibraryEvent(kind, paper_id, sha256)
@@ -372,6 +387,59 @@ class Library:
         self._emit("removed", paper_id, row["sha256"])
 
     remove = purge  # v0.2.0 からの名前
+
+    # -- 同期からの反映（spectra.library.sync だけが使う） --------------------------
+
+    def sync_insert(self, sha256: str, file_name: str, page_count: int, added_at: float) -> Paper:
+        """他の端末にある論文を、PDF なしで登録する（PDF は開くときに取得する）。"""
+        now = time.time()
+        with self._tx() as db:
+            cur = db.execute(
+                "INSERT INTO papers (sha256, file_name, source_path, page_count, added_at, updated_at, meta_status)"
+                " VALUES (?, ?, '', ?, ?, ?, 'done')",
+                (sha256, file_name, int(page_count), added_at, now),
+            )
+            paper_id = int(cur.lastrowid)
+        self._emit("added", paper_id, sha256)
+        return self._require(paper_id)
+
+    def sync_apply(
+        self,
+        paper_id: int,
+        *,
+        metadata: Metadata,
+        edited: set[str],
+        favorite: bool,
+        last_opened_at: float | None,
+    ) -> Paper:
+        """他の端末の変更を反映した結果を、そのまま書き込む（edited も含めて置き換える）。"""
+        self._require(paper_id)
+        with self._tx() as db:
+            self._write_metadata(paper_id, metadata)
+            db.execute(
+                "UPDATE papers SET edited = ?, favorite = ?, last_opened_at = ? WHERE id = ?",
+                (json.dumps(sorted(edited & set(Metadata.FIELDS))), int(bool(favorite)), last_opened_at, paper_id),
+            )
+        self._emit("metadata", paper_id)
+        return self._require(paper_id)
+
+    def sync_set_translation(self, paper_id: int, info: Translation | None) -> None:
+        """他の端末の訳文の情報を記録する。手元の訳文ファイルは別物になるので消す（開くときに取得する）。"""
+        with self._tx() as db:
+            if info is None:
+                db.execute("DELETE FROM translations WHERE paper_id = ?", (paper_id,))
+            else:
+                db.execute(
+                    "INSERT OR REPLACE INTO translations (paper_id, model, formality, first_page, last_page, options,"
+                    " segments, untranslated, chars, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        paper_id, info.model, info.formality, info.first_page, info.last_page,
+                        json.dumps(info.options, ensure_ascii=False), info.segments, info.untranslated, info.chars,
+                        info.created_at,
+                    ),
+                )
+        (self.root / "files" / str(paper_id) / "translated.pdf").unlink(missing_ok=True)
+        self._emit("translation", paper_id)
 
     def empty_trash(self) -> int:
         """ゴミ箱を空にし、消した件数を返す。"""

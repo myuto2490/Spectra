@@ -343,10 +343,13 @@ def test_fetch_errors(engine, library, pdf):
     with pytest.raises(ValueError):
         engine.fetch(paper.id, "other")
     with pytest.raises(RemoteMissing):
-        engine.fetch(paper.id, "translation")  # 骨組みでは取り込みをまだしない
+        engine.fetch(paper.id, "translation")  # 訳文がない
+    paper.pdf_path.unlink()
+    with pytest.raises(RemoteMissing):
+        engine.fetch(paper.id, "original")  # 手元にも同期先にもない
     engine.storage.offline = True
     with pytest.raises(SyncUnavailable):
-        engine.fetch(paper.id, "translation")
+        engine.fetch(paper.id, "original")
     for cls in (SyncUnavailable, RemoteMissing, HashMismatch):
         err = cls()
         assert isinstance(err, SyncError) and err.title and err.hint  # UI がそのまま表示する
@@ -365,7 +368,7 @@ def test_remote_listener_contract(engine):
     assert len(got) == 1
 
 
-def test_sync_now_skeleton(engine):
+def test_sync_now_on_empty_library(engine):
     assert engine.sync_now().changes == []
     engine.storage.offline = True
     with pytest.raises(SyncUnavailable):
@@ -376,3 +379,59 @@ def test_settings_schema_4():
     s = Settings()
     assert s.sync_enabled is False and s.sync_folder == "" and s.schema == 4
     assert Settings.from_dict({"sync_enabled": True, "sync_folder": "/x", "schema": 3}).sync_enabled is True
+
+
+# -- e7 のレビューで追加 ------------------------------------------------------------
+
+
+def test_failed_operations_do_not_emit(library):
+    events = []
+    library.add_listener(events.append)
+    for op in (lambda: library.update_metadata(999, Metadata(title="x")), lambda: library.trash(999), lambda: library.restore(999)):
+        with pytest.raises(PaperNotFound):
+            op()
+    assert events == []
+
+
+def test_remaining_event_kinds_and_idempotence(library, pdf):
+    path = pdf()
+    paper = library.add_detailed(path).paper
+    events = []
+    library.add_listener(lambda e: events.append(e.kind))
+    library.update_metadata(paper.id, Metadata(title="New"), manual_fields={"title"})
+    assert library.add_detailed(path).status == "existing"  # 合図なし
+    library.save_translation(paper.id, b"%PDF-x", translation())
+    library.remove_translation(paper.id)
+    library.trash(paper.id)
+    library.trash(paper.id)  # 二重の trash は合図なし
+    assert library.add_detailed(path).status == "restored"
+    library.restore(paper.id)  # ゴミ箱にない論文の restore は合図なし
+    assert events == ["metadata", "translation", "translation", "removed", "added"]
+
+
+def test_trash_keeps_collection_membership(library, pdf):
+    a, _ = library.add(pdf("a.pdf", seed=1, body=["doi:10.1000/same"]))
+    b, _ = library.add(pdf("b.pdf", seed=2, body=["doi:10.1000/same"]))
+    c = library.create_collection("C")
+    library.add_to_collection(c.id, [a.id])
+    library.trash(a.id)
+    assert all(c.id not in p.collection_ids for p in library.papers())  # 絞り込みにも出ない
+    assert library.same_identifier(b) == []  # ゴミ箱の論文は除く
+    library.restore(a.id)
+    assert library.get(a.id).collection_ids == {c.id}
+    assert [p.id for p in library.same_identifier(b)] == [a.id]
+
+
+def test_fetch_cancel_before_reading(engine, library, pdf):
+    paper, _ = library.add(pdf())
+    paper.pdf_path.unlink()
+    cancel = threading.Event()
+    cancel.set()
+    with pytest.raises(CancelledError):
+        engine.fetch(paper.id, "original", cancel=cancel)
+    assert engine.storage.reads == []
+
+
+def test_settings_sync_folder_type_is_checked():
+    s = Settings.from_dict({"sync_folder": 123, "sync_enabled": "yes", "schema": 4})
+    assert s.sync_folder == "" and s.sync_enabled is False

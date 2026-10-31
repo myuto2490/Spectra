@@ -31,7 +31,7 @@ from ..errors import HashMismatch, LocalDiskFull, PaperNotFound, RemoteMissing, 
 from ..models import Author, Metadata, Paper, Translation
 from ..store import Library
 from . import files as F
-from .device import DeviceInfo
+from .device import DeviceInfo, clean_device_name, default_name
 from .hlc import HLC, ZERO, HybridClock
 from .state import SyncState, dumps, loads
 from .storage import Progress, SyncStorage
@@ -178,6 +178,23 @@ class SyncEngine:
             except Exception:
                 log.exception("remote listener failed")
 
+    def set_device_name(self, name: str) -> str:
+        """この端末の表示名を変え、正規化した名前を返す（空なら既定の名前に戻す）。
+
+        同期フォルダの devices/<端末ID>.json は次の同期で上書きし、古い名前は手元の記録にも残さない。
+        保存は呼び出し側が Settings.device_name に行う（ここでは同期フォルダに触らない）。
+        """
+        cleaned = clean_device_name(name) or default_name(self.device.id)
+        with self._lock:
+            self.device = DeviceInfo(self.device.id, cleaned)
+            self._devices = [
+                DeviceSummary(d.id, cleaned, d.app, d.last_seen, True) if d.is_self else d for d in self._devices
+            ]
+        self.state.set_meta("device", "")  # 古い名前の記録を消す（次の同期で必ず書き直す）
+        with self.state.tx() as db:
+            db.execute("DELETE FROM remote_files WHERE path LIKE 'devices/%'")  # 解析済みの自分の古い名前も残さない
+        return cleaned
+
     def devices(self) -> list[DeviceSummary]:
         """最後の sync_now で求めた端末の一覧（自分を含む）。同期フォルダには触らないので、UI のスレッドから呼んでよい。"""
         with self._lock:
@@ -249,6 +266,8 @@ class SyncEngine:
             except SyncUnavailable as err:
                 report.errors.append(f"{e.path}: {err}")
                 continue
+            if data is not None and data.get("_kind") == "device" and data.get("device") == self.device.id:
+                data = None  # 自分の端末の情報（とその競合コピー）は使わないので、名前を手元に残さない
             with self.state.tx() as db:
                 db.execute(
                     "INSERT OR REPLACE INTO remote_files (path, size, mtime, data) VALUES (?, ?, ?, ?)",
@@ -359,9 +378,16 @@ class SyncEngine:
         return any(d["format"] > FORMAT for d in remote["devices"] if d.get("device") != self.device.id)
 
     def _write_device(self, names: set[str]) -> None:
-        """端末の情報。中身が変わったときだけ書く（変更がなければ同期フォルダに書かない）。"""
-        body = {"kind": "device", "device": self.device.id, "name": self.device.name, "app": __version__, "format": FORMAT}
-        path = f"devices/{self.device.id}.json"
+        """端末の情報。中身が変わったときだけ書く（変更がなければ同期フォルダに書かない）。
+
+        自分の情報の競合コピー（"<端末ID> (1).json" など）は、古い名前を残さないよう消す。
+        """
+        device = self.device
+        body = {"kind": "device", "device": device.id, "name": device.name, "app": __version__, "format": FORMAT}
+        path = f"devices/{device.id}.json"
+        for other in sorted(names):
+            if other.startswith(f"devices/{device.id}") and other != path:
+                self.storage.delete(other)
         if path in names and self.state.get_meta("device") == dumps(body):
             return
         self.storage.write_atomic(path, F.encode(body))

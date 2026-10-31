@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import re
 import time
+import unicodedata
 from datetime import datetime
 
 from PySide6.QtCore import QAbstractTableModel, QMimeData, QModelIndex, QSortFilterProxyModel, Qt
@@ -33,6 +35,25 @@ ALL, RECENT, FAVORITES, TRANSLATED, UNTRANSLATED = "all", "recent", "favorites",
 TRASH = "trash"
 TRASH_DAYS = 30  # ゴミ箱に残す日数（core の purge_expired と同じ）
 RECENT_DAYS = 7
+
+
+_KATAKANA = {c: c - 0x60 for c in range(0x30A1, 0x30F7)}  # ァ..ヶ → ぁ..ゖ
+_DOI_PREFIX = re.compile(r"^(?:https?://)?(?:dx\.)?doi\.org/|^doi:", re.IGNORECASE)
+
+
+def normalize_text(text: str) -> str:
+    """全角の英数字・記号・空白を半角にそろえる（NFKC）。"""
+    return unicodedata.normalize("NFKC", text)
+
+
+def search_key(text: str) -> str:
+    """検索で比べるための形：全角と半角、大文字と小文字、カタカナとひらがなを区別しない。"""
+    return normalize_text(text).casefold().translate(_KATAKANA)
+
+
+def _strip_doi_prefix(term: str) -> str:
+    """DOI を URL のまま貼っても見つかるよう、「https://doi.org/」「doi:」を取り除く。"""
+    return _DOI_PREFIX.sub("", term)
 
 
 def translation_status(paper: Paper, job: str | None = None, percent: int | None = None) -> tuple[str, str]:
@@ -357,7 +378,7 @@ class PaperFilterProxy(QSortFilterProxyModel):
         return self._scope, self._collection
 
     def set_search(self, text: str) -> None:
-        terms = [t.casefold() for t in text.split() if t]
+        terms = [search_key(_strip_doi_prefix(t)) for t in normalize_text(text).split() if t]
 
         def change():
             self._terms = terms
@@ -384,8 +405,8 @@ class PaperFilterProxy(QSortFilterProxyModel):
                     md.doi,
                     md.arxiv_id,
                 ]
-            ).casefold()
-            return all(t in hay for t in self._terms)
+            )
+            return all(t in search_key(hay) for t in self._terms)
         return True
 
     def _in_scope(self, p: Paper, model: PaperTableModel) -> bool:

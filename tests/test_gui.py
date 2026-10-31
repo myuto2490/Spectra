@@ -444,3 +444,60 @@ def test_detail_tabs_keep_selection(window, tmp_path):
     view.select_ids([papers[0].id])
     pump(app, 0.05)
     assert detail.pages.currentIndex() == TRANSLATION_TAB
+
+
+def test_escape_clears_the_search(window, tmp_path):
+    """検索欄に打った直後でも、Esc で検索が消える（Esc を押せる状態が打つたびに更新される）。"""
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+
+    app, w = window
+    w.library.add(_distinct_paper(tmp_path / "a.pdf", "Alpha"))
+    w.library_view.reload()
+    w._update_state()
+    w.search.setFocus()
+    QTest.keyClicks(w.search, "zzz")
+    pump(app, 0.05)
+    assert w.library_view.proxy.rowCount() == 0
+    assert w.act_cancel.isEnabled()
+    QTest.keyClick(w.search, Qt.Key.Key_Escape)
+    pump(app, 0.05)
+    assert w.search.text() == "" and w.library_view.proxy.rowCount() == 1
+
+
+def test_search_ignores_width_case_and_kana(window, tmp_path):
+    app, w = window
+    from spectra.library import Author, Metadata
+
+    p = w.library.add(_distinct_paper(tmp_path / "a.pdf", "x"))[0]
+    w.library.update_metadata(
+        p.id,
+        Metadata(
+            title="ＦＵＬＬ－ＷＩＤＴＨ Ｔｉｔｌｅ のサーベイ",
+            authors=[Author("やまだ", "たろう")],
+            venue="Ｉｃａｒｕｓ",
+            doi="10.1109/cvpr.2016.90",
+        ),
+    )
+    other = w.library.add(_distinct_paper(tmp_path / "b.pdf", "y"))[0]
+    w.library.update_metadata(other.id, Metadata(title="Unrelated"))
+    w.library_view.reload()
+    view = w.library_view
+    for query in ("full-width", "ICARUS", "ｉｃａｒｕｓ", "ヤマダ", "さーべい", "https://doi.org/10.1109/CVPR.2016.90", "doi:10.1109/cvpr.2016.90"):
+        w.search.setText(query)
+        assert view.proxy.rowCount() == 1, query
+    w.search.setText("full　icarus")  # 全角の空白でも AND で区切る
+    assert view.proxy.rowCount() == 1
+    w.search.setText("full unrelated")
+    assert view.proxy.rowCount() == 0
+
+
+def test_added_papers_are_revealed_even_when_search_hides_them(window, tmp_path):
+    app, w = window
+    w.library.add(_distinct_paper(tmp_path / "a.pdf", "Alpha"))
+    w.library_view.reload()
+    w.search.setText("no such words")
+    papers = w.add_files([_distinct_paper(tmp_path / "b.pdf", "Beta"), _distinct_paper(tmp_path / "c.pdf", "Gamma")])
+    assert len(papers) == 2
+    assert w.search.text() == ""
+    assert set(w.library_view.selected_ids()) == {p.id for p in papers}

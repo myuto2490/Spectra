@@ -242,6 +242,8 @@ class MainWindow(QMainWindow):
             icons.icon("search", theme.current().secondary, 16), QLineEdit.ActionPosition.LeadingPosition
         )
         self.search.textChanged.connect(self.library_view.set_search)
+        # Esc（検索を消す）を押せるかは検索語の有無で決まるので、打つたびに状態を更新する
+        self.search.textChanged.connect(lambda _t: self._update_state())
         h.addWidget(self.search, 1)
 
         # 読書画面
@@ -608,6 +610,8 @@ class MainWindow(QMainWindow):
             return papers
 
         self._show_screen(LIBRARY)
+        for p in papers:
+            self.library_view.reveal(p.id)  # 検索や絞り込みで隠れていたら解除する
         self.library_view.select_ids([p.id for p in papers])
         notes = []
         if existing:

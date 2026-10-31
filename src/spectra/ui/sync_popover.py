@@ -53,6 +53,10 @@ class SyncPopover(QFrame):
         dest = label(f"保存先: {folder_name(settings.sync_folder, candidate_folders())}", "caption", wrap=True)
         dest.setToolTip(plain_tooltip(display_path(settings.sync_folder)))
         lay.addWidget(dest)
+        # このパソコンがほかのパソコンでどう表示されるか（名前は［設定を開く］で変えられる）
+        self.self_label = label(f"このパソコン: {sync.device().name}", "caption", wrap=True)
+        self.self_label.setTextFormat(Qt.TextFormat.PlainText)
+        lay.addWidget(self.self_label)
         other = self._last_other_device()
         if other is not None:
             # 端末の名前はほかのパソコンから来た文字列なので、必ずプレーンテキストとして表示する（§8.5）

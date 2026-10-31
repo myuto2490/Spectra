@@ -1334,7 +1334,7 @@ class MainWindow(QMainWindow):
     # その他
     # ======================================================================
 
-    def show_settings(self, tab: str = "engines") -> None:
+    def show_settings(self, tab: str = "engines", focus: str = "") -> None:
         dlg = SettingsDialog(self.settings, self.secrets, self.cache, self, sync=self.sync)
         dlg.syncChanged.connect(self._on_sync_setting)
         dlg.restoreBackupRequested.connect(self.restore_backup)
@@ -1343,6 +1343,8 @@ class MainWindow(QMainWindow):
         dlg.appearanceChanged.connect(self.apply_appearance)
         dlg.lookupChanged.connect(self._on_lookup_setting)
         dlg.show_tab(tab)
+        if focus == "device_name":
+            dlg.sync_page.focus_device_name()
         dlg.exec()
         self.refresh_engine_status()
 
@@ -1415,7 +1417,7 @@ class MainWindow(QMainWindow):
         from .sync_popover import SyncPopover
 
         pop = SyncPopover(self.settings, self.sync, self)
-        pop.settingsRequested.connect(lambda: self.show_settings("sync"))
+        pop.settingsRequested.connect(lambda: self.show_settings("sync", focus="device_name"))
         pop.downloadAllRequested.connect(self._download_all)
         btn = self.library_view.sync_status
         pop.show_below(btn)

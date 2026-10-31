@@ -87,7 +87,9 @@ def make_window(tmp_path, monkeypatch, cloud):
         engines = []
 
         def factory(settings, library):
-            e = FakeEngine(library, FakeFolderStorage(cloud / "Spectra Sync"), DeviceInfo("a" * 32, "テスト"))
+            # 本物の default_engine と同じく、設定の名前（空なら既定の名前）で端末を作る
+            name = settings.device_name or "テスト"
+            e = FakeEngine(library, FakeFolderStorage(cloud / "Spectra Sync"), DeviceInfo("a" * 32, name))
             engines.append(e)
             return e
 
@@ -791,3 +793,65 @@ def test_popover_truncates_long_device_names(two_computers, tmp_path):
     tip = pop.other_label.toolTip()
     assert "&lt;i&gt;研究室&lt;/i&gt;" in tip  # タグはエスケープされ、文字のまま見える
     pop.close()
+
+
+# ---------------------------------------------------------------------------------
+# このパソコンの名前
+# ---------------------------------------------------------------------------------
+
+
+def test_device_name_field_cleans_saves_and_reaches_other_computer(two_computers, tmp_path):
+    app, lib_a, engine_a, w = two_computers
+    from spectra.library.sync import MAX_NAME_LENGTH, clean_device_name, default_name
+    from spectra.ui.sync_popover import SyncPopover
+    from spectra.ui.sync_settings import SyncPage
+
+    page = SyncPage(w.settings, w.sync)
+    edit = page.name_edit
+    default = default_name(w.sync.device().id)
+    assert edit.text() == "" and edit.placeholderText() == default  # 既定の名前は値ではなく placeholder
+    assert edit.maxLength() == MAX_NAME_LENGTH
+    assert edit.accessibleName() == "このパソコンの名前"
+    assert "個人が分かる情報は入れないでください" in page.name_caption.text()
+    assert f"空にすると「{default}」に戻ります" in page.name_caption.text()
+
+    raw = "  研究室の\u202eノート\x07  "
+    edit.setText(raw)
+    edit.editingFinished.emit()
+    cleaned = clean_device_name(raw)
+    assert cleaned and "\u202e" not in cleaned and "\x07" not in cleaned
+    assert edit.text() == cleaned and w.settings.device_name == cleaned
+    assert w.sync.device().name == cleaned
+    pop = SyncPopover(w.settings, w.sync, w)
+    assert pop.self_label.text() == f"このパソコン: {cleaned}"
+    pop.close()
+
+    # ほかのパソコンには、次の同期で届く
+    _sync_b(app, w)
+    engine_a.sync_now()
+    names = {d.name for d in engine_a.devices() if not d.is_self}
+    assert cleaned in names
+
+    # 空にすると既定の名前に戻り、設定には保存しない
+    edit.setText("   ")
+    edit.editingFinished.emit()
+    assert edit.text() == "" and w.settings.device_name == ""
+    assert w.sync.device().name == default
+
+
+def test_device_name_can_be_changed_while_sync_is_paused(make_window, cloud):
+    (cloud / "Spectra Sync").mkdir(parents=True)
+    app, w = make_window()
+    w.settings.sync_enabled = False
+    w._on_sync_setting()
+    assert not w.sync.enabled()
+    from spectra.ui.sync_settings import SyncPage
+
+    page = SyncPage(w.settings, w.sync)
+    page.name_edit.setText("自宅の Mac")
+    page.name_edit.editingFinished.emit()
+    assert w.settings.device_name == "自宅の Mac"
+    # 再開すると、その名前で同期する
+    w.settings.sync_enabled = True
+    w._on_sync_setting()
+    assert w.sync.device().name == "自宅の Mac"

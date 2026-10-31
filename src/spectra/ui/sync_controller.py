@@ -56,7 +56,7 @@ EngineFactory = Callable[[Settings, Library], object]
 def default_engine(settings: Settings, library: Library):
     from ..library.sync import FOLDER_NAME, FolderStorage, SyncEngine, load_device
 
-    return SyncEngine(library, FolderStorage(Path(settings.sync_folder) / FOLDER_NAME), load_device())
+    return SyncEngine(library, FolderStorage(Path(settings.sync_folder) / FOLDER_NAME), load_device(name=settings.device_name))
 
 
 def sync_root(settings: Settings) -> Path:
@@ -232,6 +232,36 @@ class SyncController(QObject):
         self.state = state
         self.last_error = error
         self.stateChanged.emit()
+
+    # -- このパソコンの名前 ----------------------------------------------------------
+
+    def device(self):
+        """このパソコンの ID と表示名（同期を止めていても、手元の device.json と設定から決まる）。"""
+        if self.engine is not None:
+            return self.engine.device
+        from ..library.sync import load_device
+
+        return load_device(name=self.settings.device_name)
+
+    def default_device_name(self) -> str:
+        from ..library.sync import default_name
+
+        return default_name(self.device().id)
+
+    def set_device_name(self, name: str) -> str:
+        """このパソコンの名前を変えて保存し、表示する名前（空なら既定の名前）を返す。ほかのパソコンには次の同期で届く。"""
+        from ..library.sync import clean_device_name
+
+        cleaned = clean_device_name(name)
+        default = self.default_device_name()
+        shown = self.engine.set_device_name(cleaned) if self.engine is not None else (cleaned or default)
+        # 既定の名前は保存しない（空 = 既定）。利用者が付けた名前は設定にだけ置く
+        self.settings.device_name = "" if shown == default else shown
+        self.settings.save()
+        if self.engine is not None:
+            self.sync_now()
+        self.stateChanged.emit()
+        return shown
 
     def available(self) -> bool:
         """同期先を最後に読めたか（読めないなら、手元にない論文は開けない）。"""

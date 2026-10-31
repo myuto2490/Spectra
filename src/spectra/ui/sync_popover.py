@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import html
+
 from PySide6.QtCore import QPoint, Qt, Signal
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QVBoxLayout, QWidget
 
@@ -9,6 +11,8 @@ from ..config.settings import Settings
 from .sync_controller import ERROR, SYNCING, UNAVAILABLE, SyncController
 from .sync_settings import candidate_folders, folder_name, format_ago
 from .widgets import button, label, link_button
+
+NAME_LIMIT = 40  # ほかのパソコンの名前を表示する最大の文字数
 
 
 class SyncPopover(QFrame):
@@ -51,9 +55,14 @@ class SyncPopover(QFrame):
         other = self._last_other_device()
         if other is not None:
             # 端末の名前はほかのパソコンから来た文字列なので、必ずプレーンテキストとして表示する（§8.5）
-            name = other.name.strip() or "名前のないパソコン"
+            full = other.name.strip() or "名前のないパソコン"
+            # 名前の長さは制限できないので、表示は省略し、全体はツールチップに出す
+            name = full if len(full) <= NAME_LIMIT else full[: NAME_LIMIT - 1] + "…"
             self.other_label = label(f"ほかのパソコンからの最後の変更: {format_ago(other.last_seen)}（{name}）", "caption", wrap=True)
             self.other_label.setTextFormat(Qt.TextFormat.PlainText)
+            if name != full:
+                # ツールチップは HTML らしい文字列を自動でリッチテキストとして描くので、エスケープして包む
+                self.other_label.setToolTip(f"<p style='white-space:pre-wrap'>{html.escape(full)}</p>")
             lay.addWidget(self.other_label)
         if sync.active_downloads():
             lay.addWidget(label(f"取得中: {sync.active_downloads()} 件", "caption"))

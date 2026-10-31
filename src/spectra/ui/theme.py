@@ -23,7 +23,6 @@ BRAND_END = "#2F80FF"
 # 角丸と余白（4 の倍数）
 RADIUS_CONTROL = 8
 RADIUS_CARD = 14
-RADIUS_DROP = 22
 SPACE = (4, 8, 12, 16, 20, 24)
 
 # 文字サイズ（px）。macOS の 13pt を基準に、他 OS は表示密度に合わせて 1px 大きくする
@@ -192,11 +191,6 @@ QLabel[role="section"] {{
     color: {t.secondary}; font-size: {ty['caption']}px; font-weight: 700; padding-left: 4px; letter-spacing: 0.6px;
 }}
 QLabel[role="metric"] {{ font-weight: 600; font-size: {ty['body'] + 1}px; }}
-QLabel[role="hero"] {{ font-size: 34px; font-weight: 800; letter-spacing: -0.5px; }}
-QLabel[role="chip"] {{
-    color: {t.secondary}; background: {t.surface}; border: 1px solid {t.separator};
-    border-radius: 12px; padding: 4px 12px; font-size: {ty['caption']}px; font-weight: 600;
-}}
 QLabel[tone="danger"] {{ color: {t.danger}; }}
 QLabel[tone="warning"] {{ color: {t.warning}; }}
 QLabel[tone="success"] {{ color: {t.success}; }}
@@ -227,6 +221,7 @@ QHeaderView::section {{
     border-right: 1px solid {t.separator}; padding: 5px 8px; font-size: {ty['caption']}px; font-weight: 600;
 }}
 QHeaderView::section:last {{ border-right: none; }}
+#LibraryCenter[dragActive="true"] {{ border: 2px dashed {t.accent}; border-radius: {RADIUS_CARD}px; }}
 QLineEdit#Search {{ border-radius: 9px; padding-left: 4px; }}
 QLineEdit#Search:focus {{ padding-left: 3px; }}
 

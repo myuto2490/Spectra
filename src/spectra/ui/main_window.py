@@ -51,7 +51,6 @@ from ..translate.errors import (
 from ..translate.service import PartialTranslationError
 from . import icons, theme
 from .about import AboutDialog
-from .drop_zone import DropZone
 from .export_dialog import ExportDialog, suffix_for
 from .inspector import Inspector
 from .jobs import LookupQueue, TranslationQueue, TranslationRequest
@@ -144,12 +143,9 @@ class MainWindow(QMainWindow):
         v.addWidget(banner_wrap)
 
         self.stack = QStackedWidget()
-        self.drop_zone = DropZone()
-        self.drop_zone.openRequested.connect(self.open_dialog)
-        self.drop_zone.settingsRequested.connect(lambda: self.show_settings("engines"))
-        self.stack.addWidget(self.drop_zone)
-
         self.library_view.openRequested.connect(self.open_paper)
+        self.library_view.addRequested.connect(self.open_dialog)
+        self.library_view.settingsRequested.connect(lambda: self.show_settings("engines"))
         self.library_view.selectionChanged.connect(self._refresh_detail)
         self.library_view.searchReset.connect(lambda: self.search.clear())
         self.library_view.table.customContextMenuRequested.connect(self._table_menu)
@@ -386,13 +382,10 @@ class MainWindow(QMainWindow):
 
     def _update_state(self) -> None:
         reader = self.screen_mode == READER and self.original_doc is not None
-        empty = self.library_view.paper_count() == 0
-        if reader:
-            self.stack.setCurrentWidget(self.content)
-        else:
-            self.stack.setCurrentWidget(self.drop_zone if empty else self.library_view)
+        # 論文が 1 本もなくてもライブラリ画面を出す（空の状態は一覧の中で案内する）
+        self.stack.setCurrentWidget(self.content if reader else self.library_view)
         for w in self._library_widgets:
-            w.setVisible(not reader and not empty)
+            w.setVisible(not reader)
         for w in self._reader_widgets:
             w.setVisible(reader)
         self.primary_btn.setVisible(reader)
@@ -410,12 +403,12 @@ class MainWindow(QMainWindow):
         self.act_translate.setEnabled((reader and job is None) or bool(selected))
         self.act_cancel.setEnabled(job is not None or (not reader and bool(self.search.text())))
         self.act_cancel_all.setEnabled(self._busy())
-        self.act_find.setEnabled(not reader and not empty)
+        self.act_find.setEnabled(not reader)
         for a in (self.act_open_paper, self.act_favorite, self.act_edit, self.act_lookup, self.act_bibtex, self.act_remove):
             a.setEnabled(bool(selected))
         self.act_open_paper.setEnabled(len(selected) == 1)
         self.act_edit.setEnabled(len(selected) == 1)
-        self.act_new_collection.setEnabled(not reader and not empty)
+        self.act_new_collection.setEnabled(not reader)
         for a in (*self._view_actions, *self._zoom_actions, self.act_inspector):
             a.setEnabled(reader)
         for w in self._zoom_widgets:
@@ -494,13 +487,7 @@ class MainWindow(QMainWindow):
         if info and info.needs_key:
             has_key = self.secrets.has(engine)
         self.inspector.set_engine_status(has_key)
-        if has_key:
-            from ..translate.gemini import MODELS
-
-            name = MODELS[self.settings.gemini_model].name if engine == "gemini" else info.name
-            self.drop_zone.set_engine_notice(f"{name} で翻訳します", warning=False)
-        else:
-            self.drop_zone.set_engine_notice(f"{info.name if info else engine} の API キーが設定されていません", warning=True)
+        self.library_view.set_engine_notice("" if has_key else f"{info.name if info else engine} の API キーが設定されていません")
 
     def _set_status(self, text: str) -> None:
         self._status_message = text
@@ -1266,7 +1253,6 @@ class MainWindow(QMainWindow):
         ):
             refresh_icon(b)
         self._search_icon.setIcon(icons.icon("search", theme.current().secondary, 16))
-        self.drop_zone.refresh_theme()
         self.library_view.refresh_theme()
         self.refresh_engine_status()
         for view in (self.preview.original, self.preview.translated):
@@ -1290,13 +1276,13 @@ class MainWindow(QMainWindow):
     def dragEnterEvent(self, event) -> None:
         if self._paths_from_event(event):
             event.acceptProposedAction()
-            self.drop_zone.set_drag_active(True)
+            self.library_view.set_drag_active(True)
 
     def dragLeaveEvent(self, event) -> None:
-        self.drop_zone.set_drag_active(False)
+        self.library_view.set_drag_active(False)
 
     def dropEvent(self, event) -> None:
-        self.drop_zone.set_drag_active(False)
+        self.library_view.set_drag_active(False)
         paths = self._paths_from_event(event)
         if paths:
             event.acceptProposedAction()
@@ -1317,7 +1303,7 @@ class MainWindow(QMainWindow):
     def showEvent(self, event) -> None:
         super().showEvent(event)
         if self.library_view.paper_count() == 0:
-            self.drop_zone.open_button.setFocus()
+            self.library_view.empty_add_btn.setFocus()
         else:
             self.library_view.table.setFocus()
 

@@ -39,12 +39,30 @@ def pump(app, seconds=0.2, until=None):
         time.sleep(0.01)
 
 
-def test_empty_state(window):
+def test_empty_state(window, paper_path, monkeypatch):
+    """論文が 1 本もなくてもライブラリ画面を出し、一覧の中で追加の方法を案内する。"""
     app, w = window
     pump(app)
-    assert w.stack.currentWidget() is w.drop_zone
+    view = w.library_view
+    assert w.stack.currentWidget() is view
+    assert view.center.currentWidget() is view.empty
+    assert w.search.isVisible() and w.add_btn.isVisible() and view.sidebar.isVisible()
     assert not w.primary_btn.isVisible()
-    assert not w.search.isVisible()
+    assert view.detail.current_id() is None  # 詳細パネルは何も選んでいない状態
+    opened = []
+    monkeypatch.setattr(w, "open_dialog", lambda: opened.append(1))
+    view.addRequested.disconnect()
+    view.addRequested.connect(w.open_dialog)
+    view.empty_add_btn.click()
+    assert opened == [1]
+
+    # 論文を追加すると一覧に切り替わり、すべて削除すると案内に戻る
+    paper = w.library.add(paper_path)[0]
+    view.reload()
+    assert view.center.currentWidget() is view.table
+    w.library.remove(paper.id)
+    view.model.remove(paper.id)
+    assert view.center.currentWidget() is view.empty
 
 
 def test_open_translate_and_export(window, paper_path):

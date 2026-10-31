@@ -192,7 +192,7 @@ class PaperDetail(QScrollArea):
         self.multi.setVisible(len(papers) > 1)
         self.placeholder.setVisible(len(papers) != 1)
         if not papers:
-            self.placeholder.setText("論文を選択すると、ここに詳しい情報が表示されます。")
+            self.placeholder.setText("論文を選ぶと、ここに詳細が表示されます。")
             return
         if len(papers) > 1:
             self.placeholder.setText(f"{len(papers)} 件の論文を選択しています")

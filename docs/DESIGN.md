@@ -319,7 +319,7 @@ library/
 | separator | #D2D2D7 | #3A3A3C |
 | success / warning / danger | #34C759 / #FF9F0A / #FF3B30 | #30D158 / #FFD60A / #FF453A |
 
-- 角丸: 8（コントロール）/ 14（カード）
+- 角丸: 6（コントロール）/ 10（カード）
 - 余白: 4 の倍数（4, 8, 12, 16, 20, 24）
 - タイポグラフィ: OS のシステムフォント（macOS: SF Pro / ヒラギノ、Windows: Segoe UI / Yu Gothic UI、Linux: 既定 Sans）。サイズ階層は Large Title 22 / Headline 13 Semibold / Body 13 / Caption 11。
 - アイコン: SF Symbols は Apple 製品以外での利用が許諾されていないため、同じ線幅・角丸の考え方でオリジナルの SVG アイコンを作成する。

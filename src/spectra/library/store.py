@@ -219,6 +219,21 @@ class Library:
             except Exception:
                 log.exception("library listener failed")
 
+    # -- バックアップ ------------------------------------------------------------
+
+    def backup_to(self, folder: Path) -> Path:
+        """DB（library.sqlite3・state.sqlite3）を folder にコピーする（PDF はコピーしない）。WAL のままでも一貫した写しを作る。"""
+        folder = Path(folder)
+        folder.mkdir(parents=True, exist_ok=True)
+        with self._lock:
+            for schema, name in (("main", DB_NAME), ("state", STATE_DB_NAME)):
+                dest = sqlite3.connect(str(folder / name))
+                try:
+                    self._db.backup(dest, name=schema)
+                finally:
+                    dest.close()
+        return folder
+
     @property
     def schema_version(self) -> int:
         with self._lock:
@@ -614,6 +629,24 @@ class Library:
             trashed_at=r["trashed_at"],
         )
 
+
+
+def restore_backup(backup: Path, root: Path | None = None) -> None:
+    """backup_to で作ったバックアップを、ライブラリの DB に書き戻す。Library を閉じてから呼ぶこと。
+
+    同期の記録（sync.sqlite3）も消すので、同期は初回の状態に戻る（同期を続けるかは利用者が選び直す）。
+    PDF は戻さない（バックアップの後に消えた論文は、手元にファイルがない状態になる）。
+    """
+    backup = Path(backup)
+    root = Path(root) if root else paths.library_dir()
+    for name in (DB_NAME, STATE_DB_NAME):
+        if not (backup / name).is_file():
+            raise LibraryError("バックアップが見つかりません。", hint=str(backup))
+    for name in (DB_NAME, STATE_DB_NAME, "sync.sqlite3"):
+        for suffix in ("", "-wal", "-shm"):
+            (root / f"{name}{suffix}").unlink(missing_ok=True)
+    for name in (DB_NAME, STATE_DB_NAME):
+        shutil.copy2(backup / name, root / name)
 
 def _write_atomic(path: Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)

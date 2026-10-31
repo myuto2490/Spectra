@@ -507,3 +507,99 @@ def test_first_sync_banner_counts_papers(make_window, tmp_path, cloud):
     assert "ライブラリを同期しました（論文 2 件）" in w.banner._title.text()
     assert "1 件と合わせて 2 件" in w.banner._body.text()
     assert Path(cloud).exists()
+
+
+# ---------------------------------------------------------------------------------
+# 本物の同期（core の本体）で、2 台のパソコンを再現する
+# ---------------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def two_computers(tmp_path, monkeypatch, cloud):
+    """パソコン A はライブラリと SyncEngine だけ、パソコン B は Spectra の画面。同じ同期フォルダを使う。"""
+    monkeypatch.setenv("SPECTRA_DEV", "1")
+    from spectra.config.secrets import SecretStore
+    from spectra.config.settings import Settings
+    from spectra.library import Library
+    from spectra.ui.app import create_app
+    from spectra.ui.main_window import MainWindow
+
+    root = cloud / "Spectra Sync"
+    root.mkdir(parents=True)
+    lib_a = Library(tmp_path / "A" / "library")
+    engine_a = SyncEngine(lib_a, FakeFolderStorage(root), DeviceInfo("1" * 32, "MacBook Pro"))
+
+    app = create_app([])
+
+    def factory(settings, library):
+        return SyncEngine(library, FakeFolderStorage(root), DeviceInfo("2" * 32, "Windows"))
+
+    settings = Settings(engine="dummy", metadata_lookup=False, sync_enabled=True, sync_folder=str(cloud))
+    w = MainWindow(settings=settings, secrets=SecretStore(use_keyring=False), sync_engine_factory=factory)
+    w.show()
+    yield app, lib_a, engine_a, w
+    w.queue.cancel_all()
+    pump(app, 10, until=lambda: not w._busy())
+    w.close()
+    w.library.close()
+    engine_a.close()
+    lib_a.close()
+
+
+def _sync_b(app, w):
+    done = []
+    w.sync.synced.connect(lambda r: done.append(r))
+    w.sync.sync_now()
+    assert pump(app, 10, until=lambda: bool(done)), "同期が終わらない"
+    pump(app, 0.2)
+    return done[-1]
+
+
+def test_real_sync_shows_paper_from_other_computer_and_opens_it(two_computers, tmp_path):
+    app, lib_a, engine_a, w = two_computers
+    a_paper = lib_a.add(_paper(tmp_path, "a.pdf", "Shared paper"))[0]
+    engine_a.sync_now()
+
+    _sync_b(app, w)
+    papers = w.library.papers()
+    assert [p.sha256 for p in papers] == [a_paper.sha256]
+    b_paper = papers[0]
+    assert not b_paper.has_original  # 書誌情報だけが届き、PDF は開いたときに取得する
+    from PySide6.QtCore import Qt
+
+    assert "このパソコンにまだありません" in _title_index(w, b_paper.id).data(Qt.ItemDataRole.AccessibleTextRole)
+
+    assert w.open_paper(b_paper.id) is False
+    assert pump(app, 10, until=lambda: w.screen_mode == "reader")
+    assert w.library.get(b_paper.id).has_original and w.original_doc is not None
+
+
+def test_real_sync_delete_on_other_computer_closes_reader(two_computers, tmp_path):
+    app, lib_a, engine_a, w = two_computers
+    a_paper = lib_a.add(_paper(tmp_path, "a.pdf", "Shared paper"))[0]
+    engine_a.sync_now()
+    _sync_b(app, w)
+    b_id = w.library.papers()[0].id
+    w.open_paper(b_id)
+    assert pump(app, 10, until=lambda: w.screen_mode == "reader")
+
+    lib_a.trash(a_paper.id)
+    engine_a.sync_now()
+    _sync_b(app, w)
+    assert pump(app, 2, until=lambda: w.screen_mode == "library")
+    assert "別のパソコンで削除されました" in w.banner._title.text()
+    assert w.library.get(b_id).trashed_at is not None  # こちらでもゴミ箱に入る（30 日は戻せる）
+    assert w.library_view.sidebar.trash_item.text() == "ゴミ箱 1"
+
+
+def test_real_sync_edit_on_this_computer_reaches_other(two_computers, tmp_path):
+    app, lib_a, engine_a, w = two_computers
+    b_paper = w.library.add(_paper(tmp_path, "b.pdf", "From B"))[0]
+    w.library_view.reload()
+    w.library_view.toggle_favorite([b_paper.id])
+    _sync_b(app, w)
+    report = engine_a.sync_now()
+    a_papers = lib_a.papers()
+    assert [p.sha256 for p in a_papers] == [b_paper.sha256]
+    assert a_papers[0].favorite
+    assert any(c.kind == "added" for c in report.changes)

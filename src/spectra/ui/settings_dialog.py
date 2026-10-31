@@ -240,6 +240,7 @@ class SettingsDialog(QDialog):
     keysChanged = Signal()
     settingsChanged = Signal()
     appearanceChanged = Signal()
+    lookupChanged = Signal(bool)  # 書誌情報の照会のオン・オフ
 
     def __init__(self, settings: Settings, secrets: SecretStore, cache: TranslationCache | None, parent: QWidget | None = None):
         super().__init__(parent)
@@ -438,6 +439,16 @@ class SettingsDialog(QDialog):
         lay.addWidget(cache)
         self._refresh_cache_info()
 
+        lookup = FormGroup(
+            "書誌情報",
+            "オンにすると、PDF に書かれた DOI や arXiv ID だけを Crossref・arXiv に送り、"
+            "タイトル・著者・雑誌名・概要を取得します。本文やファイルは送りません。",
+        )
+        self.metadata_lookup = Switch(self.settings.metadata_lookup)
+        self.metadata_lookup.toggled.connect(self._on_lookup_toggle)
+        lookup.add_row("インターネットで書誌情報を取得する", self.metadata_lookup)
+        lay.addWidget(lookup)
+
         qa = FormGroup("品質", "翻訳後に、図表・数式・翻訳対象外の文字が変化していないかを自動で検査します。")
         self.verify = Switch(self.settings.verify_layout)
         self.verify.toggled.connect(self._on_verify)
@@ -445,7 +456,7 @@ class SettingsDialog(QDialog):
         lay.addWidget(qa)
 
         folders = FormGroup("フォルダ")
-        for title, path in (("設定", paths.config_dir()), ("ログ", paths.log_dir())):
+        for title, path in (("ライブラリ", paths.library_dir()), ("設定", paths.config_dir()), ("ログ", paths.log_dir())):
             b = button("開く")
             b.clicked.connect(lambda _c=False, p=path: self._open_folder(p))
             folders.add_row(title, b, str(path))
@@ -474,6 +485,12 @@ class SettingsDialog(QDialog):
         self.settings.appearance = value
         self.settings.save()
         self.appearanceChanged.emit()
+
+    def _on_lookup_toggle(self, on: bool) -> None:
+        self.settings.metadata_lookup = on
+        self.settings.metadata_lookup_asked = True
+        self.settings.save()
+        self.lookupChanged.emit(on)
 
     def _on_verify(self, on: bool) -> None:
         self.settings.verify_layout = on

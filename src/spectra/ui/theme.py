@@ -209,6 +209,27 @@ QLabel a {{ color: {t.accent}; }}
 #Canvas, #Canvas > QWidget > QWidget {{ background: {t.canvas}; }}
 #PaneHeader {{ background: {t.surface_alt}; border-bottom: 1px solid {t.separator}; }}
 
+/* ---- ライブラリ ---- */
+#SidebarPane {{ background: {t.surface_alt}; border-right: 1px solid {t.separator}; }}
+#Sidebar {{ background: transparent; border: none; padding: 8px 8px; outline: 0; }}
+#Sidebar::item {{ padding: 5px 8px; border-radius: 6px; color: {t.label}; }}
+#Sidebar::item:disabled {{ color: {t.secondary}; padding-top: 10px; }}
+#Sidebar::item:hover {{ background: {t.fill}; }}
+#Sidebar::item:selected {{ background: {t.selection}; color: {t.label}; }}
+#PaperTable {{
+    background: {t.surface}; alternate-background-color: {t.surface_alt}; border: none;
+    selection-background-color: {t.selection}; selection-color: {t.label}; outline: 0;
+}}
+#PaperTable::item {{ padding: 0 6px; border: none; }}
+QHeaderView {{ background: {t.surface}; border: none; }}
+QHeaderView::section {{
+    background: {t.surface}; color: {t.secondary}; border: none; border-bottom: 1px solid {t.separator};
+    border-right: 1px solid {t.separator}; padding: 5px 8px; font-size: {ty['caption']}px; font-weight: 600;
+}}
+QHeaderView::section:last {{ border-right: none; }}
+QLineEdit#Search {{ border-radius: 9px; padding-left: 4px; }}
+QLineEdit#Search:focus {{ padding-left: 3px; }}
+
 /* ---- カード・グループ ---- */
 QFrame[card="true"] {{
     background: {t.surface}; border: 1px solid {t.separator}; border-radius: {RADIUS_CARD}px;

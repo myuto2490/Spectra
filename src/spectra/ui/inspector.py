@@ -146,6 +146,15 @@ class Inspector(QScrollArea):
         for sb in (self.page_from, self.page_to):
             sb.blockSignals(False)
 
+    def set_page_range(self, first: int, last: int | None) -> None:
+        """0 始まりのページ範囲を表示する（last が None なら最終ページまで）。"""
+        for sb in (self.page_from, self.page_to):
+            sb.blockSignals(True)
+        self.page_from.setValue(first + 1)
+        self.page_to.setValue(last + 1 if last is not None else self._page_count)
+        for sb in (self.page_from, self.page_to):
+            sb.blockSignals(False)
+
     def page_range(self) -> tuple[int, int | None]:
         first = self.page_from.value() - 1
         last = self.page_to.value() - 1

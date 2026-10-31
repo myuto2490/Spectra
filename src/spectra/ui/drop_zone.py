@@ -1,4 +1,4 @@
-"""PDF を開く前の「空の状態」。ブランドの見出しと、中央のドロップ領域から PDF を選ぶ。"""
+"""ライブラリが空のときの画面。ブランドの見出しと、中央のドロップ領域から論文の PDF を追加する。"""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from . import icons, theme
 from .app_icon import app_pixmap
 from .widgets import add_soft_shadow, button, label, link_button
 
-FEATURES = ("図表をそのまま", "数式を保護", "原文と並べて確認", "訳文を PDF に書き出し")
+FEATURES = ("書誌情報を自動で整理", "図表・数式をそのまま翻訳", "原文と並べて読める", "訳文を PDF に書き出し")
 
 
 class DropCard(QFrame):
@@ -80,7 +80,7 @@ class DropZone(QWidget):
         self.icon = QLabel()
         self.icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
         lay.addWidget(self.icon)
-        title = label("PDF をここにドロップ", "title")
+        title = label("論文の PDF をここにドロップ", "title")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         lay.addWidget(title)
         hint = label("または", "caption")
@@ -88,7 +88,7 @@ class DropZone(QWidget):
         lay.addWidget(hint)
         row = QHBoxLayout()
         row.addStretch(1)
-        self.open_button = button("PDF を選択", primary=True, large=True)
+        self.open_button = button("PDF を追加", primary=True, large=True)
         self.open_button.clicked.connect(self.openRequested)
         row.addWidget(self.open_button)
         row.addStretch(1)
@@ -123,7 +123,7 @@ class DropZone(QWidget):
         notice.addStretch(1)
         outer.addLayout(notice)
         outer.addStretch(4)
-        shortcut = label("⌘O で開く" if theme.IS_MAC else "Ctrl+O で開く", "caption")
+        shortcut = label("複数のファイルやフォルダもまとめて追加できます（⌘O）" if theme.IS_MAC else "複数のファイルやフォルダもまとめて追加できます（Ctrl+O）", "caption")
         shortcut.setAlignment(Qt.AlignmentFlag.AlignCenter)
         outer.addWidget(shortcut)
         outer.addSpacing(14)

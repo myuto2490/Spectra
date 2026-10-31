@@ -218,15 +218,18 @@ class FormGroup(QWidget):
         self.footer.setVisible(bool(footer))
         outer.addWidget(self.footer)
 
-    def _separator(self) -> None:
+    def _separator(self) -> QFrame | None:
         if self._rows.count():
             line = QFrame()
             line.setProperty("rowSeparator", True)
             self._rows.addWidget(line)
+            return line
+        return None
 
     def add_row(self, title: str, control: QWidget | None = None, subtitle: str = "") -> QWidget:
-        self._separator()
+        separator = self._separator()
         row = QWidget()
+        row.separator = separator  # 行を隠すときは区切り線も一緒に隠す
         lay = QHBoxLayout(row)
         lay.setContentsMargins(0, 8, 0, 8)
         lay.setSpacing(12)

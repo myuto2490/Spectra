@@ -27,6 +27,7 @@ Spectra は、英語の論文 PDF を **PDF のまま** 日本語に翻訳する
 ## 特長
 
 - **論文ライブラリ** — PDF をドロップするだけで、タイトル・著者・年・雑誌名を PDF から読み取ってライブラリに登録します（PDF に DOI・arXiv ID があれば、Crossref / arXiv に照会して正確な書誌情報を取得します）。検索・並べ替え・お気に入り・コレクションで整理でき、翻訳した論文は開くだけで原文と訳文をすぐに読めます。BibTeX のコピーにも対応しています。
+- **複数のパソコンでライブラリを同期（任意）** — Google Drive・Dropbox・OneDrive・iCloud Drive・Syncthing などの同期フォルダを選ぶと、ご自身のほかのパソコンでも同じライブラリ（原文・訳文・書誌情報・コレクション）を読めます。初期状態では無効です。
 - **レイアウトを崩さない** — ページ番号も図の位置もそのまま。図の中の文字、表、独立した数式、著者・所属、参考文献は自動で見分けて原文のまま残します。翻訳後には、図表や翻訳対象外の文字が変わっていないことを自動で検査します。
 - **数式は元の見た目のまま** — 段落の中の数式（変数、上付き・下付き、分数など）は翻訳から保護し、元の論文の字形のまま、訳文の自然な位置に配置します。
 - **読みやすい日本語の組版** — 日本語の字形の Noto Sans JP を同梱。禁則処理、和欧間の空き、両端揃え、字下げに対応し、段組みや段落の太字も原文どおりに再現します。明朝体（Noto Serif JP）も選べます。
@@ -77,7 +78,8 @@ Intel 搭載の Mac では、[ソースから実行](#開発)してください�
 - 上の検索欄で、タイトル・著者・雑誌名・年・DOI から絞り込めます。列の見出しを押すと並べ替えられます。
 - 右の詳細パネルで書誌情報と翻訳の状態を確認できます。「情報を編集…」で直した項目は、書誌情報を取得し直しても上書きされません。
 - 書誌情報は、PDF に書かれた DOI・arXiv ID から Crossref / arXiv に照会して自動で取得します。送るのは DOI・arXiv ID だけで、本文やファイルは送りません。取得しない場合は ⚙ →「詳細」でオフにできます（PDF から読み取れた情報だけで整理します）。
-- ライブラリから削除すると、ライブラリ内のコピーと訳文が削除されます。追加した元のファイルはそのまま残ります。
+- ⚙ →「同期」で同期フォルダを選ぶと、ライブラリを複数のパソコンで同期できます（初期状態では無効）。Spectra 自身は通信せず、フォルダの同期は各サービスのアプリが行います。Gemini の API キー・設定・翻訳キャッシュは同期しないので、別のパソコンでも翻訳するときは、そのパソコンで API キーを設定します。購読契約で入手した論文など、共有が認められていないものがあるときは、同期フォルダをほかの人と共有しないでください。
+- ライブラリから削除すると、論文はゴミ箱に移ります。30 日以内ならサイドバーの「ゴミ箱」から戻せ、30 日たつとライブラリ内のコピーと訳文が完全に削除されます。追加した元のファイルはそのまま残ります。
 
 ### キーボードショートカット
 
@@ -148,12 +150,44 @@ Elsevier・A&A・AAS・AGU/Wiley・Springer・IEEE などの論文 20 本で、�
 翻訳する本文が Google の Gemini API にのみ送信されます。無料枠での送信データの扱いは、上の「重要」の項目を確認してください。
 
 書誌情報を取得するため、PDF に書かれた DOI を [Crossref](https://www.crossref.org/)、arXiv ID を [arXiv](https://arxiv.org/) に送って書誌情報を受け取ります（タイトルや本文、ファイルは送りません。⚙ →「詳細」でオフにできます）。Spectra 自体は利用状況などのデータを一切送信しません。
+
+ライブラリの同期を有効にした場合は、PDF・訳文・書誌情報を、選んだフォルダに保存します。Spectra 自身は通信せず、そのフォルダを同期するサービス（Google Drive など）がアップロードします。同期は初期状態では無効です。
 </details>
 
 <details>
 <summary>ライブラリの PDF はどこに保存されますか？</summary>
 
 追加した PDF はライブラリのフォルダにコピーされ、訳文と一緒に保存されます（⚙ →「詳細」→「フォルダ」の「ライブラリ」から開けます）。元のファイルを移動・削除しても、ライブラリの論文はそのまま読めます。
+</details>
+
+<details>
+<summary>ほかのパソコンでもライブラリを読むには？（同期の始め方）</summary>
+
+1. Google Drive・Dropbox・OneDrive・iCloud Drive などのアプリを、両方のパソコンにインストールして同じアカウントでサインインします。
+2. どちらのパソコンでも、⚙ →「同期」（論文が 1 本もないときは、ライブラリの「別のパソコンのライブラリを同期…」からも開けます）を開き、同期フォルダの候補の「このフォルダを使う」を押します。見つからなければ「ほかのフォルダを選択…」でフォルダを選びます。表示される説明を読んで「同期を始める」を押すと、始まります。
+3. 2 台目では、同じフォルダを選ぶと、1 台目のライブラリが現れます。論文を開くと、原文と訳文が手元に取得されます。取得中の論文は、「取得が終わると翻訳できます」と表示され、終わってから読んだり翻訳したりできます。同期した訳文を読むだけなら、2 台目で API キーを設定する必要はありません（翻訳するときは、そのパソコンで API キーを設定します）。
+
+オフラインでも読みたい場合は、同期アプリでこのフォルダを「オフラインで使用可能」（Dropbox なら「ローカルに保存」など）にしてください。手元の容量を空けたいときは、論文を右クリックして「このパソコンのコピーを削除（クラウドには残す）」を選ぶと、そのパソコンのファイルだけを消せます（同期先には残ります）。ほかのパソコンにしかない論文は、右クリックの「このパソコンに保存」で手元に取得できます。
+
+同期は初期状態では無効です。いつでも ⚙ →「同期」の「接続を解除…」でやめられ、このパソコンのライブラリも同期先のデータもそのまま残ります。初めて同期する前のライブラリは自動でバックアップされ、必要なら「同期前の状態に戻す…」で戻せます。
+</details>
+
+<details>
+<summary>Linux でも同期できますか？</summary>
+
+できます。Spectra は同期フォルダを使うので、フォルダを同期できるものなら何でも使えます。Google 公式の Drive アプリは Linux にないため、Dropbox・[Syncthing](https://syncthing.net/)・[rclone](https://rclone.org/) などで作った同期フォルダを、⚙ →「同期」で選んでください。
+</details>
+
+<details>
+<summary>同期フォルダはほかの人と共有してもよいですか？</summary>
+
+共有しないでください。購読契約で入手した論文は、個人の複数のパソコンで使うことは認められていても、共有フォルダに置くことは認められていないことがあります。未公開の原稿や査読中の論文を含む場合も、所属先の規則を確認してください。同期フォルダの中身は Spectra では暗号化しません。必要なら各サービスの機能を使ってください。
+</details>
+
+<details>
+<summary>削除した論文は戻せますか？</summary>
+
+ライブラリから削除した論文は、同期の有無にかかわらずゴミ箱に入ります。30 日以内ならサイドバーの「ゴミ箱」から戻せ、30 日たつと完全に削除されます。同期しているときは、ほかのパソコンでもゴミ箱に入り、どのパソコンで戻しても、すべてのパソコンで戻ります。
 </details>
 
 <details>
@@ -217,5 +251,5 @@ Google および Gemini は Google LLC の商標です。Spectra は Google と�
 <details>
 <summary>English</summary>
 
-**Spectra** is a free, open-source desktop app (Windows, macOS, Linux) that translates academic PDFs from English into Japanese **while keeping the original layout intact**. Only the running text, headings, captions and footnotes are replaced; figures, tables, display equations, author information and references stay untouched. Inline math is kept with its original glyphs and placed naturally inside the Japanese text, which is typeset with proper Japanese line breaking in the bundled Noto Sans JP font. Translation uses the Google Gemini API free tier; translations are cached to save quota, and every result is checked automatically to make sure figures and untranslated text have not changed. Export as translation only, side-by-side, or interleaved. Papers are collected in a reference-manager style library: bibliographic details are read from the PDF and looked up on Crossref / arXiv by DOI or arXiv ID only (this can be turned off in the settings), and can be searched, sorted, starred, grouped into collections and copied as BibTeX; translated papers reopen instantly with the original and translation side by side, and several papers can be queued for background translation. Licensed under AGPL-3.0.
+**Spectra** is a free, open-source desktop app (Windows, macOS, Linux) that translates academic PDFs from English into Japanese **while keeping the original layout intact**. Only the running text, headings, captions and footnotes are replaced; figures, tables, display equations, author information and references stay untouched. Inline math is kept with its original glyphs and placed naturally inside the Japanese text, which is typeset with proper Japanese line breaking in the bundled Noto Sans JP font. Translation uses the Google Gemini API free tier; translations are cached to save quota, and every result is checked automatically to make sure figures and untranslated text have not changed. Export as translation only, side-by-side, or interleaved. Papers are collected in a reference-manager style library: bibliographic details are read from the PDF and looked up on Crossref / arXiv by DOI or arXiv ID only (this can be turned off in the settings), and can be searched, sorted, starred, grouped into collections and copied as BibTeX; the library can optionally be kept in sync across your own computers through a sync folder you choose (Google Drive, Dropbox, OneDrive, iCloud Drive, Syncthing and so on; off by default, and Spectra itself does not upload anything); translated papers reopen instantly with the original and translation side by side, and several papers can be queued for background translation. Licensed under AGPL-3.0.
 </details>

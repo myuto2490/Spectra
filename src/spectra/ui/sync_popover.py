@@ -48,6 +48,13 @@ class SyncPopover(QFrame):
         dest = label(f"保存先: {folder_name(settings.sync_folder, candidate_folders())}", "caption", wrap=True)
         dest.setToolTip(settings.sync_folder)
         lay.addWidget(dest)
+        other = self._last_other_device()
+        if other is not None:
+            # 端末の名前はほかのパソコンから来た文字列なので、必ずプレーンテキストとして表示する（§8.5）
+            name = other.name.strip() or "名前のないパソコン"
+            self.other_label = label(f"ほかのパソコンからの最後の変更: {format_ago(other.last_seen)}（{name}）", "caption", wrap=True)
+            self.other_label.setTextFormat(Qt.TextFormat.PlainText)
+            lay.addWidget(self.other_label)
         if sync.active_downloads():
             lay.addWidget(label(f"取得中: {sync.active_downloads()} 件", "caption"))
         lay.addWidget(label("クラウドへの反映は、同期アプリ（Google Drive など）が行います。", "caption", wrap=True))
@@ -72,6 +79,17 @@ class SyncPopover(QFrame):
         links.addWidget(settings_btn)
         links.addStretch(1)
         lay.addLayout(links)
+
+    def _last_other_device(self):
+        """いちばん最近同期したほかのパソコン（core が最後の同期のときに求めた値。同期フォルダには触らない）。"""
+        engine = self.sync.engine
+        if engine is None:
+            return None
+        try:
+            devices = engine.devices()
+        except Exception:
+            return None
+        return next((d for d in devices if not d.is_self), None)
 
     def show_below(self, anchor: QWidget) -> None:
         self.adjustSize()

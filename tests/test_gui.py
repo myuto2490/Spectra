@@ -28,6 +28,12 @@ def window(tmp_path, monkeypatch):
     pump(app, 30, until=lambda: not w._busy())
     w.close()
     w.library.close()
+    # 閉じた窓を実際に破棄する（残すと、次のテストでスタイルを当て直すたびに作り直され、テストが遅くなる）
+    from PySide6.QtCore import QCoreApplication, QEvent
+
+    w.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    app.processEvents()
 
 
 def pump(app, seconds=0.2, until=None):

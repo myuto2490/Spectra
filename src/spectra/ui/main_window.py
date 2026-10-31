@@ -1440,6 +1440,13 @@ class MainWindow(QMainWindow):
                 if before:
                     body = f"このパソコンの {before} 件と合わせて {total} 件になりました。" + body
                 self._show_banner("info", f"ライブラリを同期しました（論文 {total} 件）", body)
+        full = getattr(report, "disk_full", 0)
+        if full:
+            self._show_banner(
+                "warning",
+                f"このパソコンの空き容量が足りないため、{full} 件の論文を保存できませんでした",
+                "空き容量を増やすと、次の同期で自動でやり直します。",
+            )
         if getattr(report, "read_only", False):
             self._show_banner(
                 "warning",
@@ -1501,7 +1508,10 @@ class MainWindow(QMainWindow):
         # 理由は行の記号と詳細パネルに出る（再試行もそこから）。開こうとしていた論文なら、その論文を選んで見せる
         if self.screen_mode == LIBRARY:
             self.library_view.reveal(paper_id)
-        title = getattr(err, "title", "") or "ファイルを取得できませんでした"
+        if isinstance(err, RemoteMissing):
+            title = "ほかのパソコンからファイルが届くのを待っています"
+        else:
+            title = getattr(err, "title", "") or "ファイルを取得できませんでした"
         self._set_status(title)
 
     def _on_lookup_setting(self, on: bool) -> None:

@@ -87,6 +87,10 @@ class SyncController(QObject):
         self.last_report = None
         self._running = False
         self._again = False
+        self._sync_task: worker.Task | None = None
+        self._sync_done = threading.Event()  # 同期のワーカーが終わったら set（閉じるときに待つ）
+        self._sync_done.set()
+        self._retired: list = []  # 同期の途中で止めたエンジン（同期が終わってから閉じる）
         self._engine_unsub: Callable[[], None] | None = None
         self.downloads: dict[int, Download] = {}
         self._order: list[int] = []
@@ -131,17 +135,35 @@ class SyncController(QObject):
             self._engine_unsub()
             self._engine_unsub = None
         if self.engine is not None:
-            try:
-                self.engine.close()
-            except Exception:
-                log.debug("engine close failed", exc_info=True)
+            if self._running:
+                # 同期の途中で閉じると sync.sqlite3 を書いている最中に閉じてしまうので、キャンセルして終わってから閉じる
+                if self._sync_task is not None:
+                    self._sync_task.cancel()
+                self._retired.append(self.engine)
+            else:
+                self._close_engine(self.engine)
             self.engine = None
         for pid in list(self.downloads):
             self.cancel_download(pid)
 
-    def close(self) -> None:
+    def close(self, wait: float = 3.0) -> None:
+        """アプリを閉じるとき。同期の途中なら、キャンセルして少しだけ終わるのを待つ。"""
         self._stop_engine()
         self._library_unsub()
+        if not self._sync_done.wait(wait):
+            log.warning("sync did not stop in time")
+        self._close_retired()
+
+    @staticmethod
+    def _close_engine(engine) -> None:
+        try:
+            engine.close()
+        except Exception:
+            log.debug("engine close failed", exc_info=True)
+
+    def _close_retired(self) -> None:
+        while self._retired and self._sync_done.is_set():
+            self._close_engine(self._retired.pop())
 
     def rebind(self, library: Library) -> None:
         """ライブラリを開き直したとき（同期前の状態に戻したときなど）に、新しいライブラリにつなぎ直す。"""
@@ -170,10 +192,22 @@ class SyncController(QObject):
         self._again = False
         engine = self.engine
         self._set_state(SYNCING)
-        worker.start(lambda _r, cancel: engine.sync_now(cancel), self._on_synced, self._on_sync_failed)
+        self._sync_done.clear()
+
+        def run(_r, cancel):
+            try:
+                return engine.sync_now(cancel)
+            finally:
+                self._sync_done.set()
+
+        self._sync_task = worker.start(run, self._on_synced, self._on_sync_failed)
 
     def _on_synced(self, report) -> None:
         self._running = False
+        self._sync_task = None
+        self._close_retired()
+        if self.engine is None:  # 同期の途中で止めた
+            return
         self.last_report = report
         self.last_saved = time.time()
         self._set_state(ERROR if getattr(report, "errors", None) else IDLE)
@@ -183,6 +217,12 @@ class SyncController(QObject):
 
     def _on_sync_failed(self, err: BaseException) -> None:
         self._running = False
+        self._sync_task = None
+        self._close_retired()
+        if self.engine is None or isinstance(err, CancelledError):
+            if self.engine is not None:
+                self._set_state(IDLE)
+            return
         log.warning("sync failed: %s", err)
         self._set_state(UNAVAILABLE if isinstance(err, SyncUnavailable) else ERROR, err)
         if self._again:

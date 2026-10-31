@@ -1,7 +1,8 @@
 """同期の画面のテスト（オフスクリーン・ネットワーク不要）。docs/SYNC.md §7・§10。
 
-core の同期の本体はまだ骨組みなので、取得（fetch）だけを差し替えた FakeEngine で、手元にない論文・取得の成功と失敗・
-ほかのパソコンの変更の通知（RemoteChange）を再現する。
+FakeEngine は fetch だけを差し替え（取得の成功・失敗・到着待ちを思いどおりに起こすため）、sync_now は本物
+（FakeFolderStorage に実際に書き出し・取り込みをする）。ほかのパソコンの変更の通知（RemoteChange）は _notify で再現する。
+後半の 2 台のテストは、fetch も含めてすべて本物の SyncEngine を使う。
 """
 
 import os
@@ -31,18 +32,27 @@ class FakeEngine(SyncEngine):
         self.fetched: list[tuple[int, str]] = []
 
     def fetch(self, paper_id, kind, progress=None, cancel=None):
+        # core の約束に合わせる: 不正な kind は ValueError、論文が無ければ PaperNotFound、手元にあればすぐ返す、
+        # 同期フォルダに触る前に cancel を見る、成功したら "file" の RemoteChange を出す
+        from spectra.library.errors import PaperNotFound, SyncUnavailable
+        from spectra.translate.errors import CancelledError
+
+        if kind not in ("original", "translation"):
+            raise ValueError(kind)
         paper = self.library.get(paper_id)
+        if paper is None:
+            raise PaperNotFound()
         local = paper.pdf_path if kind == "original" else paper.translated_path
         if (paper.has_original if kind == "original" else paper.has_translation_file):
             return local
+        if cancel is not None and cancel.is_set():
+            raise CancelledError
         if not self.storage.available():
-            from spectra.library.errors import SyncUnavailable
-
             raise SyncUnavailable()
+        if kind == "translation" and paper.translation is None:
+            raise RemoteMissing()
         while not self.gate.wait(0.05):
             if cancel is not None and cancel.is_set():
-                from spectra.translate.errors import CancelledError
-
                 raise CancelledError
         if self.fail is not None:
             raise self.fail
@@ -53,6 +63,7 @@ class FakeEngine(SyncEngine):
         local.parent.mkdir(parents=True, exist_ok=True)
         local.write_bytes(data)
         self.fetched.append((paper_id, kind))
+        self._notify([RemoteChange("file", paper.sha256, paper.id)])  # ワーカーのスレッドから（core と同じ）
         return local
 
 
@@ -93,6 +104,17 @@ def make_window(tmp_path, monkeypatch, cloud):
         pump(app, 10, until=lambda w=w: not w._busy())
         w.close()
         w.library.close()
+        _dispose(app, w)
+
+
+def _dispose(app, w):
+    """閉じた窓を実際に破棄する（残すと、次のテストの create_app でスタイルを当て直すたびに古いウィジェットも
+    すべて作り直され、テストがだんだん遅くなる）。"""
+    from PySide6.QtCore import QCoreApplication, QEvent
+
+    w.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    app.processEvents()
 
 
 def pump(app, seconds=0.2, until=None):
@@ -542,6 +564,7 @@ def two_computers(tmp_path, monkeypatch, cloud):
     pump(app, 10, until=lambda: not w._busy())
     w.close()
     w.library.close()
+    _dispose(app, w)
     engine_a.close()
     lib_a.close()
 
@@ -652,5 +675,99 @@ def test_restore_to_before_first_sync(tmp_path, monkeypatch, cloud, dialogs):
     finally:
         w.close()
         w.library.close()
+        _dispose(app, w)
         engine_a.close()
         lib_a.close()
+
+
+def test_pausing_during_a_sync_closes_the_engine_after_it_finishes(make_window, cloud):
+    """同期の途中で一時停止しても、同期の記録を書いている最中にエンジンを閉じない。"""
+    (cloud / "Spectra Sync").mkdir(parents=True)
+    app, w = make_window()
+    pump(app, 5, until=lambda: not w.sync._running)
+    engine = w.engines[-1]
+    closed = []
+    original_close = engine.close
+    engine.close = lambda: (closed.append(w.sync._sync_done.is_set()), original_close())
+    gate = threading.Event()
+    original_sync = engine.sync_now
+    engine.sync_now = lambda cancel=None: (gate.wait(5), original_sync(cancel))[1]
+    w.sync.sync_now()
+    assert w.sync._running
+    w.settings.sync_enabled = False
+    w._on_sync_setting()  # 同期の途中で止める
+    assert closed == []  # まだ閉じない
+    gate.set()
+    assert pump(app, 5, until=lambda: bool(closed))
+    assert closed == [True]  # 同期が終わってから閉じた
+    assert w.library_view.sync_status.text() == "同期を一時停止中"
+
+
+def test_queued_download_of_a_paper_deleted_elsewhere_ends_quietly(make_window, tmp_path, cloud):
+    """取得を待っている間に、別のパソコンで完全に削除された論文は、エラーを出さずに取得の待ち行列から消える。"""
+    (cloud / "Spectra Sync").mkdir(parents=True)
+    app, w = make_window()
+    a = w.library.add(_paper(tmp_path, "a.pdf", "Alpha"))[0]
+    b = w.library.add(_paper(tmp_path, "b.pdf", "Beta"))[0]
+    w.library_view.reload()
+    engine = w.engines[-1]
+    engine.stash[a.id] = _evict(w, a.id)
+    engine.stash[b.id] = _evict(w, b.id)
+    engine.gate.clear()
+    w.sync.download(a.id, "keep")
+    w.sync.download(b.id, "keep")
+    assert w.sync.download_state(b.id).state == "queued"
+    failures = []
+    w.sync.downloadFailed.connect(lambda pid, err: failures.append(err))
+    w.library.purge(b.id)  # 反映による完全な削除（core が行う）
+    engine.gate.set()
+    assert pump(app, 10, until=lambda: w.sync.active_downloads() == 0)
+    assert w.sync.download_state(b.id) is None and failures == []
+    assert w.library.get(a.id).has_original
+    # 取得が終わった "file" の通知で、一覧の行も更新されている
+    assert pump(app, 2, until=lambda: w.library_view.model.paper(a.id).has_original)
+
+
+def test_popover_shows_last_change_from_other_computer_as_plain_text(two_computers, tmp_path):
+    app, lib_a, engine_a, w = two_computers
+    engine_a.device = DeviceInfo("1" * 32, "<b>MacBook</b> Air")  # リッチテキストとして解釈されないこと
+    lib_a.add(_paper(tmp_path, "a.pdf", "Shared"))
+    engine_a.sync_now()
+    _sync_b(app, w)
+    from PySide6.QtCore import Qt
+
+    from spectra.ui.sync_popover import SyncPopover
+
+    pop = SyncPopover(w.settings, w.sync, w)
+    assert "ほかのパソコンからの最後の変更" in pop.other_label.text()
+    assert "<b>MacBook</b> Air" in pop.other_label.text()
+    assert pop.other_label.textFormat() == Qt.TextFormat.PlainText
+    pop.close()
+
+
+def test_disk_full_banner(make_window):
+    app, w = make_window(enabled=False)
+    from spectra.library.sync import SyncReport
+
+    w._on_synced(SyncReport(disk_full=3))
+    assert "空き容量が足りないため、3 件の論文を保存できませんでした" in w.banner._title.text()
+
+
+def test_waiting_paper_cannot_be_translated_and_wording_is_consistent(make_window, tmp_path, cloud):
+    (cloud / "Spectra Sync").mkdir(parents=True)
+    app, w = make_window()
+    paper = w.library.add(_paper(tmp_path, "a.pdf", "Alpha"))[0]
+    w.library_view.reload()
+    _evict(w, paper.id)
+    w.engines[-1].fail = RemoteMissing()
+    w.open_paper(paper.id)
+    assert pump(app, 5, until=lambda: (d := w.sync.download_state(paper.id)) is not None and d.state == "waiting")
+    assert w.status.text() == "ほかのパソコンからファイルが届くのを待っています"
+    w.library_view.select_ids([paper.id])
+    pump(app, 0.1)
+    detail = w.library_view.detail
+    assert not detail.translate_btn.isEnabled() and not detail.read_btn.isEnabled()
+    assert detail.tr_blocked.text() == "ファイルが届いてから翻訳できます"
+    assert detail.local.text() == "到着待ち"  # 短い値（説明はツールチップ）
+    assert "届くのを待っています" in detail.local.toolTip()
+    assert detail.width() == 324  # パネルが横に広がらない

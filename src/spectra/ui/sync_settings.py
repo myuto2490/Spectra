@@ -172,11 +172,13 @@ class SyncPage(QScrollArea):
     def rebuild(self) -> None:
         for w in self._built:
             self._lay.removeWidget(w)
+            w.hide()
             w.deleteLater()
         self._built = []
         while self._lay.count():
             item = self._lay.takeAt(0)
             if item.widget():
+                item.widget().hide()
                 item.widget().deleteLater()
         if self.connected():
             self._build_connected()

@@ -62,9 +62,9 @@ def local_state(paper: Paper, download=None) -> tuple[str, str] | None:
     if download is not None:
         if download.state == "running":
             pct = download.percent
-            return "cloud_download", f"ダウンロード中 {pct}%" if pct is not None else "ダウンロード中"
+            return "cloud_download", f"取得中 {pct}%" if pct is not None else "取得中"
         if download.state == "queued":
-            return "cloud_download", "ダウンロードを待っています"
+            return "cloud_download", "取得の順番を待っています"
         if download.state == "waiting":
             return "hourglass", "ほかのパソコンからファイルが届くのを待っています"
         if download.state == "failed":
@@ -72,6 +72,19 @@ def local_state(paper: Paper, download=None) -> tuple[str, str] | None:
     if not paper.has_original:
         return "cloud", "このパソコンにまだありません"
     return "cloud", "訳文がこのパソコンにまだありません"
+
+
+def local_short(paper: Paper, download=None) -> str:
+    """詳細パネルの「このパソコン」の行に出す短い値（説明はツールチップに回す）。"""
+    state = local_state(paper, download)
+    if state is None:
+        return "保存済み"
+    if download is not None:
+        if download.state == "running":
+            pct = download.percent
+            return f"取得中 {pct}%" if pct is not None else "取得中"
+        return {"queued": "取得待ち", "waiting": "到着待ち", "failed": "取得できませんでした"}[download.state]
+    return "未取得"
 
 
 def days_left(paper: Paper, now: float | None = None) -> int:
@@ -255,9 +268,7 @@ class PaperTableModel(QAbstractTableModel):
             if state is None:
                 # 記号のない行も同じ幅を空けて、タイトルの書き出しをそろえる
                 return _blank_icon() if self._downloads or self._has_missing else None
-            t = theme.current()
-            color = t.tertiary if state[0] == "hourglass" else t.secondary
-            return icons.pixmap(state[0], color, 14)
+            return icons.pixmap(state[0], theme.current().secondary, 14)
         if role == SortRole:
             if key == "favorite":
                 return int(p.favorite)

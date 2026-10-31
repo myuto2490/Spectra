@@ -26,7 +26,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..library import Author, Metadata, Paper
-from .library_model import days_left, format_date, local_state, translation_status
+from .library_model import days_left, format_date, local_short, local_state, translation_status
 from .widgets import FormGroup, button, label, link_button, set_prop
 
 
@@ -39,6 +39,8 @@ def _value(text: str = "") -> QLabel:
     lb = QLabel(text)
     lb.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
     lb.setProperty("role", "secondary")
+    # 長い値でパネルの幅が広がらないよう、幅の上限を決める（値は短く保ち、説明はツールチップに回す）
+    lb.setMaximumWidth(180)
     return lb
 
 
@@ -303,6 +305,9 @@ class PaperDetail(QWidget):
         actions.addWidget(self.translate_btn, 1)
         actions.addWidget(self.tr_read_btn, 1)
         lay.addLayout(actions)
+        self.tr_blocked = label("", "caption", wrap=True)  # 翻訳できない理由（ファイルが届いていないなど）
+        self.tr_blocked.hide()
+        lay.addWidget(self.tr_blocked)
 
         tr = FormGroup("翻訳")
         self.tr_status = _value()
@@ -455,7 +460,8 @@ class PaperDetail(QWidget):
         self.local_row.setVisible(self._sync_on)
         if self.local_row.separator is not None:
             self.local_row.separator.setVisible(self._sync_on)
-        self.local.setText(state[1] if state else "保存済み")
+        self.local.setText(local_short(p, d))
+        self.local.setToolTip(state[1] if state else "")
         running = d is not None and d.state in ("queued", "running")
         problem = d is not None and d.state in ("waiting", "failed")
         self.fetch_box.setVisible(running or problem)
@@ -477,14 +483,22 @@ class PaperDetail(QWidget):
             hint = getattr(err, "hint", "")
             self.fetch_text.setText(f"{title}。{hint}" if hint else title)
         # 手元になく、同期先も読めないときは、読む・翻訳するを止める（手元にある論文は今までどおり）
-        blocked = missing and not self._sync_available
-        reason = "同期先のフォルダを読めないため、このパソコンにない論文は開けません" if blocked else ""
+        waiting = d is not None and d.state == "waiting"
+        blocked = missing and (not self._sync_available or waiting)
+        if waiting:
+            reason = "ほかのパソコンからファイルが届いてから、読んだり翻訳したりできます"
+        elif blocked:
+            reason = "同期先のフォルダを読めないため、このパソコンにない論文は開けません"
+        else:
+            reason = ""
         for b in (self.read_btn, self.tr_read_btn):
             b.setEnabled(not blocked and not running)
             b.setToolTip(reason)
         if self._job is None:
-            self.translate_btn.setEnabled(not blocked)
+            self.translate_btn.setEnabled(not blocked and not running)
             self.translate_btn.setToolTip(reason)
+        self.tr_blocked.setText("ファイルが届いてから翻訳できます" if waiting and missing else reason if blocked else "")
+        self.tr_blocked.setVisible(blocked)
 
     def _show_paper(self, p: Paper, looking_up: bool, lookup_enabled: bool) -> None:
         md = p.metadata

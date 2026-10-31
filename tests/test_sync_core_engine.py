@@ -244,3 +244,17 @@ def test_clock_is_persisted(tmp_path, pdf):
     finally:
         e2.close()
         lib.close()
+
+
+def test_icloud_placeholder_requests_download(devs, pdf, monkeypatch):
+    a, b = devs("A", A), devs("B", B)
+    p, _ = a.lib.add(pdf())
+    roundtrip(a, b)
+    a.storage.make_placeholder(F.original_path(p.sha256))
+    calls = []
+    monkeypatch.setattr("spectra.library.sync.storage.sys.platform", "darwin")
+    monkeypatch.setattr("spectra.library.sync.storage.subprocess.run", lambda args, **kw: calls.append(args))
+    with pytest.raises(RemoteMissing) as info:
+        b.engine.fetch(b.lib.find_by_sha(p.sha256).id, "original")
+    assert "iCloud" in info.value.hint
+    assert calls and calls[0][:2] == ["brctl", "download"]

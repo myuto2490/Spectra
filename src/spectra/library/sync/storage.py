@@ -7,7 +7,10 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
+import subprocess
+import sys
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -16,6 +19,8 @@ from typing import Protocol
 
 from ...translate.errors import CancelledError
 from ..errors import RemoteMissing, SyncUnavailable
+
+log = logging.getLogger(__name__)
 
 CHUNK = 1024 * 1024
 TMP_SUFFIX = ".tmp"
@@ -48,6 +53,8 @@ class SyncStorage(Protocol):
     def exists(self, path: str) -> bool: ...
 
     def delete(self, path: str) -> None: ...
+
+    def request_download(self, path: str) -> bool: ...
 
 
 def check_relative(path: str) -> str:
@@ -196,3 +203,22 @@ class FolderStorage:
             self._resolve(path).unlink(missing_ok=True)
         except OSError as e:
             raise SyncUnavailable(str(e)) from e
+
+    # -- 手元にないファイル ----------------------------------------------------------
+
+    def request_download(self, path: str) -> bool:
+        """iCloud の「ストレージを最適化」で .<name>.icloud に置き換わっていれば、取り寄せを頼んで True を返す。
+
+        取り寄せは非同期なので、呼び出し側はしばらくしてから取得し直す。
+        """
+        full = self._resolve(path)
+        placeholder = full.with_name(f".{full.name}.icloud")
+        if full.exists() or not placeholder.exists():
+            return False
+        if sys.platform == "darwin":
+            try:
+                subprocess.run(["brctl", "download", str(full)], check=False, timeout=10, capture_output=True)
+            except (OSError, subprocess.SubprocessError):
+                log.debug("brctl download failed", exc_info=True)
+        return True
+

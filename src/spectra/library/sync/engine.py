@@ -789,6 +789,8 @@ class SyncEngine:
         if not self.storage.available():
             raise SyncUnavailable()
         if not self.storage.exists(src):
+            if self.storage.request_download(src):
+                raise RemoteMissing(hint="iCloud からファイルを取り寄せています。しばらく待ってから、もう一度開いてください。")
             raise RemoteMissing()
         tmp = dest.with_name(dest.name + ".tmp")
         actual = self.storage.copy_to(src, tmp, progress, cancel)

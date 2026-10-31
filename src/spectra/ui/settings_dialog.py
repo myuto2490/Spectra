@@ -6,8 +6,9 @@ import os
 from pathlib import Path
 
 from PySide6.QtCore import QSize, Qt, QUrl, Signal
-from PySide6.QtGui import QDesktopServices, QFont, QFontDatabase
+from PySide6.QtGui import QDesktopServices, QFont, QFontDatabase, QGuiApplication
 from PySide6.QtWidgets import (
+    QAbstractButton,
     QButtonGroup,
     QComboBox,
     QDialog,
@@ -40,6 +41,7 @@ from .widgets import (
     button,
     label,
     link_button,
+    refresh_icon,
     set_prop,
     tool_button,
 )
@@ -69,12 +71,13 @@ class KeyField(QWidget):
         titles.addWidget(label(self.info.description, "caption", wrap=True))
         head.addLayout(titles, 1)
         get_key = link_button("キーを取得")
-        get_key.setIcon(icons.icon("external", theme.current().accent, 14))
+        self.get_key = get_key
         get_key.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
         get_key.setToolTip(self.info.key_url)
         get_key.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(self.info.key_url)))
         head.addWidget(get_key, 0, Qt.AlignmentFlag.AlignTop)
         lay.addLayout(head)
+        self.refresh_theme()
 
         row = QHBoxLayout()
         row.setSpacing(6)
@@ -111,6 +114,9 @@ class KeyField(QWidget):
             self._set_status(f"{src} の値が使われます。", "info")
         elif src:
             self._set_status(f"保存済み（{src}）", "success")
+
+    def refresh_theme(self) -> None:
+        self.get_key.setIcon(icons.icon("external", theme.current().accent, 14))
 
     def _toggle_reveal(self, on: bool) -> None:
         self.edit.setEchoMode(QLineEdit.EchoMode.Normal if on else QLineEdit.EchoMode.Password)
@@ -236,10 +242,20 @@ class FontOption(QFrame):
             self.sample.setFont(f)
 
 
+def _scrollable(page: QWidget) -> QScrollArea:
+    """ページを縦スクロールで包む。高さが足りないときに行が潰れないようにする。"""
+    scroll = QScrollArea()
+    scroll.setWidgetResizable(True)
+    scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    scroll.setWidget(page)
+    return scroll
+
+
 class SettingsDialog(QDialog):
     keysChanged = Signal()
     settingsChanged = Signal()
     appearanceChanged = Signal()
+    lookupChanged = Signal(bool)  # 書誌情報の照会のオン・オフ
 
     def __init__(self, settings: Settings, secrets: SecretStore, cache: TranslationCache | None, parent: QWidget | None = None):
         super().__init__(parent)
@@ -261,6 +277,8 @@ class SettingsDialog(QDialog):
             self.stack.addWidget(w)
         self.tabs.changed.connect(lambda k: self.stack.setCurrentWidget(self._pages[k]))
         self.tabs.set_current("engines")
+        # 開いたままテーマが変わったとき（この画面での切り替え・システムの外観の変更）にアイコンの色を合わせる
+        QGuiApplication.styleHints().colorSchemeChanged.connect(self.refresh_theme)
 
         footer = QHBoxLayout()
         footer.addStretch(1)
@@ -268,6 +286,12 @@ class SettingsDialog(QDialog):
         done.clicked.connect(self.accept)
         footer.addWidget(done)
         lay.addLayout(footer)
+
+    def refresh_theme(self) -> None:
+        for b in self.findChildren(QAbstractButton):
+            refresh_icon(b)
+        for field in self.key_fields.values():
+            field.refresh_theme()
 
     def show_tab(self, key: str) -> None:
         self.tabs.set_current(key)
@@ -318,11 +342,7 @@ class SettingsDialog(QDialog):
         self._refresh_model_desc()
         lay.addWidget(model_group)
         lay.addStretch(1)
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        scroll.setWidget(page)
-        return scroll
+        return _scrollable(page)
 
     def _refresh_model_desc(self) -> None:
         info = MODELS[self.settings.gemini_model]
@@ -438,6 +458,16 @@ class SettingsDialog(QDialog):
         lay.addWidget(cache)
         self._refresh_cache_info()
 
+        lookup = FormGroup(
+            "書誌情報",
+            "オンにすると、PDF に書かれた DOI や arXiv ID だけを Crossref・arXiv に送り、"
+            "タイトル・著者・雑誌名・概要を取得します。本文やファイルは送りません。",
+        )
+        self.metadata_lookup = Switch(self.settings.metadata_lookup)
+        self.metadata_lookup.toggled.connect(self._on_lookup_toggle)
+        lookup.add_row("インターネットで書誌情報を取得する", self.metadata_lookup)
+        lay.addWidget(lookup)
+
         qa = FormGroup("品質", "翻訳後に、図表・数式・翻訳対象外の文字が変化していないかを自動で検査します。")
         self.verify = Switch(self.settings.verify_layout)
         self.verify.toggled.connect(self._on_verify)
@@ -445,13 +475,14 @@ class SettingsDialog(QDialog):
         lay.addWidget(qa)
 
         folders = FormGroup("フォルダ")
-        for title, path in (("設定", paths.config_dir()), ("ログ", paths.log_dir())):
+        for title, path in (("ライブラリ", paths.library_dir()), ("設定", paths.config_dir()), ("ログ", paths.log_dir())):
             b = button("開く")
             b.clicked.connect(lambda _c=False, p=path: self._open_folder(p))
             folders.add_row(title, b, str(path))
         lay.addWidget(folders)
         lay.addStretch(1)
-        return page
+        # 項目が多くダイアログの高さに収まらないので、行を潰さずにスクロールさせる
+        return _scrollable(page)
 
     def _refresh_cache_info(self) -> None:
         if self.cache is None:
@@ -474,6 +505,12 @@ class SettingsDialog(QDialog):
         self.settings.appearance = value
         self.settings.save()
         self.appearanceChanged.emit()
+        self.refresh_theme()
+
+    def _on_lookup_toggle(self, on: bool) -> None:
+        self.settings.metadata_lookup = on
+        self.settings.save()
+        self.lookupChanged.emit(on)
 
     def _on_verify(self, on: bool) -> None:
         self.settings.verify_layout = on

@@ -47,3 +47,7 @@ def translation_cache_file() -> Path:
 
 def fonts_dir() -> Path:
     return data_dir() / "fonts"
+
+
+def library_dir() -> Path:
+    return data_dir() / "library"

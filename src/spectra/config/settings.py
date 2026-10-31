@@ -14,7 +14,7 @@ from . import paths
 
 log = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 2  # 2: 既定モデルを 3.8 Flash から 3.5 Flash-Lite に変更
+SCHEMA_VERSION = 3  # 2: 既定モデルを 3.8 Flash から 3.5 Flash-Lite に変更 / 3: 書誌情報の照会を既定でオンに変更
 
 
 @dataclass
@@ -32,6 +32,7 @@ class Settings:
     verify_layout: bool = True
     use_cache: bool = True
     appearance: str = "auto"  # auto / light / dark
+    metadata_lookup: bool = True  # 書誌情報を Crossref / arXiv に照会する（DOI・arXiv ID だけを送る）
     last_open_dir: str = ""
     last_save_dir: str = ""
     window: dict = field(default_factory=dict)
@@ -66,6 +67,10 @@ class Settings:
             if isinstance(value, expected) and not (expected is int and isinstance(value, bool)):
                 values[f.name] = value
         values.setdefault("schema", 1)
+        # 以前は最初に論文を追加するときに照会してよいか尋ねていた（metadata_lookup_asked）。
+        # 尋ねる前の「オフ」は選んだ値ではないので新しい既定（オン）にし、自分で選んだ値はそのまま残す
+        if values["schema"] < 3 and raw.get("metadata_lookup_asked") is not True:
+            values.pop("metadata_lookup", None)
         s = cls(**values)
         s._sanitize()
         return s

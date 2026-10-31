@@ -16,14 +16,9 @@ from PySide6.QtWidgets import QApplication
 IS_MAC = sys.platform == "darwin"
 IS_WIN = sys.platform == "win32"
 
-# ブランドのグラデーション（アプリアイコンと同じ紫 → 青）
-BRAND_START = "#6E5BFF"
-BRAND_END = "#2F80FF"
-
 # 角丸と余白（4 の倍数）
-RADIUS_CONTROL = 8
-RADIUS_CARD = 14
-RADIUS_DROP = 22
+RADIUS_CONTROL = 6
+RADIUS_CARD = 10
 SPACE = (4, 8, 12, 16, 20, 24)
 
 # 文字サイズ（px）。macOS の 13pt を基準に、他 OS は表示密度に合わせて 1px 大きくする
@@ -45,6 +40,9 @@ class Tokens:
     accent_hover: str
     accent_pressed: str
     on_accent: str
+    primary: str  # 主ボタンの塗り（白い文字が読める濃さ）
+    primary_hover: str
+    primary_pressed: str
     window: str
     surface: str
     surface_alt: str
@@ -67,10 +65,13 @@ class Tokens:
 
 LIGHT = Tokens(
     dark=False,
-    accent="#4A6CFF",
-    accent_hover="#5B7BFF",
-    accent_pressed="#3B5BEB",
+    accent="#2563EB",
+    accent_hover="#1D4ED8",
+    accent_pressed="#1E40AF",
     on_accent="#FFFFFF",
+    primary="#2563EB",
+    primary_hover="#1D4ED8",
+    primary_pressed="#1E40AF",
     window="#F4F5F9",
     surface="#FFFFFF",
     surface_alt="#FAFBFD",
@@ -93,10 +94,13 @@ LIGHT = Tokens(
 
 DARK = Tokens(
     dark=True,
-    accent="#7C8CFF",
-    accent_hover="#8E9BFF",
-    accent_pressed="#6A7AF0",
+    accent="#6B9BFF",
+    accent_hover="#82ABFF",
+    accent_pressed="#5A8AF0",
     on_accent="#FFFFFF",
+    primary="#2F6FE0",
+    primary_hover="#3B7BEB",
+    primary_pressed="#2860C8",
     window="#121317",
     surface="#1B1D23",
     surface_alt="#171920",
@@ -124,6 +128,10 @@ _appearance = "auto"  # auto / light / dark
 def set_appearance(value: str) -> None:
     global _appearance
     _appearance = value if value in ("auto", "light", "dark") else "auto"
+    # タイトルバーなどネイティブの部分も合わせる。自動のときは指定を外してシステムに従う
+    if QGuiApplication.instance() is not None:
+        schemes = {"light": Qt.ColorScheme.Light, "dark": Qt.ColorScheme.Dark}
+        QGuiApplication.styleHints().setColorScheme(schemes.get(_appearance, Qt.ColorScheme.Unknown))
 
 
 def is_dark() -> bool:
@@ -192,11 +200,6 @@ QLabel[role="section"] {{
     color: {t.secondary}; font-size: {ty['caption']}px; font-weight: 700; padding-left: 4px; letter-spacing: 0.6px;
 }}
 QLabel[role="metric"] {{ font-weight: 600; font-size: {ty['body'] + 1}px; }}
-QLabel[role="hero"] {{ font-size: 34px; font-weight: 800; letter-spacing: -0.5px; }}
-QLabel[role="chip"] {{
-    color: {t.secondary}; background: {t.surface}; border: 1px solid {t.separator};
-    border-radius: 12px; padding: 4px 12px; font-size: {ty['caption']}px; font-weight: 600;
-}}
 QLabel[tone="danger"] {{ color: {t.danger}; }}
 QLabel[tone="warning"] {{ color: {t.warning}; }}
 QLabel[tone="success"] {{ color: {t.success}; }}
@@ -208,6 +211,37 @@ QLabel a {{ color: {t.accent}; }}
 #Inspector {{ background: {t.window}; border-left: 1px solid {t.separator}; }}
 #Canvas, #Canvas > QWidget > QWidget {{ background: {t.canvas}; }}
 #PaneHeader {{ background: {t.surface_alt}; border-bottom: 1px solid {t.separator}; }}
+
+/* ---- ライブラリ ---- */
+#SidebarPane {{ background: {t.surface_alt}; border-right: 1px solid {t.separator}; }}
+#Sidebar {{ background: transparent; border: none; padding: 8px 8px; outline: 0; }}
+#Sidebar::item {{ padding: 5px 8px; border-radius: 6px; color: {t.label}; }}
+#Sidebar::item:disabled {{ color: {t.secondary}; padding-top: 10px; }}
+#Sidebar::item:hover {{ background: {t.fill}; }}
+#Sidebar::item:selected {{ background: {t.selection}; color: {t.label}; }}
+#PaperTable {{
+    background: {t.surface}; alternate-background-color: {t.surface_alt}; border: none;
+    selection-background-color: {t.selection}; selection-color: {t.label}; outline: 0;
+}}
+#PaperTable::item {{ padding: 0 6px; border: none; }}
+QHeaderView {{ background: {t.surface}; border: none; }}
+QHeaderView::section {{
+    background: {t.surface}; color: {t.secondary}; border: none; border-bottom: 1px solid {t.separator};
+    border-right: 1px solid {t.separator}; padding: 5px 8px; font-size: {ty['caption']}px; font-weight: 600;
+}}
+QHeaderView::section:last {{ border-right: none; }}
+#LibraryCenter[dragActive="true"] {{ border: 2px dashed {t.accent}; border-radius: {RADIUS_CARD}px; }}
+QLineEdit#Search {{ border-radius: 9px; padding-left: 4px; }}
+#DetailTabs {{ background: {t.window}; border-bottom: 1px solid {t.separator}; }}
+#DetailTabs QPushButton {{
+    background: transparent; border: none; border-bottom: 2px solid transparent; border-radius: 0;
+    padding: 10px 2px 8px 2px; color: {t.secondary}; font-weight: 600; min-height: 18px;
+}}
+#DetailTabs QPushButton:hover {{ color: {t.label}; background: transparent; }}
+#DetailTabs QPushButton:checked {{ color: {t.label}; border-bottom: 2px solid {t.accent}; background: transparent; }}
+#DetailTabs QPushButton:focus {{ color: {t.accent}; border: none; border-bottom: 2px solid {t.focus}; padding: 10px 2px 8px 2px; }}
+QLabel[role="tertiary"] {{ color: {t.tertiary}; }}
+QLineEdit#Search:focus {{ padding-left: 3px; }}
 
 /* ---- カード・グループ ---- */
 QFrame[card="true"] {{
@@ -228,23 +262,21 @@ QPushButton:pressed {{ background: {t.control_pressed}; }}
 QPushButton:focus {{ border: 2px solid {t.focus}; padding: 4px 13px; }}
 QPushButton:disabled {{ color: {t.tertiary}; background: {t.fill}; border-color: {t.separator}; }}
 QPushButton[primary="true"] {{
-    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 {BRAND_START}, stop:1 {BRAND_END});
-    color: #FFFFFF; border: none; font-weight: 700; padding: 6px 18px;
+    background: {t.primary}; color: {t.on_accent}; border: 1px solid {t.primary}; font-weight: 600;
+    padding: 5px 16px;
 }}
-QPushButton[primary="true"]:hover {{
-    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #7D6CFF, stop:1 #4A90FF);
-}}
-QPushButton[primary="true"]:pressed {{
-    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #5E4BEF, stop:1 #2370EF);
-}}
-QPushButton[primary="true"]:focus {{ border: 2px solid {t.focus}; padding: 4px 16px; }}
-QPushButton[primary="true"]:disabled {{ background: {t.fill}; color: {t.tertiary}; border-color: {t.fill}; }}
+QPushButton[primary="true"]:hover {{ background: {t.primary_hover}; border-color: {t.primary_hover}; }}
+QPushButton[primary="true"]:pressed {{ background: {t.primary_pressed}; border-color: {t.primary_pressed}; }}
+QPushButton[primary="true"]:focus {{ border: 2px solid {t.focus}; padding: 4px 15px; }}
+QPushButton[primary="true"]:disabled {{ background: {t.fill}; color: {t.tertiary}; border-color: {t.separator}; }}
 QPushButton[destructive="true"] {{ color: {t.danger}; }}
-QPushButton[large="true"] {{ padding: 10px 28px; font-size: {ty['body'] + 2}px; border-radius: 12px; }}
+QPushButton[large="true"] {{ padding: 8px 24px; font-size: {ty['body'] + 1}px; }}
 QPushButton[link="true"] {{
     background: transparent; border: none; color: {t.accent}; padding: 2px 0; text-align: left;
 }}
 QPushButton[link="true"]:hover {{ text-decoration: underline; }}
+QPushButton[link="true"]:pressed {{ color: {t.accent_pressed}; }}
+QPushButton[link="true"]:disabled {{ color: {t.tertiary}; }}
 QToolButton {{
     background: transparent; border: none; border-radius: {RADIUS_CONTROL}px; padding: 5px;
 }}
@@ -294,7 +326,7 @@ QProgressBar {{
     text-align: center; color: transparent;
 }}
 QProgressBar::chunk {{
-    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 {BRAND_START}, stop:1 {BRAND_END}); border-radius: 3px;
+    background: {t.primary}; border-radius: 3px;
 }}
 QProgressBar[tone="warning"]::chunk {{ background: {t.warning}; }}
 QProgressBar[tone="danger"]::chunk {{ background: {t.danger}; }}

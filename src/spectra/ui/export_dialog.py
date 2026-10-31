@@ -1,12 +1,12 @@
-"""PDF の書き出し：形式をカードで選んでから保存先を決める。
+"""PDF出力：形式をカードで選んでから保存先を決める。
 
-翻訳結果から作り直すだけなので、形式を変えて何度でも書き出せる（再翻訳は不要）。
+翻訳結果から作り直すだけなので、形式を変えて何度でも出力できる（再翻訳は不要）。
 """
 
 from __future__ import annotations
 
 from PySide6.QtCore import QRectF, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QAbstractButton,
     QButtonGroup,
@@ -65,23 +65,20 @@ class FormatCard(QAbstractButton):
         r = QRectF(self.rect()).adjusted(1.5, 1.5, -1.5, -1.5)
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(QColor(t.surface))
-        p.drawRoundedRect(r, 14, 14)
+        p.drawRoundedRect(r, theme.RADIUS_CARD, theme.RADIUS_CARD)
         if self.isChecked():
-            grad = QLinearGradient(r.topLeft(), r.bottomRight())
-            grad.setColorAt(0, QColor(theme.BRAND_START))
-            grad.setColorAt(1, QColor(theme.BRAND_END))
-            p.setPen(QPen(grad, 2.5))
+            p.setPen(QPen(QColor(t.accent), 2))
         else:
             p.setPen(QPen(QColor(t.border if self._hover else t.separator), 1.2))
         p.setBrush(Qt.BrushStyle.NoBrush)
-        p.drawRoundedRect(r, 14, 14)
+        p.drawRoundedRect(r, theme.RADIUS_CARD, theme.RADIUS_CARD)
 
         # 図：ページの並び
         art = QRectF(r.left() + 16, r.top() + 18, r.width() - 32, 104)
         bg = QColor(t.fill)
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(bg)
-        p.drawRoundedRect(art, 10, 10)
+        p.drawRoundedRect(art, theme.RADIUS_CONTROL, theme.RADIUS_CONTROL)
         self._draw_pages(p, art, t)
 
         p.setPen(QColor(t.label))
@@ -102,12 +99,12 @@ class FormatCard(QAbstractButton):
         if self.hasFocus():
             p.setPen(QPen(QColor(t.focus), 2))
             p.setBrush(Qt.BrushStyle.NoBrush)
-            p.drawRoundedRect(r.adjusted(-1, -1, 1, 1), 15, 15)
+            p.drawRoundedRect(r.adjusted(-1, -1, 1, 1), theme.RADIUS_CARD + 1, theme.RADIUS_CARD + 1)
         p.end()
 
     def _draw_pages(self, p: QPainter, art: QRectF, t) -> None:
         en = QColor(t.tertiary)
-        ja = QColor(theme.BRAND_END)
+        ja = QColor(t.accent)
 
         def page(x: float, y: float, w: float, h: float, color: QColor) -> None:
             path = QPainterPath()
@@ -145,13 +142,13 @@ class ExportDialog(QDialog):
 
     def __init__(self, current: OutputMode, pages: int, parent: QWidget | None = None):
         super().__init__(parent)
-        self.setWindowTitle("PDF を書き出す")
+        self.setWindowTitle("PDF出力")
         self.pages = pages
         lay = QVBoxLayout(self)
         lay.setContentsMargins(28, 26, 28, 22)
         lay.setSpacing(6)
-        lay.addWidget(label("PDF を書き出す", "title"))
-        lay.addWidget(label("形式を選んでください。翻訳し直さずに、何度でも別の形式で書き出せます。", "secondary"))
+        lay.addWidget(label("PDF出力", "title"))
+        lay.addWidget(label("形式を選んでください。翻訳し直さずに、何度でも別の形式で出力できます。", "secondary"))
         lay.addSpacing(16)
         row = QHBoxLayout()
         row.setSpacing(14)
@@ -173,7 +170,7 @@ class ExportDialog(QDialog):
         buttons.addStretch(1)
         cancel = button("キャンセル")
         cancel.clicked.connect(self.reject)
-        self.ok = button("書き出す…", primary=True)
+        self.ok = button("PDF出力…", primary=True)
         self.ok.clicked.connect(self.accept)
         buttons.addWidget(cancel)
         buttons.addWidget(self.ok)

@@ -1,0 +1,137 @@
+"""論文ライブラリのデータ型（Qt 非依存）。"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field, fields, replace
+from pathlib import Path
+from typing import ClassVar
+
+META_STATUSES = ("pending", "done", "failed", "local")  # local: オンライン照会をしない設定
+
+
+@dataclass(frozen=True)
+class Author:
+    family: str
+    given: str = ""
+
+    def display(self) -> str:
+        """'Vaswani, A.' の形（名は頭文字）。"""
+        initials = " ".join(f"{p[0]}." for p in self.given.replace(".", " ").split() if p)
+        return f"{self.family}, {initials}" if initials else self.family
+
+    def full(self) -> str:
+        return f"{self.given} {self.family}".strip()
+
+    def to_dict(self) -> dict:
+        return {"family": self.family, "given": self.given}
+
+    @classmethod
+    def from_dict(cls, raw: dict) -> Author:
+        return cls(str(raw.get("family", "")), str(raw.get("given", "")))
+
+
+@dataclass
+class Metadata:
+    title: str = ""
+    authors: list[Author] = field(default_factory=list)
+    year: int | None = None
+    venue: str = ""
+    volume: str = ""
+    issue: str = ""
+    pages: str = ""
+    doi: str = ""
+    arxiv_id: str = ""
+    abstract: str = ""
+    url: str = ""
+    source: str = ""  # embedded / heuristic / crossref / arxiv / manual
+
+    # 利用者が編集できる項目（source は記録用なので含めない）
+    FIELDS: ClassVar[tuple[str, ...]] = (
+        "title", "authors", "year", "venue", "volume", "issue", "pages", "doi", "arxiv_id", "abstract", "url",
+    )
+
+    def merged(self, other: Metadata) -> Metadata:
+        """self の空の項目を other の値で埋めた複製を返す。"""
+        values = {}
+        for f in fields(self):
+            mine = getattr(self, f.name)
+            values[f.name] = getattr(other, f.name) if _empty(mine) else mine
+        return replace(self, **values)
+
+    def is_empty(self) -> bool:
+        return all(_empty(getattr(self, name)) for name in self.FIELDS)
+
+
+def _empty(value) -> bool:
+    return value is None or value == "" or value == []
+
+
+@dataclass
+class Translation:
+    paper_id: int
+    model: str
+    formality: str
+    first_page: int
+    last_page: int | None
+    options: dict
+    segments: int
+    untranslated: int
+    chars: int
+    created_at: float
+
+    @property
+    def complete(self) -> bool:
+        """全ページを訳し、訳せなかった段落がないか。"""
+        return self.first_page == 0 and self.last_page is None and self.untranslated == 0
+
+
+@dataclass(frozen=True)
+class Collection:
+    id: int
+    name: str
+
+
+@dataclass
+class Paper:
+    id: int
+    sha256: str
+    file_name: str
+    source_path: str
+    page_count: int
+    added_at: float
+    updated_at: float
+    last_opened_at: float | None
+    favorite: bool
+    meta_status: str
+    metadata: Metadata
+    edited: frozenset[str]
+    collection_ids: frozenset[int]
+    translation: Translation | None
+    root: Path
+
+    @property
+    def folder(self) -> Path:
+        return self.root / "files" / str(self.id)
+
+    @property
+    def pdf_path(self) -> Path:
+        return self.folder / "original.pdf"
+
+    @property
+    def translated_path(self) -> Path:
+        return self.folder / "translated.pdf"
+
+    @property
+    def display_title(self) -> str:
+        return self.metadata.title or Path(self.file_name).stem
+
+    @property
+    def authors_short(self) -> str:
+        names = [a.family or a.given for a in self.metadata.authors]
+        if not names:
+            return ""
+        if len(names) == 1:
+            return names[0]
+        if len(names) == 2:
+            return f"{names[0]} & {names[1]}"
+        return f"{names[0]} et al."

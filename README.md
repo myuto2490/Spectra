@@ -21,10 +21,12 @@
 
 Spectra は、英語の論文 PDF を **PDF のまま** 日本語に翻訳するデスクトップアプリです。
 本文・見出し・キャプションだけを日本語に置き換え、図・表・数式・ページ構成は元の論文のまま残します。
+読んだ論文はライブラリに集まり、タイトル・著者・雑誌名などの書誌情報で整理して、いつでも原文と訳文を並べて読み返せます。
 翻訳には Google の Gemini API を使い、無料枠で利用できます。
 
 ## 特長
 
+- **論文ライブラリ** — PDF をドロップするだけで、タイトル・著者・年・雑誌名を PDF から読み取ってライブラリに登録します（PDF に DOI・arXiv ID があれば、Crossref / arXiv に照会して正確な書誌情報を取得します）。検索・並べ替え・お気に入り・コレクションで整理でき、翻訳した論文は開くだけで原文と訳文をすぐに読めます。BibTeX のコピーにも対応しています。
 - **レイアウトを崩さない** — ページ番号も図の位置もそのまま。図の中の文字、表、独立した数式、著者・所属、参考文献は自動で見分けて原文のまま残します。翻訳後には、図表や翻訳対象外の文字が変わっていないことを自動で検査します。
 - **数式は元の見た目のまま** — 段落の中の数式（変数、上付き・下付き、分数など）は翻訳から保護し、元の論文の字形のまま、訳文の自然な位置に配置します。
 - **読みやすい日本語の組版** — 日本語の字形の Noto Sans JP を同梱。禁則処理、和欧間の空き、両端揃え、字下げに対応し、段組みや段落の太字も原文どおりに再現します。明朝体（Noto Serif JP）も選べます。
@@ -59,23 +61,38 @@ Intel 搭載の Mac では、[ソースから実行](#開発)してください�
 ## 使い方
 
 1. **API キーを設定する** — 初回は ⚙（設定）→「翻訳エンジン」で Gemini API キーを貼り付け、「接続を確認」を押します（取得方法は[下記](#api-キーの取得)）。
-2. **PDF を開く** — ウィンドウに PDF をドラッグ＆ドロップするか、「PDF を選択」を押します。右側に、翻訳する段落数と文字数の見積もりが表示されます。
-3. **翻訳する** — 「翻訳」を押すと、原文と訳文が並んで表示されます。スクロールとズームは左右で連動します。
-4. **書き出す** — 「書き出す…」を押し、形式を選んで PDF を保存します。
+2. **論文を追加する** — ウィンドウに PDF（複数のファイルやフォルダも可）をドラッグ＆ドロップするか、「論文を追加」を押します。PDF はライブラリにコピーされ、書誌情報が自動で登録されます。1 本だけ追加したときは、そのまま読書画面で開きます。
+3. **翻訳する** — 読書画面で「翻訳」を押すと、原文と訳文が並んで表示されます。スクロールとズームは左右で連動します。ライブラリで複数の論文を選んで「翻訳キューに追加」すると、1 本ずつ順にバックグラウンドで翻訳します（翻訳中もほかの論文を読めます）。
+4. **読み返す・PDF出力** — 翻訳した論文はライブラリに保存され、ダブルクリックするとすぐに原文と訳文を読めます。「PDF出力」を押すと、形式を選んで PDF を保存できます。
 
 <p align="center">
-  <img src="docs/images/screenshot-export.png" width="560" alt="書き出す形式を 3 枚のカードから選ぶ画面">
+  <img src="docs/images/screenshot-export.png" width="560" alt="PDF出力の形式を 3 枚のカードから選ぶ画面">
 </p>
 
-右側のパネルでは、モデル、文体（である調 / です・ます調）、翻訳するページの範囲、キャプション・脚注・参考文献を訳すかどうかを変えられます。
+読書画面の右側のパネルでは、モデル、文体（である調 / です・ます調）、翻訳するページの範囲、キャプション・脚注・参考文献を訳すかどうかを変えられます。
+
+### ライブラリ
+
+- 左のサイドバーで「すべての論文 / 最近追加した論文 / お気に入り / 翻訳済み / 未翻訳」とコレクションを切り替えられます。論文の行をコレクションへドラッグすると、そのコレクションに加わります。
+- 上の検索欄で、タイトル・著者・雑誌名・年・DOI から絞り込めます。列の見出しを押すと並べ替えられます。
+- 右の詳細パネルで書誌情報と翻訳の状態を確認できます。「情報を編集…」で直した項目は、書誌情報を取得し直しても上書きされません。
+- 書誌情報は、PDF に書かれた DOI・arXiv ID から Crossref / arXiv に照会して自動で取得します。送るのは DOI・arXiv ID だけで、本文やファイルは送りません。取得しない場合は ⚙ →「詳細」でオフにできます（PDF から読み取れた情報だけで整理します）。
+- ライブラリから削除すると、ライブラリ内のコピーと訳文が削除されます。追加した元のファイルはそのまま残ります。
 
 ### キーボードショートカット
 
 | 操作 | macOS | Windows / Linux |
 | --- | --- | --- |
-| PDF を開く | ⌘O | Ctrl+O |
-| 翻訳を開始 | ⌘↩ | Ctrl+Enter |
-| PDF を書き出す | ⌘S | Ctrl+S |
+| 論文を追加 | ⌘O | Ctrl+O |
+| 選んだ論文を開く | ↩ | Enter |
+| ライブラリを検索 | ⌘F | Ctrl+F |
+| ライブラリに戻る | ⌘[ / ⌘W | Ctrl+[ / Ctrl+W |
+| お気に入りに追加 / 外す | ⌘D | Ctrl+D |
+| 書誌情報を編集 | ⌘I | Ctrl+I |
+| BibTeX をコピー | ⇧⌘C | Ctrl+Shift+C |
+| ライブラリから削除 | ⌘⌫ | Delete |
+| 翻訳を開始（ライブラリでは選んだ論文） | ⌘↩ | Ctrl+Enter |
+| PDF出力 | ⌘S | Ctrl+S |
 | 原文 / 対訳 / 翻訳 の表示 | ⌘1 / ⌘2 / ⌘3 | Ctrl+1 / 2 / 3 |
 | 拡大 / 縮小 / 幅に合わせる | ⌘+ / ⌘− / ⌘0 | Ctrl++ / Ctrl+− / Ctrl+0 |
 | 設定 | ⌘, | Ctrl+, |
@@ -128,7 +145,15 @@ Elsevier・A&A・AAS・AGU/Wiley・Springer・IEEE などの論文 20 本で、�
 <details>
 <summary>論文の内容はどこかに送信されますか？</summary>
 
-翻訳する本文が Google の Gemini API にのみ送信されます。Spectra 自体は利用状況などのデータを一切送信しません。無料枠での送信データの扱いは、上の「重要」の項目を確認してください。
+翻訳する本文が Google の Gemini API にのみ送信されます。無料枠での送信データの扱いは、上の「重要」の項目を確認してください。
+
+書誌情報を取得するため、PDF に書かれた DOI を [Crossref](https://www.crossref.org/)、arXiv ID を [arXiv](https://arxiv.org/) に送って書誌情報を受け取ります（タイトルや本文、ファイルは送りません。⚙ →「詳細」でオフにできます）。Spectra 自体は利用状況などのデータを一切送信しません。
+</details>
+
+<details>
+<summary>ライブラリの PDF はどこに保存されますか？</summary>
+
+追加した PDF はライブラリのフォルダにコピーされ、訳文と一緒に保存されます（⚙ →「詳細」→「フォルダ」の「ライブラリ」から開けます）。元のファイルを移動・削除しても、ライブラリの論文はそのまま読めます。
 </details>
 
 <details>
@@ -154,6 +179,8 @@ spectra key set gemini                      # API キーを保存（入力は表
 spectra estimate paper.pdf                  # 翻訳する文字数の見積もり（API は使いません）
 spectra translate paper.pdf                 # paper_ja.pdf を作成
 spectra translate paper.pdf --mode side-by-side --pages 1-8 --model gemini-3.6-flash
+spectra library add papers/*.pdf  # ライブラリに追加（DOI / arXiv ID で書誌情報を照会。--no-lookup で照会しない）
+spectra library list                        # ライブラリの論文の一覧
 spectra --help
 ```
 
@@ -190,5 +217,5 @@ Google および Gemini は Google LLC の商標です。Spectra は Google と�
 <details>
 <summary>English</summary>
 
-**Spectra** is a free, open-source desktop app (Windows, macOS, Linux) that translates academic PDFs from English into Japanese **while keeping the original layout intact**. Only the running text, headings, captions and footnotes are replaced; figures, tables, display equations, author information and references stay untouched. Inline math is kept with its original glyphs and placed naturally inside the Japanese text, which is typeset with proper Japanese line breaking in the bundled Noto Sans JP font. Translation uses the Google Gemini API free tier; translations are cached to save quota, and every result is checked automatically to make sure figures and untranslated text have not changed. Export as translation only, side-by-side, or interleaved. Licensed under AGPL-3.0.
+**Spectra** is a free, open-source desktop app (Windows, macOS, Linux) that translates academic PDFs from English into Japanese **while keeping the original layout intact**. Only the running text, headings, captions and footnotes are replaced; figures, tables, display equations, author information and references stay untouched. Inline math is kept with its original glyphs and placed naturally inside the Japanese text, which is typeset with proper Japanese line breaking in the bundled Noto Sans JP font. Translation uses the Google Gemini API free tier; translations are cached to save quota, and every result is checked automatically to make sure figures and untranslated text have not changed. Export as translation only, side-by-side, or interleaved. Papers are collected in a reference-manager style library: bibliographic details are read from the PDF and looked up on Crossref / arXiv by DOI or arXiv ID only (this can be turned off in the settings), and can be searched, sorted, starred, grouped into collections and copied as BibTeX; translated papers reopen instantly with the original and translation side by side, and several papers can be queued for background translation. Licensed under AGPL-3.0.
 </details>

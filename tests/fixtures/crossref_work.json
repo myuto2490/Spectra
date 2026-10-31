@@ -1,0 +1,22 @@
+{
+  "status": "ok",
+  "message-type": "work",
+  "message": {
+    "DOI": "10.1234/SPECTRA.2024.001",
+    "URL": "https://doi.org/10.1234/spectra.2024.001",
+    "type": "journal-article",
+    "title": ["Learning Robust Representations\n  for Testing"],
+    "author": [
+      {"given": "Alice", "family": "Example", "sequence": "first"},
+      {"given": "Bob", "family": "Sample", "sequence": "additional"},
+      {"name": "The Spectra Consortium", "sequence": "additional"}
+    ],
+    "container-title": ["Journal of Synthetic Papers"],
+    "volume": "12",
+    "issue": "3",
+    "page": "101-115",
+    "published-print": {"date-parts": [[2024, 3]]},
+    "issued": {"date-parts": [[2023, 12, 1]]},
+    "abstract": "<jats:title>Abstract</jats:title><jats:p>We study <jats:italic>robust</jats:italic> representations &amp; their limits.</jats:p>"
+  }
+}

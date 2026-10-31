@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title type="html">ArXiv Query: id_list=9912.99999</title>
+  <entry>
+    <id>http://arxiv.org/api/errors#incorrect_id_format_for_9912.99999</id>
+    <title>Error</title>
+    <summary>incorrect id format for 9912.99999</summary>
+  </entry>
+</feed>

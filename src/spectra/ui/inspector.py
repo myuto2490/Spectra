@@ -1,6 +1,6 @@
 """インスペクタ：翻訳の設定（モデル・文体・ページ）と翻訳対象、翻訳前の見積もり。
 
-出力形式は翻訳後の「書き出す」で選ぶ（翻訳し直さずに形式だけを変えられるため）。
+出力形式は翻訳後の「PDF出力」で選ぶ（翻訳し直さずに形式だけを変えられるため）。
 """
 
 from __future__ import annotations
@@ -143,6 +143,15 @@ class Inspector(QScrollArea):
             sb.setRange(1, max(1, n))
         self.page_from.setValue(1)
         self.page_to.setValue(max(1, n))
+        for sb in (self.page_from, self.page_to):
+            sb.blockSignals(False)
+
+    def set_page_range(self, first: int, last: int | None) -> None:
+        """0 始まりのページ範囲を表示する（last が None なら最終ページまで）。"""
+        for sb in (self.page_from, self.page_to):
+            sb.blockSignals(True)
+        self.page_from.setValue(first + 1)
+        self.page_to.setValue(last + 1 if last is not None else self._page_count)
         for sb in (self.page_from, self.page_to):
             sb.blockSignals(False)
 

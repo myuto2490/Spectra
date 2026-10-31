@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QRectF, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QAbstractButton,
     QButtonGroup,
@@ -65,23 +65,20 @@ class FormatCard(QAbstractButton):
         r = QRectF(self.rect()).adjusted(1.5, 1.5, -1.5, -1.5)
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(QColor(t.surface))
-        p.drawRoundedRect(r, 14, 14)
+        p.drawRoundedRect(r, theme.RADIUS_CARD, theme.RADIUS_CARD)
         if self.isChecked():
-            grad = QLinearGradient(r.topLeft(), r.bottomRight())
-            grad.setColorAt(0, QColor(theme.BRAND_START))
-            grad.setColorAt(1, QColor(theme.BRAND_END))
-            p.setPen(QPen(grad, 2.5))
+            p.setPen(QPen(QColor(t.accent), 2))
         else:
             p.setPen(QPen(QColor(t.border if self._hover else t.separator), 1.2))
         p.setBrush(Qt.BrushStyle.NoBrush)
-        p.drawRoundedRect(r, 14, 14)
+        p.drawRoundedRect(r, theme.RADIUS_CARD, theme.RADIUS_CARD)
 
         # 図：ページの並び
         art = QRectF(r.left() + 16, r.top() + 18, r.width() - 32, 104)
         bg = QColor(t.fill)
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(bg)
-        p.drawRoundedRect(art, 10, 10)
+        p.drawRoundedRect(art, theme.RADIUS_CONTROL, theme.RADIUS_CONTROL)
         self._draw_pages(p, art, t)
 
         p.setPen(QColor(t.label))
@@ -102,12 +99,12 @@ class FormatCard(QAbstractButton):
         if self.hasFocus():
             p.setPen(QPen(QColor(t.focus), 2))
             p.setBrush(Qt.BrushStyle.NoBrush)
-            p.drawRoundedRect(r.adjusted(-1, -1, 1, 1), 15, 15)
+            p.drawRoundedRect(r.adjusted(-1, -1, 1, 1), theme.RADIUS_CARD + 1, theme.RADIUS_CARD + 1)
         p.end()
 
     def _draw_pages(self, p: QPainter, art: QRectF, t) -> None:
         en = QColor(t.tertiary)
-        ja = QColor(theme.BRAND_END)
+        ja = QColor(t.accent)
 
         def page(x: float, y: float, w: float, h: float, color: QColor) -> None:
             path = QPainterPath()

@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QInputDialog,
+    QLabel,
     QListWidget,
     QListWidgetItem,
     QMenu,
@@ -34,7 +35,7 @@ from .library_model import (
     PaperTableModel,
 )
 from .paper_detail import PaperDetail
-from .widgets import label, link_button
+from .widgets import button, label, link_button, set_prop
 
 ScopeRole = Qt.ItemDataRole.UserRole + 10
 CollectionRole = Qt.ItemDataRole.UserRole + 11
@@ -169,6 +170,8 @@ class LibraryView(QWidget):
     openRequested = Signal(int)
     selectionChanged = Signal()
     searchReset = Signal()  # 検索欄を空にしてほしい
+    addRequested = Signal()  # 論文を追加するダイアログを開いてほしい
+    settingsRequested = Signal()  # 設定（API キー）を開いてほしい
 
     def __init__(self, library: Library, parent: QWidget | None = None):
         super().__init__(parent)
@@ -259,16 +262,68 @@ class LibraryView(QWidget):
         nl.addLayout(row)
         nl.addStretch(2)
 
+        # ライブラリに論文が 1 本もないとき（初めて起動したときなど）
+        self.empty = QWidget()
+        el = QVBoxLayout(self.empty)
+        el.setSpacing(8)
+        el.addStretch(1)
+        self.empty_icon = QLabel()
+        self.empty_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        el.addWidget(self.empty_icon)
+        el.addSpacing(4)
+        empty_title = label("ライブラリに論文がありません", "title")
+        empty_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        el.addWidget(empty_title)
+        empty_hint = label(
+            "論文の PDF をこのウィンドウにドロップするか、「論文を追加」から選んでください。\n"
+            "複数のファイルやフォルダもまとめて追加できます。",
+            "secondary",
+        )
+        empty_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        el.addWidget(empty_hint)
+        el.addSpacing(8)
+        add_row = QHBoxLayout()
+        add_row.addStretch(1)
+        self.empty_add_btn = button("論文を追加…")
+        self.empty_add_btn.clicked.connect(self.addRequested)
+        add_row.addWidget(self.empty_add_btn)
+        add_row.addStretch(1)
+        el.addLayout(add_row)
+        el.addSpacing(8)
+        notice_row = QHBoxLayout()
+        notice_row.addStretch(1)
+        self.engine_notice = label("", "caption", tone="warning")
+        self.engine_settings_btn = link_button("API キーを設定…")
+        self.engine_settings_btn.clicked.connect(self.settingsRequested)
+        notice_row.addWidget(self.engine_notice)
+        notice_row.addWidget(self.engine_settings_btn)
+        notice_row.addStretch(1)
+        el.addLayout(notice_row)
+        el.addStretch(2)
+        self.set_engine_notice("")
+
         self.center = QStackedWidget()
+        self.center.setObjectName("LibraryCenter")
         self.center.addWidget(self.table)
         self.center.addWidget(self.no_match)
+        self.center.addWidget(self.empty)
         lay.addWidget(self.center, 1)
 
         self.detail = PaperDetail()
         lay.addWidget(self.detail)
 
-        for sig in (self.proxy.rowsInserted, self.proxy.rowsRemoved, self.proxy.modelReset, self.proxy.layoutChanged):
+        for sig in (
+            self.proxy.rowsInserted,
+            self.proxy.rowsRemoved,
+            self.proxy.modelReset,
+            self.proxy.layoutChanged,
+            self.model.rowsInserted,
+            self.model.rowsRemoved,
+            self.model.modelReset,
+        ):
             sig.connect(self._update_empty)
+        self.refresh_theme()
+        self._update_empty()
 
     # -- データ ------------------------------------------------------------
 
@@ -356,6 +411,9 @@ class LibraryView(QWidget):
         self._update_empty()
 
     def _update_empty(self, *_args) -> None:
+        if self.model.rowCount() == 0:
+            self.center.setCurrentWidget(self.empty)
+            return
         empty = self.proxy.rowCount() == 0
         if empty:
             if self.proxy.has_search():
@@ -425,5 +483,16 @@ class LibraryView(QWidget):
         menu.addAction("新しいコレクション…", self.create_collection)
         return menu
 
+    def set_engine_notice(self, text: str) -> None:
+        """空の状態に出す API キーの案内（空文字なら隠す）。"""
+        self.engine_notice.setText(text)
+        self.engine_notice.setVisible(bool(text))
+        self.engine_settings_btn.setVisible(bool(text))
+
+    def set_drag_active(self, active: bool) -> None:
+        """PDF をウィンドウの上にドラッグしている間、一覧を枠で強調する。"""
+        set_prop(self.center, "dragActive", active)
+
     def refresh_theme(self) -> None:
         self.sidebar.refresh_theme()
+        self.empty_icon.setPixmap(icons.pixmap("books", theme.current().tertiary, 44))

@@ -2,6 +2,7 @@
 
 import os
 import time
+from pathlib import Path
 
 import pytest
 
@@ -529,3 +530,14 @@ def test_opening_settings_does_not_read_the_saved_key(window, monkeypatch):
     field.reveal.setChecked(True)  # 表示したときに初めて読む
     assert reads == ["gemini"] and field.edit.text() == "AIzaSaved"
     d.close()
+
+
+def test_error_dialogs_hide_the_home_folder(window, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+
+    app, w = window
+    shown = []
+    monkeypatch.setattr(QMessageBox, "exec", lambda self: shown.append((self.text(), self.informativeText())) or 0)
+    home = str(Path.home())
+    w._alert("ファイルを読み込めませんでした", f"[Errno 2] No such file: '{home}/Documents/paper.pdf'")
+    assert shown and home not in shown[-1][1] and "~/Documents/paper.pdf" in shown[-1][1]

@@ -59,6 +59,7 @@ from .library_model import TRASH_DAYS
 from .library_view import LibraryView
 from .paper_detail import MetadataDialog
 from .pdf_view import PreviewPair
+from .privacy import display_path
 from .settings_dialog import SettingsDialog
 from .sync_controller import ERROR, SYNCING, UNAVAILABLE, SyncController
 from .widgets import (
@@ -1547,10 +1548,11 @@ class MainWindow(QMainWindow):
             cb()
 
     def _alert(self, title: str, body: str = "") -> None:
+        # エラー文に含まれるパスも、ホームは「~」に（スクリーンショットや問い合わせにユーザー名が写らないように）
         box = QMessageBox(self)
         box.setIcon(QMessageBox.Icon.Warning)
-        box.setText(title)
-        box.setInformativeText(body)
+        box.setText(display_path(title))
+        box.setInformativeText(display_path(body))
         plain_box(box).exec()
 
     def _zoom_by(self, factor: float) -> None:

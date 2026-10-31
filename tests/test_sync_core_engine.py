@@ -177,6 +177,12 @@ def test_complete_translation_beats_newer_partial(devs, pdf):
     got = b.lib.find_by_sha(p.sha256)
     assert not got.has_translation_file  # 手元の訳文は別物になったので、開くときに取得する
     assert b.engine.fetch(got.id, "translation").read_bytes() == b"%PDF-complete"
+    # 負けた B は、自分の訳文のファイルを同期フォルダから消す
+    folder = a.storage.root / "papers" / p.sha256
+    assert not (folder / f"translated.{B}.pdf").exists() and not (folder / f"translation.{B}.json").exists()
+    assert (folder / f"translated.{A}.pdf").exists()
+    roundtrip(a, b)  # その後も A の訳文のまま
+    assert a.lib.find_by_sha(p.sha256).translation.complete and b.lib.find_by_sha(p.sha256).translation.complete
 
 
 def test_evict_keeps_only_copy(devs, pdf):
@@ -290,3 +296,56 @@ def test_no_backup_for_empty_library(devs):
     a = devs("A", A)
     a.sync()
     assert a.engine.backup_path is None
+
+
+
+def _remote_copy(devs, pdf):
+    a, b = devs("A", A), devs("B", B)
+    p, _ = a.lib.add(pdf())
+    roundtrip(a, b)
+    return a, b, b.lib.find_by_sha(p.sha256)
+
+
+def test_fetch_cancel_during_copy(devs, pdf, monkeypatch):
+    import threading
+
+    from spectra.translate.errors import CancelledError
+
+    a, b, pb = _remote_copy(devs, pdf)
+    monkeypatch.setattr("spectra.library.sync.storage.CHUNK", 100)
+    cancel = threading.Event()
+    with pytest.raises(CancelledError):
+        b.engine.fetch(pb.id, "original", progress=lambda done, total: cancel.set(), cancel=cancel)
+    assert not pb.pdf_path.parent.exists() or not list(pb.pdf_path.parent.glob("*.tmp"))
+    assert not b.lib.get(pb.id).has_original
+
+
+def test_fetch_progress_and_file_notice(devs, pdf, monkeypatch):
+    a, b, pb = _remote_copy(devs, pdf)
+    monkeypatch.setattr("spectra.library.sync.storage.CHUNK", 1000)
+    seen = []
+    b.changes.clear()
+    b.engine.fetch(pb.id, "original", progress=lambda done, total: seen.append((done, total)))
+    size = pb.pdf_path.stat().st_size
+    assert len(seen) > 1 and all(t == size for _, t in seen)
+    assert [d for d, _ in seen] == sorted(d for d, _ in seen) and seen[-1][0] == size
+    assert [(c.kind, c.paper_id, c.sha256) for c in b.changes] == [("file", pb.id, pb.sha256)]
+    b.changes.clear()
+    b.engine.evict(pb.id)
+    assert [(c.kind, c.paper_id, c.sha256) for c in b.changes] == [("file", pb.id, pb.sha256)]
+
+
+def test_sync_cancel_then_resume(devs, pdf):
+    import threading
+
+    from spectra.translate.errors import CancelledError
+
+    a, b = devs("A", A), devs("B", B)
+    p, _ = a.lib.add(pdf())
+    cancel = threading.Event()
+    cancel.set()
+    with pytest.raises(CancelledError):
+        a.engine.sync_now(cancel)
+    assert not (a.storage.root / "papers").exists()  # 中途半端な書き出しは残らない
+    roundtrip(a, b)
+    assert b.lib.find_by_sha(p.sha256) is not None

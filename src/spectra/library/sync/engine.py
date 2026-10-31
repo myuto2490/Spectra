@@ -733,6 +733,11 @@ class SyncEngine:
                     with self.library.quiet():
                         self.library.sync_set_translation(paper.id, info)
                     base = translation_info(info)
+                    if own.get("alive"):
+                        # 自分の訳文は負けた: 各端末は自分のファイルだけを消す（手元の訳文は上で別物に置き換わった）
+                        self.storage.delete(F.translation_pdf_path(sha, self.device.id))
+                        self.storage.delete(F.translation_json_path(sha, self.device.id))
+                        own = {}
             with self.state.tx() as db:
                 db.execute(
                     "INSERT OR REPLACE INTO translations (sha, baseline, own, applied, exported) VALUES (?, ?, ?, ?, ?)",

@@ -349,3 +349,50 @@ def test_sync_cancel_then_resume(devs, pdf):
     assert not (a.storage.root / "papers").exists()  # 中途半端な書き出しは残らない
     roundtrip(a, b)
     assert b.lib.find_by_sha(p.sha256) is not None
+
+
+def _enospc_on_write(monkeypatch):
+    import builtins
+    import errno
+
+    real_open = builtins.open
+
+    def fake_open(file, mode="r", *args, **kw):
+        if "w" in mode:
+            raise OSError(errno.ENOSPC, "No space left on device")
+        return real_open(file, mode, *args, **kw)
+
+    monkeypatch.setattr("spectra.library.sync.storage.open", fake_open, raising=False)
+
+
+def test_fetch_reports_local_disk_full(devs, pdf, monkeypatch):
+    from spectra.library.sync import LocalDiskFull
+
+    a, b, pb = _remote_copy(devs, pdf)
+    _enospc_on_write(monkeypatch)
+    with pytest.raises(LocalDiskFull) as info:
+        b.engine.fetch(pb.id, "original")
+    assert info.value.title and info.value.hint
+    assert not b.lib.get(pb.id).has_original
+
+
+def test_export_counts_disk_full_and_retries(devs, pdf, monkeypatch):
+    a, b = devs("A", A), devs("B", B)
+    p, _ = a.lib.add(pdf())
+    with monkeypatch.context() as m:
+        _enospc_on_write(m)
+        report = a.sync()
+    assert report.disk_full >= 1  # 論文の書き出し（と、形式の印・端末の情報）
+    roundtrip(a, b)  # 空き容量が戻れば、次の同期で書き出す
+    assert b.lib.find_by_sha(p.sha256) is not None
+
+
+def test_devices_summary(devs, pdf):
+    a, b = devs("A", A), devs("B", B)
+    a.lib.add(pdf())
+    roundtrip(a, b)
+    assert a.engine.devices()[0].is_self and a.engine.devices()[0].name == "A"
+    others = [d for d in b.engine.devices() if not d.is_self]
+    assert [(d.id, d.name) for d in others] == [(A, "A")]
+    assert others[0].last_seen and abs(others[0].last_seen - time.time()) < 60
+    assert others[0].app

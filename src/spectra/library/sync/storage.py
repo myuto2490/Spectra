@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import logging
 import os
@@ -18,7 +19,7 @@ from pathlib import Path, PurePosixPath
 from typing import Protocol
 
 from ...translate.errors import CancelledError
-from ..errors import RemoteMissing, SyncUnavailable
+from ..errors import LocalDiskFull, RemoteMissing, SyncError, SyncUnavailable
 
 log = logging.getLogger(__name__)
 
@@ -55,6 +56,13 @@ class SyncStorage(Protocol):
     def delete(self, path: str) -> None: ...
 
     def request_download(self, path: str) -> bool: ...
+
+
+def os_error(e: OSError) -> SyncError:
+    """OSError を同期の例外に変える。空き容量の不足だけは、利用者が対処できるよう区別する。"""
+    if e.errno in (errno.ENOSPC, getattr(errno, "EDQUOT", errno.ENOSPC)):
+        return LocalDiskFull()
+    return SyncUnavailable(str(e))
 
 
 def check_relative(path: str) -> str:
@@ -163,7 +171,7 @@ class FolderStorage:
             raise RemoteMissing(path) from e
         except OSError as e:
             dest.unlink(missing_ok=True)
-            raise SyncUnavailable(str(e)) from e
+            raise os_error(e) from e
         except BaseException:
             dest.unlink(missing_ok=True)
             raise
@@ -177,11 +185,12 @@ class FolderStorage:
         full.parent.mkdir(parents=True, exist_ok=True)
         tmp = full.with_name(f".{full.name}{TMP_SUFFIX}")
         try:
-            tmp.write_bytes(data)
+            with open(tmp, "wb") as fh:
+                fh.write(data)
             os.replace(tmp, full)
         except OSError as e:
             tmp.unlink(missing_ok=True)
-            raise SyncUnavailable(str(e)) from e
+            raise os_error(e) from e
 
     def put_file(self, path: str, src: Path) -> None:
         self._require_root()
@@ -195,7 +204,7 @@ class FolderStorage:
             os.replace(tmp, full)
         except OSError as e:
             tmp.unlink(missing_ok=True)
-            raise SyncUnavailable(str(e)) from e
+            raise os_error(e) from e
 
     def delete(self, path: str) -> None:
         self._require_root()

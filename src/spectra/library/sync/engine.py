@@ -182,6 +182,7 @@ class SyncEngine:
             if "format.json" not in names:
                 self.storage.write_atomic("format.json", F.encode({"format": FORMAT}))
             self._check_cancel(cancel)
+            self.backup_before_first_sync()
             self._first_join(remote)
             self._scan_local()
             self._check_cancel(cancel)
@@ -307,6 +308,33 @@ class SyncEngine:
         self.state.set_meta("device", dumps(body))
 
     # -- 初回の接続 ----------------------------------------------------------------
+
+    def backup_before_first_sync(self) -> Path | None:
+        """初めて同期する前に一度だけ、手元のライブラリの DB をバックアップしてその場所を返す（sync_now も最初に呼ぶ）。
+
+        場所は library_dir() の隣の library-backups/<日時>/。PDF はコピーしない。2 回目以降と、空のライブラリでは None。
+        戻すときは、Library を閉じてから spectra.library.store.restore_backup(path) を呼ぶ。
+        """
+        if self.state.get_meta("backup") or self.state.get_meta("joined"):
+            return None
+        if not self.library.papers() and not self.library.trashed_papers() and not self.library.collections():
+            self.state.set_meta("backup", "-")
+            return None
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        folder = self.library.root.parent / "library-backups" / stamp
+        n = 1
+        while folder.exists():
+            n += 1
+            folder = folder.with_name(f"{stamp}-{n}")
+        self.library.backup_to(folder)
+        self.state.set_meta("backup", str(folder))
+        return folder
+
+    @property
+    def backup_path(self) -> Path | None:
+        """初回の同期の前に作ったバックアップ（なければ None）。"""
+        value = self.state.get_meta("backup")
+        return Path(value) if value and value != "-" else None
 
     def _first_join(self, remote: dict) -> None:
         """初回だけ、同じ名前のコレクションを 1 つにまとめる（uid のない手元のコレクションを、同期先の uid に対応づける）。"""

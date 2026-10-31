@@ -219,6 +219,16 @@ QLabel a {{ color: {t.accent}; }}
 #Sidebar::item:disabled {{ color: {t.secondary}; padding-top: 10px; }}
 #Sidebar::item:hover {{ background: {t.fill}; }}
 #Sidebar::item:selected {{ background: {t.selection}; color: {t.label}; }}
+/* 同期の状態の行（サイドバーの一番下）とポップオーバー（docs/SYNC.md §7.3） */
+#SyncStatus {{
+    background: transparent; border: none; border-radius: {RADIUS_CONTROL}px; padding: 6px 8px;
+    text-align: left; color: {t.secondary}; font-size: {ty['caption']}px;
+}}
+#SyncStatus:hover {{ background: {t.fill}; }}
+#SyncStatus:pressed {{ background: {t.control_pressed}; }}
+#SyncStatus:focus {{ border: 2px solid {t.focus}; padding: 4px 6px; }}
+#SyncStatus[tone="warning"] {{ color: {t.warning}; }}
+#SyncPopover {{ background: {t.surface}; border: 1px solid {t.separator}; border-radius: {RADIUS_CARD}px; }}
 #PaperTable {{
     background: {t.surface}; alternate-background-color: {t.surface_alt}; border: none;
     selection-background-color: {t.selection}; selection-color: {t.label}; outline: 0;

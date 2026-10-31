@@ -186,6 +186,11 @@ Spectra Sync/
     （`removed` のときの `paper_id` は削除する前の id、`fields` は `metadata` のとき）
 - リスナーの約束（両方に共通）: ① コミットしてロックを離した後に呼ぶ ② 例外は `log.exception` に書いて握りつぶす ③ リスナーは合図だけを受け取り、重い処理はしない ④ 呼ばれるスレッドは決まっていない（UI は Qt のシグナルに乗せ換える）。
 - 新しい例外 `PaperNotFound(LibraryError)`: 論文が見つからないときに送出する。翻訳のワーカーの中では `CancelledError` と同じに扱う（他の端末から削除された場合にエラーのダイアログを出さない）。
+- `SyncEngine.fetch(paper_id, kind: "original" | "translation", progress=None, cancel=None) -> Path` — 1 件を取得する、処理が終わるまで戻らない関数（ワーカーから呼ぶ）。
+  手元にあればすぐに返す。手順は `.tmp` にコピー → sha256 で検証 → rename → `"file"` の `RemoteChange` を出す。
+  - 例外: `SyncError(SpectraError)` の子として `SyncUnavailable`・`RemoteMissing`・`HashMismatch`（それぞれ日本語の title と hint を持つ）。論文が無いときは `PaperNotFound`、キャンセルは `CancelledError`。
+  - 取得の待ち行列と進捗の表示は UI 側に持つ（翻訳キューと同じ作り）。
+- `Paper.has_original` / `Paper.has_translation_file`（bool）: 読み込むときに、手元のファイルがあるかで 1 回だけ決める。同期が無効のときは常に True。一覧の ☁ の表示に使う。
 
 ### 5.6 初回の同期と既存ライブラリの統合
 

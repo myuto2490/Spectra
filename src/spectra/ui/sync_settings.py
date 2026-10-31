@@ -58,7 +58,7 @@ def candidate_folders(home: Path | None = None) -> list[tuple[str, Path]]:
     except OSError:
         entries = []
     # Google Drive のフォルダ名にはアカウントのメールアドレスが入っている。表示は「Google Drive」だけにし、
-    # アカウントが 2 つ以上あるときだけ、区別できる最小限（my•••@gmail.com）を添える。アドレスはどこにも保存しない
+    # アカウントが 2 つ以上あるときだけ、区別できる最小限（my•••@example.com）を添える。アドレスはどこにも保存しない
     accounts = [e.name.removeprefix("GoogleDrive-") for e in entries if e.name.startswith("GoogleDrive-")]
     for entry in entries:
         n = entry.name

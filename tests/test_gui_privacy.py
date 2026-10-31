@@ -28,10 +28,10 @@ def test_home_is_replaced_with_tilde():
 
 
 def test_redact_hides_google_drive_account_and_emails():
-    path = "/Users/alice/Library/CloudStorage/GoogleDrive-alice.k@gmail.com/マイドライブ/Spectra Sync"
+    path = "/Users/alice/Library/CloudStorage/GoogleDrive-alice.k@example.com/マイドライブ/Spectra Sync"
     assert display_path(path, "/Users/alice") == "~/Library/CloudStorage/GoogleDrive-…/マイドライブ/Spectra Sync"
     text = redact(f"failed: {path} (contact bob@example.org)", "/Users/alice")
-    assert "alice" not in text and "@gmail.com" not in text and "bob@" not in text
+    assert "alice" not in text and "@example.com" not in text and "bob@" not in text
     assert "GoogleDrive-…" in text and "…@…" in text
 
 
@@ -39,7 +39,7 @@ def test_log_formatter_redacts_messages_and_tracebacks(monkeypatch, tmp_path):
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: Path("/Users/alice")))
     fmt = RedactingFormatter("%(levelname)s %(message)s")
     try:
-        raise OSError("cannot open /Users/alice/Library/CloudStorage/GoogleDrive-alice@gmail.com/x.pdf")
+        raise OSError("cannot open /Users/alice/Library/CloudStorage/GoogleDrive-alice@example.com/x.pdf")
     except OSError:
         import sys
 
@@ -107,7 +107,7 @@ def test_settings_folders_show_tilde_and_sync_tooltips_hide_account(app, monkeyp
     from spectra.ui.widgets import FormGroup
 
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: paths.config_dir().parent))
-    gd = tmp_path / "Library" / "CloudStorage" / "GoogleDrive-alice@gmail.com" / "マイドライブ"
+    gd = tmp_path / "Library" / "CloudStorage" / "GoogleDrive-alice@example.com" / "マイドライブ"
     gd.mkdir(parents=True)
     settings = Settings(sync_enabled=False, sync_folder=str(gd))
     d = SettingsDialog(settings, SecretStore(use_keyring=False), None)

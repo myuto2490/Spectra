@@ -54,7 +54,7 @@ class RedactingFormatter(logging.Formatter):
 
 
 def mask_email(email: str, others: list[str] | tuple[str, ...] = ()) -> str:
-    """メールアドレスを「my•••@gmail.com」の形にする。others と区別できるまで、先頭の文字を増やす。
+    """メールアドレスを「my•••@example.com」の形にする。others と区別できるまで、先頭の文字を増やす。
 
     完全なアドレスは返さない（区別できなくなるほど似ている場合も、最後の 1 文字は伏せる）。
     """

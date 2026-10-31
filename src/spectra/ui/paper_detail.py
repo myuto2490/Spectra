@@ -130,7 +130,7 @@ class PaperDetail(QScrollArea):
         self.enter_doi.clicked.connect(lambda: self.editRequested.emit(self._paper.id))
         self.retry = link_button("再試行")
         self.retry.clicked.connect(lambda: self.retryLookupRequested.emit(self._paper.id))
-        self.enable_lookup = link_button("照会を有効にする…")
+        self.enable_lookup = link_button("照会を有効にする")
         self.enable_lookup.clicked.connect(self.enableLookupRequested)
         for b in (self.enter_doi, self.retry, self.enable_lookup):
             nlinks.addWidget(b)

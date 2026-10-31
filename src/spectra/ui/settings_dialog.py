@@ -488,7 +488,6 @@ class SettingsDialog(QDialog):
 
     def _on_lookup_toggle(self, on: bool) -> None:
         self.settings.metadata_lookup = on
-        self.settings.metadata_lookup_asked = True
         self.settings.save()
         self.lookupChanged.emit(on)
 

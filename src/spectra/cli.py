@@ -267,7 +267,7 @@ def _library_add(library, args) -> int:
     from .library import LookupFailed
     from .library.lookup import lookup
 
-    use_lookup = args.lookup if args.lookup is not None else getattr(Settings.load(), "metadata_lookup", False)
+    use_lookup = args.lookup if args.lookup is not None else Settings.load().metadata_lookup
     client = httpx.Client(follow_redirects=True) if use_lookup else None
     failed = 0
     try:

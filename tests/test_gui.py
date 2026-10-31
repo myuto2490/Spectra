@@ -19,8 +19,8 @@ def window(tmp_path, monkeypatch):
     from spectra.ui.main_window import MainWindow
 
     app = create_app([])
-    # 書誌情報の照会は尋ね済み（オフ）にして、確認のダイアログで止まらないようにする
-    settings = Settings(engine="dummy", metadata_lookup_asked=True)
+    # テストでは書誌情報を照会しない（Crossref / arXiv に通信しない）
+    settings = Settings(engine="dummy", metadata_lookup=False)
     w = MainWindow(settings=settings, secrets=SecretStore(use_keyring=False))
     w.show()
     yield app, w
@@ -230,18 +230,6 @@ def test_translation_queue_runs_papers_in_order(window, tmp_path):
     assert w.banner.isVisible()  # 完了の知らせ（読書画面を開いていないとき）
 
 
-def test_lookup_consent_is_asked_once(window, paper_path, monkeypatch):
-    app, w = window
-    w.settings.metadata_lookup_asked = False
-    asked = []
-    monkeypatch.setattr(w, "_ask_lookup", lambda: asked.append(1) or False)
-    assert w.open_file(paper_path)
-    w.show_library()
-    assert w.open_file(paper_path)
-    assert asked == [1]
-    assert w.settings.metadata_lookup is False and w.settings.metadata_lookup_asked
-
-
 def test_edit_metadata_marks_fields_as_edited(window, paper_path):
     app, w = window
     from spectra.ui.paper_detail import MetadataDialog, parse_authors
@@ -361,3 +349,29 @@ def test_cancel_running_translation_updates_at_once(window, tmp_path):
     assert w.status.text() == "キャンセルしています…"
     pump(app, 10, until=lambda: not w._busy())
     assert "キャンセルしました" in w.status.text()
+
+
+def test_adding_paper_looks_up_without_asking(window, paper_path, monkeypatch):
+    """照会がオン（既定）なら、確認のダイアログを出さずに追加した論文を照会する。"""
+    app, w = window
+    w.settings.metadata_lookup = True
+    looked_up = []
+    monkeypatch.setattr("spectra.ui.jobs.lookup_paper", lambda library, pid, client=None: looked_up.append(pid) or False)
+    monkeypatch.setattr("spectra.ui.main_window.QMessageBox.exec", lambda self: pytest.fail("確認のダイアログが出た"))
+    assert w.open_file(paper_path)
+    pump(app, 5, until=lambda: looked_up and not w.lookups.is_active())
+    assert looked_up == [w.paper.id]
+
+
+def test_enable_lookup_from_detail_without_asking(window, paper_path, monkeypatch):
+    """照会がオフのとき、詳細パネルの「照会を有効にする」は確認なしでオンにして照会する。"""
+    app, w = window
+    looked_up = []
+    monkeypatch.setattr("spectra.ui.jobs.lookup_paper", lambda library, pid, client=None: looked_up.append(pid) or False)
+    monkeypatch.setattr("spectra.ui.main_window.QMessageBox.exec", lambda self: pytest.fail("確認のダイアログが出た"))
+    paper = w.add_files([paper_path], open_single=False)[0]
+    assert w.library.get(paper.id).meta_status == "local"
+    w.library_view.detail.enableLookupRequested.emit()
+    assert w.settings.metadata_lookup is True
+    pump(app, 5, until=lambda: looked_up and not w.lookups.is_active())
+    assert looked_up == [paper.id]

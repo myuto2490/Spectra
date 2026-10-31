@@ -527,7 +527,6 @@ class MainWindow(QMainWindow):
         if not pdfs:
             self._alert("PDF が見つかりませんでした", "PDF ファイル、または PDF の入ったフォルダを選んでください。")
             return []
-        self._ensure_lookup_consent()
         added: list[Paper] = []
         existing: list[Paper] = []
         errors: list[str] = []
@@ -604,37 +603,13 @@ class MainWindow(QMainWindow):
 
     # -- 書誌情報の照会 ------------------------------------------------------
 
-    def _ensure_lookup_consent(self) -> None:
-        if self.settings.metadata_lookup_asked:
-            return
-        self.settings.metadata_lookup = self._ask_lookup()
-        self.settings.metadata_lookup_asked = True
-        self.settings.save()
-
-    def _ask_lookup(self) -> bool:
-        box = QMessageBox(self)
-        box.setIcon(QMessageBox.Icon.Question)
-        box.setText("論文の書誌情報をインターネットで取得しますか？")
-        box.setInformativeText(
-            "PDF に書かれた DOI や arXiv ID だけを Crossref・arXiv に送り、タイトル・著者・雑誌名・概要を取得します。"
-            "本文やファイルは送りません。\n\n取得しない場合は、PDF から読み取れた情報だけで整理します。"
-            "あとから設定の「詳細」で変更できます。"
-        )
-        yes = box.addButton("取得する", QMessageBox.ButtonRole.AcceptRole)
-        box.addButton("取得しない", QMessageBox.ButtonRole.RejectRole)
-        box.setDefaultButton(yes)
-        box.exec()
-        return box.clickedButton() is yes
-
     def enable_lookup(self) -> None:
-        if not self._ask_lookup():
-            return
         self.settings.metadata_lookup = True
-        self.settings.metadata_lookup_asked = True
         self.settings.save()
         self._lookup([p.id for p in self.library.papers() if p.meta_status in ("local", "pending")])
 
     def _lookup(self, ids: list[int], ask: bool = False) -> None:
+        """ids の書誌情報を照会する。ask=True（利用者が取得し直しを選んだ）なら、照会がオフでもオンにして取得する。"""
         if not ids:
             return
         if not self.settings.metadata_lookup:

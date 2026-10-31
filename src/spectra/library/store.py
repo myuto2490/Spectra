@@ -217,7 +217,7 @@ class Library:
                 raise ValueError(f"unknown metadata fields: {sorted(unknown)}")
             values = {name: getattr(md, name) for name in manual_fields}
             edited |= set(manual_fields)
-            source = current.metadata.source
+            source = md.source or current.metadata.source
         else:
             for name in Metadata.FIELDS:
                 value = getattr(md, name)

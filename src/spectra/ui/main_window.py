@@ -1115,8 +1115,12 @@ class MainWindow(QMainWindow):
             self._set_status("キャンセルしました。翻訳済みの段落はキャッシュに保存されています。")
             self._update_state()
             return
-        # 1 日の上限・API キーの問題は残りの論文でも同じように失敗するので、待っている翻訳を取りやめる
-        stop_all = isinstance(err, (PartialTranslationError, QuotaExceededError, MissingKeyError, AuthenticationError))
+        # 訳せた段落があると、原因によらず PartialTranslationError に包まれるので、元の原因で判断する
+        cause = err.cause if isinstance(err, PartialTranslationError) else err
+        quota = isinstance(cause, QuotaExceededError)
+        # 1 日の上限・API キーの問題・接続や混雑は、待っている論文でも同じように失敗するので取りやめる
+        # （失敗のダイアログが論文の数だけ続かないように）
+        stop_all = isinstance(cause, (QuotaExceededError, MissingKeyError, AuthenticationError)) or getattr(cause, "retryable", False)
         dropped = self.queue.clear_pending() if stop_all else []
         for r in dropped:
             model.set_job(r.paper_id, None)
@@ -1129,7 +1133,12 @@ class MainWindow(QMainWindow):
             box.setText(err.title)
             box.setInformativeText(
                 f"「{_elide(req.title, 48)}」は {len(err.results)} 個の段落を翻訳できました。翻訳できた段落だけで PDF を作成しますか？\n"
-                "残りの段落は原文のまま残り、上限が戻った後（明日以降）にキャッシュから続きを翻訳できます。" + dropped_note
+                + (
+                    "残りの段落は原文のまま残り、上限が戻った後（明日以降）にキャッシュから続きを翻訳できます。"
+                    if quota
+                    else "残りの段落は原文のまま残り、あとで翻訳し直すとキャッシュから続きを翻訳できます。"
+                )
+                + dropped_note
             )
             make = box.addButton("翻訳できた分で作成", QMessageBox.ButtonRole.AcceptRole)
             box.addButton("キャンセル", QMessageBox.ButtonRole.RejectRole)
@@ -1141,7 +1150,7 @@ class MainWindow(QMainWindow):
             self._update_state()
             return
         if isinstance(err, SpectraError):
-            model.set_job(req.paper_id, None if isinstance(err, QuotaExceededError) else "failed")
+            model.set_job(req.paper_id, None if quota else "failed")
             title, _, rest = err.user_message().partition("\n")
             self._set_status(title)
             if isinstance(err, (MissingKeyError, AuthenticationError)):

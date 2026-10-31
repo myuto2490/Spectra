@@ -259,3 +259,105 @@ def test_edit_metadata_marks_fields_as_edited(window, paper_path):
     assert [a.family for a in p.metadata.authors] == ["Vaswani", "Shazeer"]
     assert "title" in p.edited
     assert parse_authors("Ada Lovelace")[0].given == "Ada"
+
+
+def test_edit_dialog_leaves_untouched_fields_alone(window, paper_path):
+    """文字列との往復で値が変わる項目（団体著者など）は、触らなければ変更扱いにしない。"""
+    app, w = window
+    from spectra.library import Author, Metadata
+    from spectra.ui.paper_detail import MetadataDialog
+
+    paper = w.library.add(paper_path)[0]
+    md = Metadata(title="T", authors=[Author(family="The Spectra Consortium")], source="crossref")
+    paper = w.library.update_metadata(paper.id, md, status="done")
+    d = MetadataDialog(paper, w)
+    d.edits["title"].setText("Edited title")
+    d.edits["arxiv_id"].setText("https://arxiv.org/abs/1706.03762v5")
+    new, changed = d.result_metadata()
+    assert changed == {"title", "arxiv_id"}
+    assert new.authors == [Author(family="The Spectra Consortium")]
+    assert new.arxiv_id == "1706.03762"
+    d.edits["arxiv_id"].setText("arXiv:hep-th/9901001")
+    assert d.result_metadata()[0].arxiv_id == "hep-th/9901001"
+
+
+def _queue_papers(w, tmp_path, n):
+    papers = [w.library.add(_distinct_paper(tmp_path / f"q{i}.pdf", f"Queued paper {i}"))[0] for i in range(n)]
+    w.library_view.reload()
+    return papers
+
+
+@pytest.fixture()
+def no_dialogs(monkeypatch):
+    """QMessageBox を表示せずに、出された文言を記録する。"""
+    from PySide6.QtWidgets import QMessageBox
+
+    shown = []
+    monkeypatch.setattr(QMessageBox, "exec", lambda self: shown.append(self.text() + "\n" + self.informativeText()) or 0)
+    return shown
+
+
+def test_network_failure_stops_queue_once(window, tmp_path, monkeypatch, no_dialogs):
+    """接続できないときは、失敗のダイアログを論文の数だけ出さず、待っている翻訳を取りやめる。"""
+    app, w = window
+    from spectra.translate.errors import NetworkError
+
+    def runner(req, report, cancel):
+        raise NetworkError()
+
+    w.queue._runner = runner
+    alerts = []
+    monkeypatch.setattr(w, "_alert", lambda title, body="": alerts.append(body))
+    papers = _queue_papers(w, tmp_path, 3)
+    w.translate_papers([p.id for p in papers])
+    pump(app, 10, until=lambda: not w._busy())
+    assert len(alerts) == 1 and "2 件の翻訳は取りやめました" in alerts[0]
+    assert all(w.queue.state(p.id) is None for p in papers)
+    assert w.library_view.model.job(papers[0].id) == "failed"
+    assert w.library_view.model.job(papers[1].id) is None  # 待機中だった論文は「未翻訳」に戻る
+
+
+def test_partial_failure_message_depends_on_cause(window, tmp_path, no_dialogs):
+    """訳せた段落があるときの失敗は、原因が 1 日の上限のときだけ「明日以降」と案内する。"""
+    app, w = window
+    from spectra.translate.errors import NetworkError, QuotaExceededError
+    from spectra.translate.service import PartialTranslationError
+
+    for cause, tomorrow in ((NetworkError(), False), (QuotaExceededError(), True)):
+        no_dialogs.clear()
+
+        def runner(req, report, cancel, cause=cause):
+            raise PartialTranslationError(cause, {"a": "b"})
+
+        w.queue._runner = runner
+        sub = tmp_path / type(cause).__name__
+        sub.mkdir()
+        papers = _queue_papers(w, sub, 2)
+        w.translate_papers([p.id for p in papers])
+        pump(app, 10, until=lambda: not w._busy())
+        assert len(no_dialogs) == 1
+        assert ("明日以降" in no_dialogs[0]) is tomorrow
+        assert "1 件の翻訳は取りやめました" in no_dialogs[0]
+
+
+def test_cancel_running_translation_updates_at_once(window, tmp_path):
+    app, w = window
+
+    def runner(req, report, cancel):
+        cancel.wait(10)
+        from spectra.translate.errors import CancelledError
+
+        raise CancelledError
+
+    w.queue._runner = runner
+    paper = _queue_papers(w, tmp_path, 1)[0]
+    w.translate_papers([paper.id])
+    pump(app, 0.2)
+    w.library_view.select_ids([paper.id])
+    pump(app, 0.1)
+    assert w.library_view.detail.secondary.text() == "翻訳をキャンセル"
+    w.library_view.detail.secondary.click()
+    assert w.queue.is_cancelling()
+    assert w.status.text() == "キャンセルしています…"
+    pump(app, 10, until=lambda: not w._busy())
+    assert "キャンセルしました" in w.status.text()

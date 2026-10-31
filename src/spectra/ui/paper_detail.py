@@ -396,21 +396,29 @@ class MetadataDialog(QDialog):
 
     def result_metadata(self) -> tuple[Metadata, set[str]]:
         """(編集後の書誌情報, 変更した項目)。"""
-        from ..library.identifiers import normalize_doi
+        from ..library.identifiers import find_arxiv, normalize_doi
 
         md = self.paper.metadata
         values: dict = {}
+        # 変えたかどうかは入力欄の文字列で判断する（著者などは文字列との往復で元の値に戻らないことがあるため、
+        # 触っていない項目は解析しない）
         for key, _ in self.FIELDS:
             text = self.edits[key].text().strip()
+            if text == self._initial(md, key).strip():
+                continue
             if key == "authors":
                 values[key] = parse_authors(text)
             elif key == "year":
                 values[key] = int(text) if text.isdigit() else None
             elif key == "doi":
                 values[key] = normalize_doi(text) if text else ""
+            elif key == "arxiv_id":
+                values[key] = (find_arxiv(text) or find_arxiv(f"arXiv:{text}") or text) if text else ""
             else:
                 values[key] = text
-        values["abstract"] = self.abstract.toPlainText().strip()
+        abstract = self.abstract.toPlainText().strip()
+        if abstract != md.abstract.strip():
+            values["abstract"] = abstract
         changed = {k for k, v in values.items() if v != getattr(md, k)}
         new = replace(md, **values)
         if changed:

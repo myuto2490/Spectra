@@ -114,6 +114,17 @@ def test_auto_update_keeps_edited_fields(library, pdf):
     assert paper.meta_status == "done"
 
 
+def test_manual_update_records_manual_source(library, pdf):
+    paper, _ = library.add(pdf())
+    source = paper.metadata.source
+    paper = library.update_metadata(paper.id, Metadata(title="Edited", source="manual"), manual_fields={"title"})
+    assert paper.metadata.source == "manual"
+    # source を渡さなければ元の値のまま
+    paper2, _ = library.add(pdf(seed=1))
+    paper2 = library.update_metadata(paper2.id, Metadata(title="Edited"), manual_fields={"title"})
+    assert paper2.metadata.source == source
+
+
 def test_auto_update_does_not_clear_values(library, pdf):
     paper, _ = library.add(pdf(body=["doi:10.1000/keep"]))
     paper = library.update_metadata(paper.id, Metadata(year=2001, source="arxiv"))

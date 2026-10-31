@@ -96,6 +96,7 @@ class TranslationQueue(QObject):
         if self._current is not None and self._current.paper_id == paper_id:
             if self._task is not None:
                 self._task.cancel()
+                self.changed.emit()  # 「キャンセルしています…」をすぐに表示する
             return
         before = len(self._pending)
         self._pending = [r for r in self._pending if r.paper_id != paper_id]
@@ -113,6 +114,7 @@ class TranslationQueue(QObject):
         self.clear_pending()
         if self._task is not None:
             self._task.cancel()
+            self.changed.emit()
 
     def is_cancelling(self) -> bool:
         return self._task is not None and self._task.cancel_event.is_set()

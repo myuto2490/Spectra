@@ -72,9 +72,9 @@ def test_mask_email_shows_only_what_is_needed():
     ma, mb = mask_email(a, [a, b]), mask_email(b, [a, b])
     assert ma != mb and ma.startswith("myk") and mb.startswith("myl")
     # どれほど似ていても、完全なアドレスは出さない
-    c, d = "ab1@x.com", "ab2@x.com"
+    c, d = "ab1@example.com", "ab2@example.com"
     assert mask_email(c, [c, d]) != c and "•••" in mask_email(c, [c, d])
-    assert mask_email("a@x.com") == "a•••@x.com"
+    assert mask_email("a@example.com") == "a•••@example.com"
 
 
 def test_google_drive_candidates_never_show_full_email(tmp_path):

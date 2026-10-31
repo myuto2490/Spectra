@@ -82,6 +82,21 @@ def days_left(paper: Paper, now: float | None = None) -> int:
     return max(0, int(left + 0.999))
 
 
+_BLANK = None
+
+
+def _blank_icon():
+    global _BLANK
+    if _BLANK is None:
+        from PySide6.QtCore import Qt as _Qt
+        from PySide6.QtGui import QPixmap
+
+        _BLANK = QPixmap(28, 28)
+        _BLANK.fill(_Qt.GlobalColor.transparent)
+        _BLANK.setDevicePixelRatio(2.0)
+    return _BLANK
+
+
 def format_date(ts: float | None) -> str:
     if not ts:
         return ""
@@ -99,6 +114,7 @@ class PaperTableModel(QAbstractTableModel):
         self._looking_up: set[int] = set()
         self._downloads: dict[int, object] = {}  # paper_id → SyncController.Download
         self.trash_mode = False  # ゴミ箱を表示中（「追加日」の列を「削除した日」にする）
+        self._has_missing = False  # 手元にない論文が 1 本でもあるか（あれば、記号の幅をすべての行で空ける）
 
     # -- データの更新 ------------------------------------------------------
 
@@ -110,6 +126,7 @@ class PaperTableModel(QAbstractTableModel):
 
     def _reindex(self) -> None:
         self._row = {p.id: i for i, p in enumerate(self._papers)}
+        self._has_missing = any(local_state(p) is not None for p in self._papers)
 
     def upsert(self, paper: Paper) -> None:
         row = self._row.get(paper.id)
@@ -120,6 +137,10 @@ class PaperTableModel(QAbstractTableModel):
             self.endInsertRows()
         else:
             self._papers[row] = paper
+            missing = any(local_state(p) is not None for p in self._papers)
+            if missing != self._has_missing:
+                self._has_missing = missing
+                self.refresh_icons()
             self._row_changed(row)
 
     def remove(self, paper_id: int) -> None:
@@ -232,7 +253,8 @@ class PaperTableModel(QAbstractTableModel):
         if role == Qt.ItemDataRole.DecorationRole and key == "title":
             state = local_state(p, self._downloads.get(p.id))
             if state is None:
-                return None
+                # 記号のない行も同じ幅を空けて、タイトルの書き出しをそろえる
+                return _blank_icon() if self._downloads or self._has_missing else None
             t = theme.current()
             color = t.tertiary if state[0] == "hourglass" else t.secondary
             return icons.pixmap(state[0], color, 14)

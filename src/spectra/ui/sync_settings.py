@@ -244,9 +244,11 @@ class SyncPage(QScrollArea):
         group.add_row("最後に保存", saved)
         self.usage_label = label("…", "secondary")
         group.add_row("使用量", self.usage_label)
-        self.status_text = label("", "caption", wrap=True)
-        group.add_widget(self.status_text)
         self._add(group)
+        # 状態の説明（同期中・失敗の理由など）。空のときに空の行が残らないよう、カードの外に置く
+        self.status_text = label("", "caption", wrap=True)
+        self.status_text.setContentsMargins(4, 0, 4, 0)
+        self._add(self.status_text)
         self._add(
             label(
                 "オフラインでも読みたい場合は、同期アプリでこのフォルダを「オフラインで使用可能」にしてください。",

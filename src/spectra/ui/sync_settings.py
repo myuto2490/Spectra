@@ -16,6 +16,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
+    QLineEdit,
     QMessageBox,
     QScrollArea,
     QVBoxLayout,
@@ -239,6 +240,19 @@ class SyncPage(QScrollArea):
         self.enabled_switch = Switch(self.settings.sync_enabled)
         self.enabled_switch.toggled.connect(self._on_toggle)
         group.add_row("同期する", self.enabled_switch)
+        # このパソコンの名前（ほかのパソコンの Spectra に表示される）。空なら既定の名前（placeholder で示す）
+        self.name_edit = None
+        if self.sync is not None:
+            from ..library.sync import MAX_NAME_LENGTH
+
+            self.name_edit = QLineEdit(self.settings.device_name)
+            self.name_edit.setPlaceholderText(self.sync.default_device_name())
+            self.name_edit.setMaxLength(MAX_NAME_LENGTH)
+            self.name_edit.setMinimumWidth(200)
+            self.name_edit.setAccessibleName("このパソコンの名前")
+            self.name_edit.setAccessibleDescription(self._name_caption())
+            self.name_edit.editingFinished.connect(self._on_name)
+            group.add_row("このパソコンの名前", self.name_edit)
         saved = QWidget()
         sl = QHBoxLayout(saved)
         sl.setContentsMargins(0, 0, 0, 0)
@@ -252,6 +266,11 @@ class SyncPage(QScrollArea):
         self.usage_label = label("…", "secondary")
         group.add_row("使用量", self.usage_label)
         self._add(group)
+        if self.name_edit is not None:
+            # 個人名かどうかは判定できないので、警告は出さず、ここで知らせるだけにする
+            self.name_caption = label(self._name_caption(), "caption", wrap=True)
+            self.name_caption.setContentsMargins(4, 0, 4, 0)
+            self._add(self.name_caption)
         # 状態の説明（同期中・失敗の理由など）。空のときに空の行が残らないよう、カードの外に置く
         self.status_text = label("", "caption", wrap=True)
         self.status_text.setContentsMargins(4, 0, 4, 0)
@@ -316,6 +335,28 @@ class SyncPage(QScrollArea):
                     self.usage_label.setText(format_size(n))
 
         worker.start(lambda _r, _c: folder_size(root) if root.is_dir() else 0, done, lambda _e: None)
+
+    def _name_caption(self) -> str:
+        default = self.sync.default_device_name() if self.sync else ""
+        return (
+            "この名前は同期先のフォルダに保存され、ほかのパソコンの Spectra に表示されます。"
+            "氏名やメールアドレスなど、個人が分かる情報は入れないでください。"
+            f"空にすると「{default}」に戻ります。例: 自宅の Mac、研究室のノート"
+        )
+
+    def _on_name(self) -> None:
+        if self.sync is None or self.name_edit is None:
+            return
+        # 貼り付けた制御文字や前後の空白は core の規則で取り除き、取り除いた結果を欄に戻す
+        shown = self.sync.set_device_name(self.name_edit.text())
+        text = "" if shown == self.sync.default_device_name() else shown
+        if self.name_edit.text() != text:
+            self.name_edit.setText(text)
+
+    def focus_device_name(self) -> None:
+        if self.name_edit is not None:
+            self.name_edit.setFocus()
+            self.name_edit.selectAll()
 
     # -- 操作 ------------------------------------------------------------------
 

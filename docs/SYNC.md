@@ -190,7 +190,10 @@ Spectra Sync/
   手元にあればすぐに返す。手順は `.tmp` にコピー → sha256 で検証 → rename → `"file"` の `RemoteChange` を出す。
   - 例外: `SyncError(SpectraError)` の子として `SyncUnavailable`・`RemoteMissing`・`HashMismatch`（それぞれ日本語の title と hint を持つ）。論文が無いときは `PaperNotFound`、キャンセルは `CancelledError`。
   - 取得の待ち行列と進捗の表示は UI 側に持つ（翻訳キューと同じ作り）。
-- `Paper.has_original` / `Paper.has_translation_file`（bool）: 読み込むときに、手元のファイルがあるかで 1 回だけ決める。同期が無効のときは常に True。一覧の ☁ の表示に使う。
+- `Paper.has_original` / `Paper.has_translation_file`（bool）: 読み込むときに、手元のファイルがあるかで 1 回だけ決める。一覧の ☁ の表示に使う。
+  - `has_original`: 同期が無効なら常に True。
+  - `has_translation_file`: 「訳文があり、かつ訳文のファイルが手元にある」。未翻訳の論文は、同期の有無に関係なく False。
+  - UI は `translation is not None and not has_translation_file` のときに、訳文を ☁ と判断する。
 
 ### 5.6 初回の同期と既存ライブラリの統合
 

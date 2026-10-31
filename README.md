@@ -148,6 +148,8 @@ Elsevier・A&A・AAS・AGU/Wiley・Springer・IEEE などの論文 20 本で、�
 翻訳する本文が Google の Gemini API にのみ送信されます。無料枠での送信データの扱いは、上の「重要」の項目を確認してください。
 
 書誌情報を取得するため、PDF に書かれた DOI を [Crossref](https://www.crossref.org/)、arXiv ID を [arXiv](https://arxiv.org/) に送って書誌情報を受け取ります（タイトルや本文、ファイルは送りません。⚙ →「詳細」でオフにできます）。Spectra 自体は利用状況などのデータを一切送信しません。
+
+ライブラリの同期を有効にした場合は、PDF・訳文・書誌情報を、選んだフォルダに保存します。Spectra 自身は通信せず、そのフォルダを同期するサービス（Google Drive など）がアップロードします。同期は初期状態では無効です。
 </details>
 
 <details>

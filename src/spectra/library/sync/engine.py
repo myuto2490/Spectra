@@ -328,8 +328,8 @@ class SyncEngine:
                 "_kind": "device",
                 "device": str(obj.get("device") or obj.get("id") or "")[:32],
                 "format": fmt,
-                "name": str(obj.get("name") or "")[:100],
-                "app": str(obj.get("app") or "")[:40],
+                "name": F.clean_text(str(obj.get("name") or ""), strict=True)[:100],
+                "app": F.clean_text(str(obj.get("app") or ""))[:40],
             }
         if data is None:
             return None

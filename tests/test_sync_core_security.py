@@ -252,3 +252,49 @@ def test_sync_folder_contains_no_local_paths_or_secrets(pair, pdf, tmp_path, mon
         text = f.read_text(encoding="utf-8")
         for needle in needles:
             assert needle not in text, (f.name, needle)
+
+
+@pytest.mark.parametrize(
+    "invisible",
+    ["​", "‌", "‍", "‎", "‏", "⁠", "⁡", "⁤", "﻿", "­",
+     "‮", "⁦", "\u0085", "\u009f"],
+)
+def test_invisible_characters_are_removed(invisible):
+    from spectra.library.sync import clean_device_name
+
+    if invisible in ("\u200c", "\u200d"):  # 接合子は文章では残し、端末名とファイル名では除く
+        assert F.clean_text(f"Ma{invisible}c") == f"Ma{invisible}c"
+    else:
+        assert F.clean_text(f"Ma{invisible}c") == "Mac"
+    assert clean_device_name(f"Ma{invisible}c") == "Mac"
+    assert F.clean_file_name(f"pa{invisible}per.pdf") == "paper.pdf"
+    assert F.clean_text("改行\nとタブ\tは残す") == "改行\nとタブ\tは残す"
+
+
+def test_lookalike_names_from_other_devices_are_unified(pair, pdf, tmp_path):
+    """ほかの端末から来たタイトル・著者・コレクション名・端末名から、ゼロ幅スペースなどを除く。"""
+    lib_b, b = pair("B", B)
+    sha, uid = "e" * 64, "d" * 32
+    cloud = tmp_path / "cloud"
+    _plant(cloud, sha, f"state.{C}.json", {
+        "kind": "paper", "v": 1, "device": C, "sha": sha,
+        "fields": {"title": ["At​tention", _hlc(), False],
+                   "authors": [[{"family": "Vas﻿wani", "given": "A⁠"}], _hlc(), False]},
+        "life": [True, _hlc()], "file": {"name": "p‍p.pdf", "pages": 1, "added_at": time.time()},
+    })
+    folder = cloud / "collections" / uid
+    folder.mkdir(parents=True)
+    (folder / f"state.{C}.json").write_text(json.dumps({
+        "kind": "collection", "device": C, "uid": uid, "name": ["N​LP", _hlc()], "life": [True, _hlc()],
+    }))
+    (cloud / "devices").mkdir(exist_ok=True)
+    (cloud / "devices" / f"{C}.json").write_text(json.dumps({
+        "kind": "device", "device": C, "name": "Mac​‮", "app": "0.2​", "format": 1,
+    }))
+    b.sync_now()
+    got = lib_b.find_by_sha(sha)
+    assert got.metadata.title == "Attention" and got.metadata.authors[0].family == "Vaswani"
+    assert got.metadata.authors[0].given == "A" and got.file_name == "pp.pdf"
+    assert [c.name for c in lib_b.collections()] == ["NLP"]
+    other = next(d for d in b.devices() if d.id == C)
+    assert other.name == "Mac" and other.app == "0.2"

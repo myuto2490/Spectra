@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 
 from ..models import Metadata
@@ -23,6 +24,10 @@ _TEXT_LIMITS = {"abstract": 50_000, "title": 2_000, "url": 2_000}
 _DEFAULT_TEXT_LIMIT = 500
 MAX_AUTHORS = 1_000
 MAX_NAME = 300
+MAX_OPTIONS_BYTES = 10_000
+_MAX_TIME = 4_102_444_800.0  # 2100 年。時刻として受け付ける上限（無限大・巨大な値で表示が落ちないように）
+# 制御文字（改行・タブを除く）と、表示の向きを入れ替える文字（なりすましに使われる）
+_UNSAFE_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\u202a-\u202e\u2066-\u2069]")
 
 
 def paper_dir(sha: str) -> str:
@@ -57,13 +62,43 @@ def decode(data: bytes) -> dict | None:
     if len(data) > MAX_JSON_BYTES:
         return None
     try:
-        obj = json.loads(data.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError):
+        obj = json.loads(data.decode("utf-8"), parse_constant=_reject_constant)
+    except (UnicodeDecodeError, ValueError, RecursionError):  # 深すぎる入れ子も捨てる
         return None
     return obj if isinstance(obj, dict) else None
 
 
 # -- 検証 ------------------------------------------------------------------------
+
+
+def _reject_constant(name: str):
+    raise ValueError(f"{name} is not allowed")  # NaN・Infinity は JSON の規格外なので受け付けない
+
+
+def clean_text(value: str) -> str:
+    return _UNSAFE_CHARS.sub("", value)
+
+
+def _time(value) -> float | None:
+    """時刻（秒）として妥当な値だけを通す。"""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    value = float(value)
+    return value if math.isfinite(value) and 0 < value < _MAX_TIME else None
+
+
+def _count(value, default: int = 0, upper: int = 10**9) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return default
+    return max(0, min(value, upper))
+
+
+def clean_file_name(value) -> str:
+    """ほかの端末から来たファイル名。表示と保存の候補にだけ使うので、最後の要素だけを残し、危ない文字を除く。"""
+    if not isinstance(value, str):
+        return ""
+    name = clean_text(value).replace("\\", "/").rsplit("/", 1)[-1].strip().strip(".")
+    return name[:MAX_NAME]
 
 
 def _hlc(value) -> str | None:
@@ -94,10 +129,10 @@ def clean_field(name: str, value):
             family, given = a.get("family", ""), a.get("given", "")
             if not isinstance(family, str) or not isinstance(given, str) or len(family) > MAX_NAME or len(given) > MAX_NAME:
                 raise KeyError(name)
-            out.append({"family": family, "given": given})
+            out.append({"family": clean_text(family), "given": clean_text(given)})
         return out
     if isinstance(value, str) and len(value) <= _TEXT_LIMITS.get(name, _DEFAULT_TEXT_LIMIT):
-        return value
+        return clean_text(value)
     raise KeyError(name)
 
 
@@ -108,7 +143,8 @@ def parse_paper_state(obj: dict, sha: str) -> dict | None:
     if not HEX32_RE.match(obj["device"]) or not isinstance(obj.get("v"), int):
         return None
     fields = {}
-    for name, entry in (obj.get("fields") or {}).items():
+    fields_raw = obj.get("fields") if isinstance(obj.get("fields"), dict) else {}
+    for name, entry in fields_raw.items():
         if name not in SYNC_FIELDS or not isinstance(entry, list) or len(entry) != 3:
             continue  # 知らない項目は無視する
         value, hlc, manual = entry
@@ -122,20 +158,21 @@ def parse_paper_state(obj: dict, sha: str) -> dict | None:
     life = obj.get("life")
     if not (isinstance(life, list) and len(life) == 2 and isinstance(life[0], bool) and _hlc(life[1])):
         life = None
-    file = obj.get("file") or {}
-    name = file.get("name") if isinstance(file.get("name"), str) else ""
-    pages = file.get("pages") if isinstance(file.get("pages"), int) and not isinstance(file.get("pages"), bool) else 0
-    added = file.get("added_at") if isinstance(file.get("added_at"), (int, float)) else None
-    opened = obj.get("opened") if isinstance(obj.get("opened"), (int, float)) and not isinstance(obj.get("opened"), bool) else None
+    file = obj.get("file") if isinstance(obj.get("file"), dict) else {}
+    name = clean_file_name(file.get("name"))
+    pages = _count(file.get("pages"), upper=100_000)
+    added = _time(file.get("added_at"))
+    opened = _time(obj.get("opened"))
     members = {}
-    for uid, entry in (obj.get("collections") or {}).items():
+    members_raw = obj.get("collections") if isinstance(obj.get("collections"), dict) else {}
+    for uid, entry in members_raw.items():
         if HEX32_RE.match(str(uid)) and isinstance(entry, list) and len(entry) == 2 and isinstance(entry[0], bool) and _hlc(entry[1]):
             members[uid] = [entry[0], entry[1]]
     return {
         "device": obj["device"],
         "fields": fields,
         "life": life,
-        "file": {"name": name[:MAX_NAME], "pages": max(0, min(pages, 100_000)), "added_at": added},
+        "file": {"name": name, "pages": pages, "added_at": added},
         "opened": opened,
         "collections": members,
     }
@@ -151,20 +188,27 @@ def parse_translation(obj: dict, sha: str) -> dict | None:
     if obj["alive"] and (not isinstance(pdf_sha, str) or not SHA_RE.match(pdf_sha) or not isinstance(info, dict)):
         return None
     if obj["alive"]:
-        try:
-            info = {
-                "model": str(info.get("model", ""))[:200],
-                "formality": str(info.get("formality", ""))[:50],
-                "first_page": int(info.get("first_page", 0)),
-                "last_page": None if info.get("last_page") is None else int(info["last_page"]),
-                "options": info.get("options") if isinstance(info.get("options"), dict) else {},
-                "segments": int(info.get("segments", 0)),
-                "untranslated": int(info.get("untranslated", 0)),
-                "chars": int(info.get("chars", 0)),
-                "created_at": float(info.get("created_at", 0)),
-            }
-        except (TypeError, ValueError):
+        first = _count(info.get("first_page"), upper=100_000)
+        last = info.get("last_page")
+        if last is not None and (isinstance(last, bool) or not isinstance(last, int) or not first <= last <= 100_000):
             return None
+        created = _time(info.get("created_at"))
+        options = info.get("options") if isinstance(info.get("options"), dict) else {}
+        if len(json.dumps(options, ensure_ascii=False, default=str)) > MAX_OPTIONS_BYTES:
+            options = {}
+        if created is None:
+            return None
+        info = {
+            "model": clean_text(str(info.get("model", "")))[:200],
+            "formality": clean_text(str(info.get("formality", "")))[:50],
+            "first_page": first,
+            "last_page": last,
+            "options": options,
+            "segments": _count(info.get("segments")),
+            "untranslated": _count(info.get("untranslated")),
+            "chars": _count(info.get("chars")),
+            "created_at": created,
+        }
     return {"device": obj["device"], "hlc": obj["hlc"], "alive": obj["alive"], "pdf_sha": pdf_sha if obj["alive"] else "", "info": info if obj["alive"] else None}
 
 
@@ -177,7 +221,7 @@ def parse_collection(obj: dict, uid: str) -> dict | None:
     if not (isinstance(name, list) and len(name) == 2 and isinstance(name[0], str) and _hlc(name[1])):
         name = None
     else:
-        name = [name[0].strip()[:MAX_NAME], name[1]]
+        name = [clean_text(name[0]).strip()[:MAX_NAME], name[1]]
     life = obj.get("life")
     if not (isinstance(life, list) and len(life) == 2 and isinstance(life[0], bool) and _hlc(life[1])):
         life = None

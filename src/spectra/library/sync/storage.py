@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import errno
 import hashlib
 import logging
@@ -62,13 +63,29 @@ def os_error(e: OSError) -> SyncError:
     """OSError を同期の例外に変える。空き容量の不足だけは、利用者が対処できるよう区別する。"""
     if e.errno in (errno.ENOSPC, getattr(errno, "EDQUOT", errno.ENOSPC)):
         return LocalDiskFull()
-    return SyncUnavailable(str(e))
+    return SyncUnavailable(_describe(e))
+
+
+def _describe(e: OSError) -> str:
+    """例外の説明。同期フォルダの絶対パス（ユーザー名やメールアドレスを含みうる）は入れない。"""
+    return e.strerror or type(e).__name__
+
+
+_RESERVED = {"con", "prn", "aux", "nul", *(f"com{i}" for i in range(1, 10)), *(f"lpt{i}" for i in range(1, 10))}
 
 
 def check_relative(path: str) -> str:
+    """同期フォルダの中の相対パスだけを受け付ける。
+
+    ".."・絶対パス・バックスラッシュ・ドライブ（"C:"）・NUL・制御文字・Windows の予約名（CON など）・
+    末尾が点か空白の名前を拒否する（どの OS でも、同期フォルダの外や別のファイルを指さないように）。
+    """
     p = PurePosixPath(path)
-    if not path or p.is_absolute() or "\\" in path or any(part in ("", ".", "..") for part in p.parts):
+    if not path or p.is_absolute() or "\\" in path or ":" in path or any(ord(c) < 32 for c in path):
         raise ValueError(f"invalid sync path: {path!r}")
+    for part in path.split("/"):
+        if part in ("", ".", "..") or part[-1] in ". " or part.split(".")[0].lower() in _RESERVED:
+            raise ValueError(f"invalid sync path: {path!r}")
     return p.as_posix()
 
 
@@ -88,7 +105,7 @@ class FolderStorage:
 
     def _require_root(self) -> None:
         if not self.available():
-            raise SyncUnavailable(str(self.root))
+            raise SyncUnavailable()
 
     def _resolve(self, path: str) -> Path:
         full = self.root / check_relative(path)
@@ -98,7 +115,20 @@ class FolderStorage:
             cur = cur / part
             if cur.is_symlink():
                 raise ValueError(f"symlink in sync path: {path!r}")
+        try:
+            root = self.root.resolve()
+            parent = full.parent.resolve()
+        except OSError:
+            return full
+        if parent != root and root not in parent.parents:
+            raise ValueError(f"sync path escapes the sync folder: {path!r}")
         return full
+
+    @staticmethod
+    def _open_read(full: Path):
+        """最後の要素がシンボリックリンクなら開かない（確認と開く間にすり替えられても外を読まない）。"""
+        fd = os.open(full, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0))
+        return os.fdopen(fd, "rb")
 
     # -- 読み込み ------------------------------------------------------------
 
@@ -121,7 +151,7 @@ class FolderStorage:
                         continue
                     out.append(Entry(full.relative_to(self.root).as_posix(), st.st_size, st.st_mtime))
         except OSError as e:
-            raise SyncUnavailable(str(e)) from e
+            raise SyncUnavailable(_describe(e)) from e
         return sorted(out, key=lambda e: e.path)
 
     def exists(self, path: str) -> bool:
@@ -133,12 +163,12 @@ class FolderStorage:
         self._require_root()
         full = self._resolve(path)
         try:
-            with open(full, "rb") as fh:
+            with self._open_read(full) as fh:
                 data = fh.read(limit + 1 if limit is not None else -1)
         except FileNotFoundError as e:
             raise RemoteMissing(path) from e
         except OSError as e:
-            raise SyncUnavailable(str(e)) from e
+            raise SyncUnavailable(_describe(e)) from e
         if limit is not None and len(data) > limit:
             raise ValueError(f"{path} is larger than {limit} bytes")
         return data
@@ -149,12 +179,12 @@ class FolderStorage:
         """path を dest にコピーし、sha256 を返す。dest は呼び出し側が検証してから使う（途中なら .tmp を消す）。"""
         self._require_root()
         full = self._resolve(path)
-        dest.parent.mkdir(parents=True, exist_ok=True)
         digest = hashlib.sha256()
         done = 0
         try:
+            dest.parent.mkdir(parents=True, exist_ok=True)
             total = full.stat().st_size
-            with open(full, "rb") as src, open(dest, "wb") as out:
+            with self._open_read(full) as src, open(dest, "wb") as out:
                 while True:
                     if cancel is not None and cancel.is_set():
                         raise CancelledError
@@ -182,28 +212,30 @@ class FolderStorage:
     def write_atomic(self, path: str, data: bytes) -> None:
         self._require_root()
         full = self._resolve(path)
-        full.parent.mkdir(parents=True, exist_ok=True)
         tmp = full.with_name(f".{full.name}{TMP_SUFFIX}")
         try:
+            full.parent.mkdir(parents=True, exist_ok=True)
             with open(tmp, "wb") as fh:
                 fh.write(data)
             os.replace(tmp, full)
         except OSError as e:
-            tmp.unlink(missing_ok=True)
+            with contextlib.suppress(OSError):
+                tmp.unlink(missing_ok=True)
             raise os_error(e) from e
 
     def put_file(self, path: str, src: Path) -> None:
         self._require_root()
         full = self._resolve(path)
-        full.parent.mkdir(parents=True, exist_ok=True)
         tmp = full.with_name(f".{full.name}{TMP_SUFFIX}")
         try:
+            full.parent.mkdir(parents=True, exist_ok=True)
             with open(src, "rb") as fin, open(tmp, "wb") as fout:
                 while chunk := fin.read(CHUNK):
                     fout.write(chunk)
             os.replace(tmp, full)
         except OSError as e:
-            tmp.unlink(missing_ok=True)
+            with contextlib.suppress(OSError):
+                tmp.unlink(missing_ok=True)
             raise os_error(e) from e
 
     def delete(self, path: str) -> None:
@@ -211,7 +243,7 @@ class FolderStorage:
         try:
             self._resolve(path).unlink(missing_ok=True)
         except OSError as e:
-            raise SyncUnavailable(str(e)) from e
+            raise SyncUnavailable(_describe(e)) from e
 
     # -- 手元にないファイル ----------------------------------------------------------
 

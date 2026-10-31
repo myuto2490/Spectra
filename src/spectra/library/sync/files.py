@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import math
 import re
+import unicodedata
 
 from ..models import Metadata
 from .hlc import HLC
@@ -26,8 +27,9 @@ MAX_AUTHORS = 1_000
 MAX_NAME = 300
 MAX_OPTIONS_BYTES = 10_000
 _MAX_TIME = 4_102_444_800.0  # 2100 年。時刻として受け付ける上限（無限大・巨大な値で表示が落ちないように）
-# 制御文字（改行・タブを除く）と、表示の向きを入れ替える文字（なりすましに使われる）
-_UNSAFE_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\u202a-\u202e\u2066-\u2069]")
+_KEEP = {"\n", "\t"}
+# ゼロ幅非接合子・接合子は、ペルシア語やインド系の文字、絵文字の組み合わせに必要なので、文章では残す
+_JOINERS = {"\u200c", "\u200d"}
 
 
 def paper_dir(sha: str) -> str:
@@ -75,8 +77,15 @@ def _reject_constant(name: str):
     raise ValueError(f"{name} is not allowed")  # NaN・Infinity は JSON の規格外なので受け付けない
 
 
-def clean_text(value: str) -> str:
-    return _UNSAFE_CHARS.sub("", value)
+def clean_text(value: str, *, strict: bool = False) -> str:
+    """ほかの端末から来た文字列から、見えない文字を除く（見た目が同じで中身の違う文字列によるなりすましを防ぐ）。
+
+    除くのは、制御文字（Unicode の一般カテゴリ Cc。改行とタブは残す）と書式文字（Cf: ゼロ幅スペース U+200B〜U+200F、
+    U+2060〜U+2064、BOM U+FEFF、表示の向きを入れ替える U+202A〜U+202E・U+2066〜U+2069、ソフトハイフンなど）。
+    ゼロ幅非接合子・接合子（U+200C・U+200D）は、文章では残し、strict（端末名・ファイル名）では除く。
+    """
+    keep = _KEEP if strict else _KEEP | _JOINERS
+    return "".join(c for c in value if c in keep or unicodedata.category(c) not in ("Cc", "Cf"))
 
 
 def _time(value) -> float | None:
@@ -97,7 +106,7 @@ def clean_file_name(value) -> str:
     """ほかの端末から来たファイル名。表示と保存の候補にだけ使うので、最後の要素だけを残し、危ない文字を除く。"""
     if not isinstance(value, str):
         return ""
-    name = clean_text(value).replace("\\", "/").rsplit("/", 1)[-1].strip().strip(".")
+    name = clean_text(value, strict=True).replace("\\", "/").rsplit("/", 1)[-1].strip().strip(".")
     return name[:MAX_NAME]
 
 

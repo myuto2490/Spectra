@@ -48,10 +48,10 @@ def _legacy_fingerprints() -> set[str]:
 
 
 def clean_device_name(name) -> str:
-    """利用者が付けた名前を正規化する: 制御文字と向きを入れ替える文字を除き、前後の空白を取り、32 文字までにする。"""
+    """利用者が付けた名前を正規化する: 制御文字と書式文字（ゼロ幅の文字を含む）を除き、前後の空白を取り、32 文字までにする。"""
     if not isinstance(name, str):
         return ""
-    return " ".join(clean_text(name).split())[:MAX_NAME_LENGTH].strip()
+    return " ".join(clean_text(name, strict=True).split())[:MAX_NAME_LENGTH].strip()
 
 
 def default_name(device_id: str) -> str:

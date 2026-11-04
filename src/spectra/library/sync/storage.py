@@ -126,8 +126,14 @@ class FolderStorage:
 
     @staticmethod
     def _open_read(full: Path):
-        """最後の要素がシンボリックリンクなら開かない（確認と開く間にすり替えられても外を読まない）。"""
-        fd = os.open(full, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0))
+        """最後の要素がシンボリックリンクなら開かない（確認と開く間にすり替えられても外を読まない）。
+
+        O_NOFOLLOW のない Windows では、開く直前に確かめる（シンボリックリンクを作るには権限が要る）。
+        """
+        nofollow = getattr(os, "O_NOFOLLOW", 0)
+        if not nofollow and os.path.islink(full):
+            raise OSError(errno.ELOOP, "symlink in sync path")
+        fd = os.open(full, os.O_RDONLY | nofollow | getattr(os, "O_BINARY", 0))
         return os.fdopen(fd, "rb")
 
     # -- 読み込み ------------------------------------------------------------

@@ -41,6 +41,9 @@ log = logging.getLogger(__name__)
 SYNC_DB_NAME = "sync.sqlite3"
 FOLDER_NAME = "Spectra Sync"
 FORMAT = 1  # 同期フォルダの形式の版（library.sqlite3 の版とは別）
+# 更新時刻がこれより新しいファイルは、次の同期でも読み直す。更新時刻の刻みが粗いと（Windows は約 16 ミリ秒、
+# FAT は 2 秒）、同じ大きさで書き直されたファイルが (サイズ, mtime) では変わっていないように見えるため
+RECENT_SECONDS = 2.0
 
 KINDS = ("added", "metadata", "translation", "removed", "collections", "file")
 
@@ -249,6 +252,7 @@ class SyncEngine:
     def _refresh_remote(self, listing, report: SyncReport) -> dict:
         """変わった JSON だけを読み直し、解析済みの中身（他の端末の分）を返す。"""
         known = {r["path"]: r for r in self.state.query("SELECT path, size, mtime FROM remote_files")}
+        now = time.time()
         seen = set()
         for e in listing:
             key = self._classify(e.path)
@@ -271,7 +275,7 @@ class SyncEngine:
             with self.state.tx() as db:
                 db.execute(
                     "INSERT OR REPLACE INTO remote_files (path, size, mtime, data) VALUES (?, ?, ?, ?)",
-                    (e.path, e.size, e.mtime, dumps(data) if data is not None else None),
+                    (e.path, e.size, e.mtime if now - e.mtime > RECENT_SECONDS else -1.0, dumps(data) if data is not None else None),
                 )
         gone = set(known) - seen
         if gone:

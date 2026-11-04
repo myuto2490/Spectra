@@ -4,6 +4,7 @@
 
 import hashlib
 import json
+import os
 import time
 
 import pytest
@@ -264,6 +265,20 @@ def test_icloud_placeholder_requests_download(devs, pdf, monkeypatch):
         b.engine.fetch(b.lib.find_by_sha(p.sha256).id, "original")
     assert "iCloud" in info.value.hint
     assert calls and calls[0][:2] == ["brctl", "download"]
+
+
+def test_same_size_rewrite_within_one_mtime_tick_is_noticed(devs):
+    """更新時刻の刻みが粗い（Windows・FAT）と、同じ大きさで書き直しても mtime が変わらないことがある。"""
+    a, b = devs("A", A), devs("B", B)
+    col = a.lib.create_collection("Old")
+    roundtrip(a, b)
+    path = next((a.storage.root / "collections").glob(f"*/state.{A}.json"))
+    before = path.stat().st_mtime_ns
+    a.lib.rename_collection(col.id, "New")
+    a.sync()
+    os.utime(path, ns=(before, before))  # 同じ刻みの中で書き直された
+    b.sync()
+    assert [c.name for c in b.lib.collections()] == ["New"]
 
 
 

@@ -123,6 +123,16 @@ def test_symlinked_file_is_not_read(tmp_path):
         FolderStorage._open_read(cloud / "papers" / "x.json")
 
 
+def test_symlinked_file_is_not_opened_without_nofollow(tmp_path, monkeypatch):
+    """O_NOFOLLOW のない Windows でも、シンボリックリンクをたどって開かない。"""
+    monkeypatch.delattr(os, "O_NOFOLLOW", raising=False)
+    secret = tmp_path / "secret.txt"
+    secret.write_text("secret")
+    (tmp_path / "x.json").symlink_to(secret)
+    with pytest.raises(OSError):
+        FolderStorage._open_read(tmp_path / "x.json")
+
+
 def test_write_replaces_link_instead_of_writing_through(tmp_path):
     """書き込みは一時ファイル → rename なので、ハードリンクの先（外のファイル）を書き換えない。"""
     cloud = tmp_path / "cloud"

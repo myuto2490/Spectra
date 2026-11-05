@@ -13,6 +13,7 @@ import contextlib
 import json
 import logging
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import ClassVar
 
@@ -127,15 +128,27 @@ class GeminiTranslator(Translator):
         options: TranslateOptions | None = None,
         model: str = DEFAULT_MODEL,
         auto_fallback: bool = True,
+        keys: list | None = None,
+        quota=None,
+        key_auto_switch: bool = True,
         **kwargs,
     ):
+        """keys（config.secrets.KeyRef のリスト）を渡すと、api_key の代わりにその順でキーを使い、
+        1 日の上限に達したら次のキーに切り替える（key_auto_switch）。quota（config.quota.QuotaBook）に上限を記録する。"""
         super().__init__(api_key, options, **kwargs)
         self.requested_model = model if model in MODELS else DEFAULT_MODEL
         self.model = self.requested_model
         self.auto_fallback = auto_fallback
         self.notices: list[str] = []  # 自動切り替えなど、利用者に伝える出来事
+        self.on_notice: Callable[[str], None] | None = None  # 出来事を、翻訳の途中で知らせる
         self._tried: set[str] = {self.model}
         self._thinking_index: dict[str, int] = {}
+        self.keys = list(keys or [])
+        self.quota = quota
+        self.key_auto_switch = key_auto_switch
+        self.key = None  # 使っているキー（KeyRef）
+        self._bad_keys: set[str] = set()  # 正しくない・読めないキー
+        self._keys_tried: set[str] = set()  # 今のモデルで試したキー
 
     def cache_namespace(self) -> str:
         # 自動切り替え後の訳文も、選んだモデルの訳文として再利用する
@@ -168,25 +181,107 @@ class GeminiTranslator(Translator):
 
     def _translate_with_fallback(self, batch: list[str]) -> list[str | None]:
         while True:
-            self.retry_delays = self.fallback_retry_delays if self._next_model() else type(self).retry_delays
+            if self.keys and self.key is None and not self._pick_key():
+                # 今のモデルでは、どのキーも上限（または使えない）
+                if self._switch_model(QuotaExceededError()):
+                    continue
+                raise self._quota_error()
+            more = self._next_model() or self._key_candidates()
+            self.retry_delays = self.fallback_retry_delays if more else type(self).retry_delays
             try:
                 return self._with_retry(lambda: self._translate_batch(batch))
-            except (QuotaExceededError, RateLimitError, ServiceError, ModelUnavailableError) as e:
-                nxt = self._next_model()
-                if nxt is None:
+            except QuotaExceededError as e:
+                if self.key is not None and self.quota is not None:
+                    self.quota.mark(self.key.id, self.model)
+                if self._switch_key("今日の上限に達した") or self._switch_model(e):
+                    continue
+                raise self._quota_error() from e
+            except RateLimitError as e:
+                if self._switch_key("回数の上限に達した") or self._switch_model(e):
+                    continue
+                raise
+            except AuthenticationError:
+                # 先頭のキーが正しくなければ、今までどおり止めて知らせる。切り替えた先のキーなら飛ばす
+                if self.key is None or self.key.id == self.keys[0].id:
                     raise
-                reason = {
-                    QuotaExceededError: "1 日の無料枠の上限に達した",
-                    RateLimitError: "回数の上限に達した",
-                    ServiceError: "混雑している",
-                    ModelUnavailableError: "使えなかった",
-                }.get(type(e), "使えなかった")
-                note = f"{MODELS[self.model].name} が{reason}ため、{MODELS[nxt].name} に切り替えて翻訳しました。"
-                log.info("gemini: %s", note)
-                if note not in self.notices:
-                    self.notices.append(note)
-                self.model = nxt
-                self._tried.add(nxt)
+                self._bad_keys.add(self.key.id)
+                if self._switch_key("正しくない"):
+                    continue
+                raise
+            except (ServiceError, ModelUnavailableError) as e:
+                if not self._switch_model(e):
+                    raise
+
+    def _switch_model(self, e: Exception) -> bool:
+        nxt = self._next_model()
+        if nxt is None:
+            return False
+        reason = {
+            QuotaExceededError: "1 日の無料枠の上限に達した",
+            RateLimitError: "回数の上限に達した",
+            ServiceError: "混雑している",
+            ModelUnavailableError: "使えなかった",
+        }.get(type(e), "使えなかった")
+        self._notice(f"{MODELS[self.model].name} が{reason}ため、{MODELS[nxt].name} に切り替えて翻訳しました。")
+        self.model = nxt
+        self._tried.add(nxt)
+        # 新しいモデルでは、キーを先頭から選び直す（上限はモデルごとに数えられる）
+        self._keys_tried.clear()
+        if self.keys:
+            self.key = None
+        return True
+
+    # -- キーの切り替え ------------------------------------------------------------
+
+    def _key_candidates(self) -> list:
+        """今のモデルで、まだ試していない使えるキー（自動切り替えがオフなら先頭のキーだけ）。"""
+        keys = self.keys if self.key_auto_switch else self.keys[:1]
+        return [
+            k for k in keys
+            if k.id not in self._keys_tried and k.id not in self._bad_keys
+            and not (self.quota is not None and self.quota.until(k.id, self.model))
+        ]
+
+    def _pick_key(self) -> bool:
+        """次のキーを読んで使う。使えるキーがなければ False。"""
+        for k in self._key_candidates():
+            self._keys_tried.add(k.id)
+            try:
+                value = k.read().strip()
+            except Exception:
+                log.warning("gemini: could not read an API key", exc_info=True)
+                value = ""
+            if value:
+                self.key, self.api_key = k, value
+                return True
+            self._bad_keys.add(k.id)
+        self.key = None
+        return False
+
+    def _switch_key(self, reason: str) -> bool:
+        if not self.key_auto_switch or self.key is None:
+            return False
+        old = self.key
+        if not self._pick_key():
+            return False
+        self._notice(f"API キー「{old.label}」が{reason}ため、「{self.key.label}」に切り替えました。")
+        return True
+
+    def _quota_error(self) -> QuotaExceededError:
+        if len(self.keys) > 1 and self.key_auto_switch:
+            return QuotaExceededError(hint=QuotaExceededError.all_keys_hint)
+        return QuotaExceededError()
+
+    def _notice(self, note: str) -> None:
+        log.info("gemini: %s", note)
+        if note in self.notices:
+            return
+        self.notices.append(note)
+        if self.on_notice is not None:
+            try:
+                self.on_notice(note)
+            except Exception:
+                log.exception("notice handler failed")
 
     def _translate_batch(self, texts: list[str]) -> list[str | None]:
         items = [{"id": i, "text": _unescape(t)} for i, t in enumerate(texts)]

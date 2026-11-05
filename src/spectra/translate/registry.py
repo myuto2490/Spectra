@@ -53,8 +53,11 @@ def public_engines() -> list[EngineInfo]:
     return [ENGINES[i] for i in ids]
 
 
+_GEMINI_ONLY = ("keys", "quota", "key_auto_switch")
+
+
 def create(engine_id: str, model: str = DEFAULT_MODEL, auto_fallback: bool = True, **kwargs) -> Translator:
-    """翻訳エンジンを作る。model と auto_fallback は Gemini でのみ使う。"""
+    """翻訳エンジンを作る。model・auto_fallback と、キーの切り替え（keys・quota・key_auto_switch）は Gemini でのみ使う。"""
     try:
         cls = _CLASSES[engine_id]
     except KeyError:
@@ -62,4 +65,7 @@ def create(engine_id: str, model: str = DEFAULT_MODEL, auto_fallback: bool = Tru
     if cls is GeminiTranslator:
         kwargs["model"] = model
         kwargs["auto_fallback"] = auto_fallback
+    else:
+        for name in _GEMINI_ONLY:
+            kwargs.pop(name, None)
     return cls(**kwargs)

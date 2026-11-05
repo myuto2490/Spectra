@@ -464,6 +464,9 @@ class SettingsDialog(QDialog):
         while self.key_rows.count():
             w = self.key_rows.takeAt(0).widget()
             if w is not None:
+                # deleteLater だけでは消えるまで古い欄が描かれ続け、新しい欄と重なる。先に外して隠す
+                w.hide()
+                w.setParent(None)
                 w.deleteLater()
         self.key_fields = {}
         entries = self._key_entries()

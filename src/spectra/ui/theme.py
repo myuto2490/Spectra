@@ -211,6 +211,12 @@ QLabel a {{ color: {t.accent}; }}
 #Inspector {{ background: {t.window}; border-left: 1px solid {t.separator}; }}
 #Canvas, #Canvas > QWidget > QWidget {{ background: {t.canvas}; }}
 #PaneHeader {{ background: {t.surface_alt}; border-bottom: 1px solid {t.separator}; }}
+#NavPane {{ background: {t.surface_alt}; border-right: 1px solid {t.separator}; }}
+#Thumbnails, #Outline {{ background: transparent; border: none; padding: 6px; outline: 0; color: {t.secondary}; }}
+#Thumbnails::item {{ padding: 6px; border-radius: 6px; }}
+#Thumbnails::item:hover, #Outline::item:hover {{ background: {t.fill}; }}
+#Thumbnails::item:selected, #Outline::item:selected {{ background: {t.selection}; color: {t.label}; }}
+#Outline::item {{ padding: 4px 6px; border-radius: 6px; color: {t.label}; }}
 
 /* ---- ライブラリ ---- */
 #SidebarPane {{ background: {t.surface_alt}; border-right: 1px solid {t.separator}; }}

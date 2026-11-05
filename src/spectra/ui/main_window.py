@@ -34,7 +34,8 @@ from PySide6.QtWidgets import (
 
 from .. import APP_NAME, update
 from ..config import paths
-from ..config.secrets import SecretStore
+from ..config.quota import QuotaBook
+from ..config.secrets import SecretStore, key_chain
 from ..config.settings import Settings
 from ..core.export import build_output, finalize
 from ..core.options import OutputMode
@@ -55,7 +56,7 @@ from . import icons, theme, worker
 from .about import AboutDialog
 from .export_dialog import ExportDialog, suffix_for
 from .inspector import Inspector
-from .jobs import LookupQueue, TranslationQueue, TranslationRequest
+from .jobs import LookupQueue, TranslationNotice, TranslationQueue, TranslationRequest
 from .library_model import TRASH_DAYS
 from .library_view import LibraryView
 from .paper_detail import MetadataDialog
@@ -134,6 +135,7 @@ class MainWindow(QMainWindow):
         self._estimate_timer = QTimer(self, singleShot=True, interval=350, timeout=self._start_estimate)
         self.queue.changed.connect(self._on_queue_changed)
         self.queue.progress.connect(self._on_job_progress)
+        self.queue.notice.connect(self._on_translation_notice)
         self.queue.finished.connect(self._on_job_done)
         self.queue.failed.connect(self._on_job_failed)
         self.lookups.updated.connect(self._on_lookup_updated)
@@ -346,9 +348,21 @@ class MainWindow(QMainWindow):
         return bar
 
     def _build_footer(self) -> QWidget:
-        bar = QWidget()
-        bar.setObjectName("Footer")
+        outer = QWidget()
+        outer.setObjectName("Footer")
+        ol = QVBoxLayout(outer)
+        ol.setContentsMargins(0, 0, 0, 0)
+        ol.setSpacing(0)
+        bar = QWidget()  # 1 行目: 進み具合・ページ・ズーム
         bar.setFixedHeight(36)
+        ol.addWidget(bar)
+        # 2 行目: 翻訳の途中の出来事（キーの自動切り替えなど）。ないときは出さない
+        self._translation_notice = ""
+        self.notice_label = label("", "caption")
+        self.notice_label.setContentsMargins(14, 0, 10, 6)
+        self.notice_label.setAccessibleName("翻訳の途中のお知らせ")
+        self.notice_label.hide()
+        ol.addWidget(self.notice_label)
         h = QHBoxLayout(bar)
         h.setContentsMargins(14, 4, 10, 4)
         h.setSpacing(8)
@@ -418,7 +432,7 @@ class MainWindow(QMainWindow):
             if i == 4:
                 h.addSpacing(8)
             h.addWidget(w)
-        return bar
+        return outer
 
     def _build_actions(self) -> None:
         mod = "Ctrl"
@@ -628,6 +642,10 @@ class MainWindow(QMainWindow):
         if not text:
             text = self._status_message
         self.status.setText(text)
+        if current is None:  # 翻訳が終わったら、途中のお知らせは下げる（結果は帯と、訳文の警告に残る）
+            self._translation_notice = ""
+        self.notice_label.setText(self._translation_notice)
+        self.notice_label.setVisible(bool(self._translation_notice))
         self.progress.setVisible(show_progress)
         self.queue_cancel_btn.setVisible(not reader and current is not None)
         self.footer.setVisible(reader or bool(text))
@@ -1163,15 +1181,16 @@ class MainWindow(QMainWindow):
         else:
             self.start_translation()
 
-    def _api_key(self) -> str | None:
-        """翻訳に使う API キー。未設定なら案内を出して None を返す。"""
+    def _api_key(self) -> list | None:
+        """翻訳に使うキー（config.secrets.KeyRef のリスト、使う順）。要らないエンジンは空のリスト。
+        必要なのに 1 本もなければ、案内を出して None を返す。"""
         engine = self.settings.engine
         info = registry.ENGINES.get(engine)
         if not (info and info.needs_key):
-            return ""
-        key = self.secrets.get(engine)
-        if key:
-            return key
+            return []
+        keys = key_chain(self.settings, self.secrets, engine)
+        if keys:
+            return keys
         box = QMessageBox(self)
         box.setIcon(QMessageBox.Icon.Information)
         box.setText(f"{info.name} の API キーを設定してください")
@@ -1183,14 +1202,14 @@ class MainWindow(QMainWindow):
             self.show_settings("engines")
         return None
 
-    def _request(self, paper: Paper, key: str, first: int = 0, last: int | None = None, allow_partial: bool = False) -> TranslationRequest:
+    def _request(self, paper: Paper, keys: list, first: int = 0, last: int | None = None, allow_partial: bool = False) -> TranslationRequest:
         s = self.settings
         return TranslationRequest(
             paper_id=paper.id,
             title=paper.display_title,
             engine=s.engine,
             model=s.gemini_model,
-            api_key=key,
+            api_key="",
             auto_fallback=s.auto_fallback,
             translate_options=s.translate_options(),
             analysis_options=s.analysis_options(first, last),
@@ -1205,6 +1224,8 @@ class MainWindow(QMainWindow):
                 "references": not s.skip_references,
                 "font": s.font,
             },
+            keys=keys,
+            key_auto_switch=s.key_auto_switch,
         )
 
     def start_translation(self, allow_partial: bool = False) -> None:
@@ -1214,24 +1235,24 @@ class MainWindow(QMainWindow):
             return
         if self._paper_job() is not None:
             return
-        key = self._api_key()
-        if key is None:
+        keys = self._api_key()
+        if keys is None:
             return
         first, last = self.inspector.page_range()
         self.banner_wrap.hide()
         self._status_message = ""
-        self.queue.enqueue(self._request(self.paper, key, first, last, allow_partial))
+        self.queue.enqueue(self._request(self.paper, keys, first, last, allow_partial))
         self._update_state()
 
     def translate_papers(self, ids: list[int]) -> None:
         papers = [p for p in (self.library.get(i) for i in ids) if p is not None and self.queue.state(p.id) is None]
         if not papers:
             return
-        key = self._api_key()
-        if key is None:
+        keys = self._api_key()
+        if keys is None:
             return
         for p in papers:
-            self.queue.enqueue(self._request(p, key))
+            self.queue.enqueue(self._request(p, keys))
         if len(papers) > 1:
             self._show_banner("info", f"{len(papers)} 件の論文を翻訳キューに追加しました", "1 本ずつ順に翻訳します。翻訳中もライブラリや論文を読めます。")
 
@@ -1251,9 +1272,19 @@ class MainWindow(QMainWindow):
             if paper is None:
                 raise CancelledError
         translator = registry.create(
-            req.engine, api_key=req.api_key, options=req.translate_options, model=req.model, auto_fallback=req.auto_fallback
+            req.engine,
+            api_key=req.api_key,
+            options=req.translate_options,
+            model=req.model,
+            auto_fallback=req.auto_fallback,
+            keys=req.keys,
+            quota=QuotaBook(),
+            key_auto_switch=req.key_auto_switch,
         )
         translator.cancel_event = cancel
+        # キーの切り替えなどは、ワーカーのスレッドから呼ばれる。report 経由で GUI のスレッドに渡す
+        if hasattr(translator, "on_notice"):
+            translator.on_notice = lambda note: report(TranslationNotice(note))
         job = TranslationJob(
             paper.pdf_path,
             translator,
@@ -1323,6 +1354,12 @@ class MainWindow(QMainWindow):
     def _on_job_progress(self, paper_id: int, p: Progress) -> None:
         percent = p.done * 100 // p.total if p.stage.value == "translate" and p.total else None
         self.library_view.model.set_job(paper_id, "running", percent)
+        self._refresh_footer()
+
+    def _on_translation_notice(self, paper_id: int, text: str) -> None:
+        """翻訳の途中の出来事（キーを切り替えた、など）を、進み具合の行の下に 1 行出す。"""
+        self._translation_notice = text
+        self.notice_label.setToolTip(text)
         self._refresh_footer()
 
     def _on_job_done(self, req: TranslationRequest, result: JobResult) -> None:

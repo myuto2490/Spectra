@@ -992,3 +992,108 @@ def test_reader_side_panel_hides_the_read_buttons(window, tmp_path):
     assert not reader.detail.read_btn.isVisible() and not reader.detail.tr_read_btn.isVisible()
     reader.set_current_tab("details")
     assert not reader.detail.read_btn.isVisible()
+
+
+# -- 複数のキーでの翻訳（偽の通信。実際には通信しない） -----------------------------------------------
+
+
+def _fake_gemini(monkeypatch, w, handler):
+    """翻訳エンジンの通信を MockTransport に差し替える（待ち時間もなくす）。"""
+    import httpx
+
+    from spectra.ui import main_window as mw
+
+    real = mw.registry.create
+
+    def create(*args, **kwargs):
+        t = real(*args, **kwargs)
+        t._client = httpx.Client(transport=httpx.MockTransport(handler))
+        t.sleep = lambda s: None
+        return t
+
+    monkeypatch.setattr(mw.registry, "create", create)
+
+
+def _two_keys(w):
+    from spectra.config.secrets import slot
+
+    w.settings.engine = "gemini"
+    w.settings.api_keys = [
+        {"id": "lab", "provider": "gemini", "label": "研究室"},
+        {"id": "mine", "provider": "gemini", "label": "個人"},
+    ]
+    w.secrets.set(slot("gemini", "lab"), "k-lab")
+    w.secrets.set(slot("gemini", "mine"), "k-mine")
+
+
+def test_key_switch_notice_is_shown_while_translating(window, paper_path, monkeypatch):
+    import httpx
+    from test_keys import PER_DAY
+    from test_translators import _quota_body, echo_handler
+
+    app, w = window
+    _two_keys(w)
+    seen_keys = []
+
+    def handler(req):
+        key = req.headers["x-goog-api-key"]
+        seen_keys.append(key)
+        if key == "k-lab":  # 1 本目は今日の上限に達している
+            return httpx.Response(429, json=_quota_body(PER_DAY))
+        return echo_handler()(req)
+
+    _fake_gemini(monkeypatch, w, handler)
+    shown = []
+    # 主の受け取り（_on_translation_notice）の後に、画面の状態を記録する
+    w.queue.notice.connect(lambda pid, text: shown.append((text, w.notice_label.text(), w.notice_label.isVisibleTo(w))))
+    assert w.open_file(paper_path)
+    pump(app, 0.2)
+    w.start_translation()
+    pump(app, 60, until=lambda: not w._busy())
+    assert w.result is not None and w.result.qa.ok  # 切り替えて、最後まで訳せた
+    assert seen_keys[0] == "k-lab" and "k-mine" in seen_keys
+    text = "API キー「研究室」が今日の上限に達したため、「個人」に切り替えました。"
+    assert shown == [(text, text, True)]  # 進み具合の行の下に出た
+    assert text in w.result.warnings  # 翻訳の後の通知にも残る
+    pump(app, 0.2)
+    assert not w.notice_label.isVisibleTo(w)  # 翻訳が終わったら下げる
+
+
+def test_single_key_translates_as_before(window, paper_path, monkeypatch):
+    from test_translators import echo_handler
+
+    app, w = window
+    from spectra.config.secrets import slot
+
+    w.settings.engine = "gemini"
+    w.settings.api_keys = []  # 目録が空で、以前からのキーだけがある（今までの使い方）
+    w.secrets.set(slot("gemini"), "k-only")
+    seen_keys, notices = [], []
+
+    def handler(req):
+        seen_keys.append(req.headers["x-goog-api-key"])
+        return echo_handler()(req)
+
+    _fake_gemini(monkeypatch, w, handler)
+    w.queue.notice.connect(lambda pid, text: notices.append(text))
+    assert w.open_file(paper_path)
+    pump(app, 0.2)
+    w.start_translation()
+    pump(app, 60, until=lambda: not w._busy())
+    assert w.result is not None and w.result.qa.ok
+    assert set(seen_keys) == {"k-only"} and notices == []
+    assert not w.result.warnings and not w.notice_label.isVisibleTo(w)
+
+
+def test_missing_key_asks_to_set_one(window, paper_path, monkeypatch):
+    app, w = window
+    w.settings.engine = "gemini"
+    w.settings.api_keys = []
+    asked = []
+    from spectra.ui import main_window as mw
+
+    monkeypatch.setattr(mw, "plain_box", lambda box: type("P", (), {"exec": lambda self: asked.append(box.text())})())
+    assert w.open_file(paper_path)
+    pump(app, 0.2)
+    w.start_translation()
+    assert asked and "API キー" in asked[0] and not w._busy()  # キーがなければ案内を出し、翻訳は始めない

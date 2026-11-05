@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import ClassVar
 
 META_STATUSES = ("pending", "done", "failed", "local")  # local: オンライン照会をしない設定
+NOTE_MAX_CHARS = 100_000  # 論文ごとのノートの長さの上限
 
 
 @dataclass(frozen=True)
@@ -89,7 +90,7 @@ class Translation:
 class LibraryEvent:
     """ライブラリの変更の合図（同期の層が受け取る）。中身は最小限で、詳しくは読み直してもらう。
 
-    kind: added / metadata / favorite / opened / removed / translation / collections
+    kind: added / metadata / favorite / opened / removed / translation / collections / note
     """
 
     kind: str
@@ -130,6 +131,9 @@ class Paper:
     has_original: bool = True
     has_translation_file: bool = False  # 訳文があり、かつ訳文のファイルが手元にある
     trashed_at: float | None = None  # ゴミ箱に入れた時刻（None なら通常の論文）
+    note: str = ""  # 論文ごとのメモ（プレーンテキスト）
+    note_updated_at: float | None = None
+    note_merged: bool = False  # 同期で、ほかのパソコンでの同時の編集と連結した（次に保存すると False に戻る）
 
     @property
     def folder(self) -> Path:

@@ -27,6 +27,7 @@ from .errors import LibraryError, PaperNotFound
 from .metadata import extract_local
 from .models import (
     META_STATUSES,
+    NOTE_MAX_CHARS,
     AddResult,
     Author,
     Collection,
@@ -107,6 +108,16 @@ STATE_MIGRATIONS: list[str] = [
     """,
 ]
 
+# ノート（v0.4）。表を足すだけなので版は上げない（上げると、v0.3 以前でライブラリを開けなくなる）。古い版はこの表を無視する
+NOTES_TABLE = """
+CREATE TABLE IF NOT EXISTS state.notes (
+    paper_id INTEGER PRIMARY KEY,
+    text TEXT NOT NULL,
+    updated_at REAL,
+    merged INTEGER NOT NULL DEFAULT 0   -- 同期で同時の編集を連結した
+)
+"""
+
 _TEXT_FIELDS = ("title", "venue", "volume", "issue", "pages", "doi", "arxiv_id", "abstract", "url")
 
 
@@ -126,8 +137,10 @@ class Library:
             self._db.execute("ATTACH DATABASE ? AS state", (str(self.root / STATE_DB_NAME),))
             self._db.execute("PRAGMA state.journal_mode=WAL")
             self._migrate_state()
+            self._db.execute(NOTES_TABLE)
             # 完全に削除するときは 2 つの DB にまたがるので、途中で落ちた分の残りを掃除する
             self._db.execute("DELETE FROM state.trash WHERE paper_id NOT IN (SELECT id FROM main.papers)")
+            self._db.execute("DELETE FROM state.notes WHERE paper_id NOT IN (SELECT id FROM main.papers)")
 
     # -- 接続・移行 ----------------------------------------------------------
 
@@ -361,6 +374,29 @@ class Library:
         self._update(paper_id, "favorite = ?", (int(bool(on)),))
         self._emit("favorite", paper_id)
 
+    def set_note(self, paper_id: int, text: str) -> None:
+        """ノートを保存する。書誌情報とは別に扱い、updated_at は進めない（同期では note_updated_at で時刻を付ける）。"""
+        if not isinstance(text, str) or len(text) > NOTE_MAX_CHARS:
+            raise ValueError(f"note must be a string of at most {NOTE_MAX_CHARS} characters")
+        paper = self._require(paper_id)
+        if text == paper.note and not paper.note_merged:
+            return
+        self._write_note(paper_id, text, merged=False)
+        self._emit("note", paper_id, paper.sha256)
+
+    def sync_set_note(self, paper_id: int, text: str, merged: bool) -> None:
+        """他の端末のノートを反映する（merged: 同時の編集を連結した結果）。"""
+        self._require(paper_id)
+        self._write_note(paper_id, text[:NOTE_MAX_CHARS], merged)
+        self._emit("note", paper_id)
+
+    def _write_note(self, paper_id: int, text: str, merged: bool) -> None:
+        with self._tx() as db:
+            db.execute(
+                "INSERT OR REPLACE INTO state.notes (paper_id, text, updated_at, merged) VALUES (?, ?, ?, ?)",
+                (paper_id, text, time.time(), int(merged)),
+            )
+
     def touch_opened(self, paper_id: int) -> None:
         with self._tx() as db:
             db.execute("UPDATE papers SET last_opened_at = ? WHERE id = ?", (time.time(), paper_id))
@@ -398,6 +434,7 @@ class Library:
             db.execute("DELETE FROM papers WHERE id = ?", (paper_id,))
         with self._tx() as db:  # 別の DB。落ちても起動時に掃除する
             db.execute("DELETE FROM state.trash WHERE paper_id = ?", (paper_id,))
+            db.execute("DELETE FROM state.notes WHERE paper_id = ?", (paper_id,))
         shutil.rmtree(self.root / "files" / str(paper_id), ignore_errors=True)
         self._emit("removed", paper_id, row["sha256"])
 
@@ -568,7 +605,8 @@ class Library:
     def _load(self, where: str, params: tuple = ()) -> list[Paper]:
         with self._lock:
             rows = self._db.execute(
-                f"SELECT p.*, t.trashed_at AS trashed_at FROM papers p LEFT JOIN state.trash t ON t.paper_id = p.id {where}",
+                "SELECT p.*, t.trashed_at AS trashed_at, n.text AS note, n.updated_at AS note_updated_at, n.merged AS note_merged"
+                f" FROM papers p LEFT JOIN state.trash t ON t.paper_id = p.id LEFT JOIN state.notes n ON n.paper_id = p.id {where}",
                 params,
             ).fetchall()
             if not rows:
@@ -627,6 +665,9 @@ class Library:
             has_translation_file=translation is not None
             and (self.root / "files" / str(r["id"]) / "translated.pdf").exists(),
             trashed_at=r["trashed_at"],
+            note=r["note"] or "",
+            note_updated_at=r["note_updated_at"],
+            note_merged=bool(r["note_merged"]),
         )
 
 

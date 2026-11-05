@@ -262,7 +262,7 @@ class MainWindow(QMainWindow):
         self.side_panel.copyBibtexRequested.connect(self.copy_bibtex)
         self.side_panel.retryLookupRequested.connect(lambda pid: self._lookup([pid]))
         self.side_panel.enableLookupRequested.connect(self.enable_lookup)
-        self.side_panel.noteChanged.connect(lambda *_: self._refresh_detail())
+        self.side_panel.noteChanged.connect(self._on_reader_note_saved)
         rl.addWidget(self.side_panel)
         self.content = reader
         self.stack.addWidget(reader)
@@ -769,6 +769,11 @@ class MainWindow(QMainWindow):
             self._refresh_reader_panel()
             self._update_state()
 
+    def _on_reader_note_saved(self, paper_id: int, _text: str) -> None:
+        """読書画面で書いたノートを、ライブラリの一覧と右のパネルにも反映する。"""
+        self.library_view.refresh_paper(paper_id)
+        self._refresh_detail()
+
     def _refresh_reader_panel(self) -> None:
         """読書画面の右のパネルの「論文の詳細」を、最新の書誌情報に更新する（入力中のノートは触らない）。"""
         if self.paper is not None and self.screen_mode == READER:
@@ -800,8 +805,9 @@ class MainWindow(QMainWindow):
         self._release_document()
         self._show_screen(LIBRARY)
         if current is not None:
+            self.library_view.refresh_paper(current)  # 読書画面で書いたノートや直した書誌情報を反映する
             self.library_view.reveal(current)
-        self._refresh_detail()  # 読書画面で書いたノートや直した書誌情報を反映する
+        self._refresh_detail()
         self.library_view.table.setFocus()
 
     def focus_search(self) -> None:
@@ -1637,7 +1643,10 @@ class MainWindow(QMainWindow):
                 )
             elif c.kind == "metadata" and here:
                 self.paper = self.library.get(pid) or self.paper
+                self._refresh_reader_panel()
                 self._update_state()
+            elif c.kind == "note" and here:
+                self._refresh_reader_panel()  # 入力の途中でなければ、別のパソコンで書いたノートに更新する
             if c.kind != "collections":
                 self.library_view.refresh_paper(pid)
         self._refresh_detail()

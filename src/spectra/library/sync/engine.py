@@ -31,6 +31,7 @@ from ..errors import HashMismatch, LocalDiskFull, PaperNotFound, RemoteMissing, 
 from ..models import Author, Metadata, Paper, Translation
 from ..store import Library
 from . import files as F
+from . import notes as N
 from .device import DeviceInfo, clean_device_name, default_name
 from .hlc import HLC, ZERO, HybridClock
 from .state import SyncState, dumps, loads
@@ -45,14 +46,14 @@ FORMAT = 1  # 同期フォルダの形式の版（library.sqlite3 の版とは�
 # FAT は 2 秒）、同じ大きさで書き直されたファイルが (サイズ, mtime) では変わっていないように見えるため
 RECENT_SECONDS = 2.0
 
-KINDS = ("added", "metadata", "translation", "removed", "collections", "file")
+KINDS = ("added", "metadata", "translation", "removed", "collections", "file", "note")
 
 
 @dataclass(frozen=True)
 class RemoteChange:
     """他の端末の変更を反映した結果（UI に知らせる）。
 
-    kind: added / metadata / translation / removed / collections / file
+    kind: added / metadata / translation / removed / collections / file / note
     removed のときの paper_id は削除する前の id、fields は metadata のとき変わった項目。
     """
 
@@ -92,7 +93,7 @@ def snapshot(p: Paper) -> dict:
     values["authors"] = [a.to_dict() for a in md.authors]
     values["source"] = md.source
     values["favorite"] = p.favorite
-    return {"values": values, "edited": sorted(p.edited), "alive": p.trashed_at is None}
+    return {"values": values, "edited": sorted(p.edited), "alive": p.trashed_at is None, "note": p.note}
 
 
 def to_metadata(values: dict) -> Metadata:
@@ -474,6 +475,8 @@ class SyncEngine:
                             own["fields"][name] = [value, str(self.clock.tick(at)), name in p.edited]
                     own["life"] = [snap["alive"], str(self.clock.tick(p.added_at if snap["alive"] else p.trashed_at))]
                     own["file"] = {"name": p.file_name, "pages": p.page_count, "added_at": p.added_at}
+                    if p.note:
+                        own["note"] = self._note_version(p, own)
                     changed = True
                 else:
                     stamp = None
@@ -487,6 +490,9 @@ class SyncEngine:
                     if base.get("alive") != snap["alive"]:
                         at = p.updated_at if snap["alive"] else p.trashed_at
                         own["life"] = [snap["alive"], str(self.clock.tick(at))]
+                        changed = True
+                    if base.get("note", "") != snap["note"]:
+                        own["note"] = self._note_version(p, own)
                         changed = True
                     if "file" not in own:
                         own["file"] = {"name": p.file_name, "pages": p.page_count, "added_at": p.added_at}
@@ -512,6 +518,11 @@ class SyncEngine:
                     "UPDATE papers SET baseline = ?, own = ?, exported = 0 WHERE sha = ?",
                     (dumps({"gone": True}), dumps(own), sha),
                 )
+
+    def _note_version(self, p: Paper, own: dict) -> dict:
+        """この端末で書いたノートの版。もとにした版は、手元のライブラリにある版（自分の記録の note）。"""
+        hlc = str(self.clock.tick(p.note_updated_at or p.updated_at))
+        return N.new_version(p.note, hlc, self.device.id, own.get("note"))
 
     def _scan_translation(self, db, p: Paper, row) -> None:
         info = translation_info(p.translation)
@@ -608,7 +619,7 @@ class SyncEngine:
             body = {
                 "kind": "paper", "v": F.FILE_VERSION, "device": self.device.id, "sha": sha,
                 "fields": own.get("fields", {}), "life": own.get("life"), "file": own.get("file", {}),
-                "opened": own.get("opened"), "collections": members.get(sha, {}),
+                "opened": own.get("opened"), "collections": members.get(sha, {}), "note": own.get("note"),
             }
             try:
                 if paper is not None and paper.has_original and F.original_path(sha) not in names:
@@ -709,7 +720,10 @@ class SyncEngine:
         for name, reg in regs.items():
             target_values[name] = reg[0]
         target_edited = {n for n in snap["edited"] if n not in regs} | {n for n, r in regs.items() if r[2]}
-        target = {"values": target_values, "edited": sorted(target_edited), "alive": alive}
+        note, merged = N.merge(([own["note"]] if own.get("note") else []) + [e["note"] for e in entries if e.get("note")])
+        target = {"values": target_values, "edited": sorted(target_edited), "alive": alive, "note": note["text"] if note else snap["note"]}
+        if note is not None and note != own.get("note"):
+            self._store_own_note(sha, note, export=merged)
         self._set_pending(sha, target)
         with self.library.quiet():
             if alive and paper.trashed_at is not None:
@@ -730,6 +744,9 @@ class SyncEngine:
                 )
                 if diff and not any(c.kind == "added" for c in changes):
                     changes.append(RemoteChange("metadata", sha, paper.id, diff))
+            if target["note"] != paper.note:
+                self.library.sync_set_note(paper.id, target["note"], merged)
+                changes.append(RemoteChange("note", sha, paper.id))
         changes += self._apply_members(paper, own_members, entries)
         self._finish_pending(sha, target)
         return changes
@@ -850,6 +867,19 @@ class SyncEngine:
 
     # -- 反映の途中で落ちたとき（エコーの防止） ---------------------------------------
 
+    def _store_own_note(self, sha: str, note: dict, export: bool) -> None:
+        """手元のライブラリに入れるノートの版を記録する。連結した新しい版だけを書き出す（ほかの端末も同じ版を作れる）。"""
+        with self.state.tx() as db:
+            row = db.execute("SELECT own FROM papers WHERE sha = ?", (sha,)).fetchone()
+            own = loads(row["own"], {}) if row else {}
+            own["note"] = note
+            if row is None:
+                db.execute("INSERT INTO papers (sha, baseline, own, exported) VALUES (?, 'null', ?, ?)", (sha, dumps(own), int(not export)))
+            else:
+                db.execute(
+                    f"UPDATE papers SET own = ?{', exported = 0' if export else ''} WHERE sha = ?", (dumps(own), sha)
+                )
+
     def _set_pending(self, sha: str, target: dict) -> None:
         with self.state.tx() as db:
             db.execute("INSERT OR REPLACE INTO pending_apply (sha, target) VALUES (?, ?)", (sha, dumps(target)))
@@ -882,6 +912,8 @@ class SyncEngine:
                         fixed["values"], fixed["edited"] = snap["values"], snap["edited"]
                     if snap["alive"] == target.get("alive"):
                         fixed["alive"] = snap["alive"]
+                    if snap["note"] == target.get("note"):
+                        fixed["note"] = snap["note"]
                     self._store_baseline(db, r["sha"], fixed)
                 db.execute("DELETE FROM pending_apply WHERE sha = ?", (r["sha"],))
 

@@ -865,3 +865,108 @@ def test_reader_side_panel_shows_paper_translation_and_note(window, paper_path):
     assert w.side_panel.isHidden()
     w.inspector_btn.setChecked(True)
     assert not w.side_panel.isHidden()
+
+
+# ---- ノート：本物の Library とつなぐ ---------------------------------------------
+
+
+def test_note_editor_saves_to_the_library_and_shows_it_again(window, tmp_path):
+    app, w = window
+    from spectra.ui.note_editor import NoteEditor
+
+    paper = _queue_papers(w, tmp_path, 1)[0]
+    ed = NoteEditor(w.library)
+    ed.show()
+    ed.set_paper(w.library.get(paper.id))
+    assert ed.text() == "" and not ed.dirty
+    ed.edit.setPlainText("1 行目\n2 行目")
+    ed._timer.setInterval(10)
+    ed._timer.start()
+    pump(app, 2, until=lambda: not ed.dirty)
+    saved = w.library.get(paper.id)
+    assert saved.note == "1 行目\n2 行目" and saved.note_updated_at
+    assert "最終更新" in ed.status.text()
+
+    # 別の論文を挟んで、同じ論文を選び直すと、保存した内容が出る（アプリを開き直した場合も同じ DB から読む）
+    ed.set_paper(None)
+    ed.set_paper(w.library.get(paper.id))
+    assert ed.text() == "1 行目\n2 行目" and not ed.dirty
+
+    # 論文を切り替える直前の入力は、待たずに保存される
+    other = w.library.add(_distinct_paper(tmp_path / "other.pdf", "Another paper"))[0]
+    ed.edit.setPlainText("切り替え前の入力")
+    ed.set_paper(w.library.get(other.id))
+    assert w.library.get(paper.id).note == "切り替え前の入力" and ed.text() == ""
+
+
+def test_note_editor_rejects_text_over_the_limit(window, tmp_path):
+    app, w = window
+    from spectra.library.models import NOTE_MAX_CHARS
+    from spectra.ui.note_editor import NoteEditor
+
+    paper = _queue_papers(w, tmp_path, 1)[0]
+    with pytest.raises(ValueError):  # Library 自体も上限を超える保存を拒否する
+        w.library.set_note(paper.id, "あ" * (NOTE_MAX_CHARS + 1))
+    ed = NoteEditor(w.library)
+    ed.show()
+    ed.set_paper(w.library.get(paper.id))
+    ed.edit.setPlainText("い" * (NOTE_MAX_CHARS + 10))  # 欄が超えた分を入れないので、保存は失敗しない
+    ed.flush()
+    assert not ed.dirty and w.library.get(paper.id).note == "い" * NOTE_MAX_CHARS
+    assert "ノートを保存できませんでした" not in ed.status.text()
+
+
+def test_note_editor_shows_the_merged_notice_until_the_next_save(window, tmp_path):
+    app, w = window
+    from spectra.ui.note_editor import NoteEditor
+
+    paper = _queue_papers(w, tmp_path, 1)[0]
+    w.library.sync_set_note(paper.id, "手元の内容\n\n――― 同時に編集された内容 ―――\nほかの内容", merged=True)
+    ed = NoteEditor(w.library)
+    ed.show()
+    ed.set_paper(w.library.get(paper.id))
+    assert "同時に編集" in ed.text() and not ed.notice.isHidden() and "連結" in ed.notice.text()
+    ed.set_paper(w.library.get(paper.id))  # 再表示しても注意は残る（保存するまで）
+    assert not ed.notice.isHidden()
+    ed.edit.setPlainText(ed.text() + "\n整理した")
+    ed.flush()
+    assert ed.notice.isHidden() and w.library.get(paper.id).note_merged is False
+    ed.set_paper(w.library.get(paper.id))
+    assert ed.notice.isHidden()
+
+
+def test_side_panel_note_follows_remote_changes(window, tmp_path):
+    """同期で届いたノートは、入力していなければ表示に反映され、入力の途中なら上書きしない。"""
+    app, w = window
+    from spectra.config.settings import Settings
+    from spectra.ui.side_panel import SidePanel
+
+    paper = _queue_papers(w, tmp_path, 1)[0]
+    panel = SidePanel(w.library, Settings(side_panel_tab="note"), "library")
+    panel.show()
+    panel.set_paper(w.library.get(paper.id))
+    w.library.sync_set_note(paper.id, "ほかのパソコンのメモ", merged=False)
+    panel.set_paper(w.library.get(paper.id))
+    assert panel.note_editor.text() == "ほかのパソコンのメモ"
+    panel.note_editor.edit.setPlainText("入力中")
+    w.library.sync_set_note(paper.id, "さらに届いたメモ", merged=False)
+    panel.set_paper(w.library.get(paper.id))
+    assert panel.note_editor.text() == "入力中" and panel.note_editor.dirty
+
+
+def test_remote_note_change_updates_the_open_note_unless_typing(window, paper_path):
+    from spectra.library.sync import RemoteChange
+
+    app, w = window
+    assert w.open_file(paper_path)
+    pump(app, 0.3)
+    pid, sha = w.paper.id, w.paper.sha256
+    w.side_panel.set_current_tab("note")
+    w.library.set_note(pid, "別のパソコンで書いたメモ")  # 同期で届いた状態
+    w._on_remote_changes([RemoteChange("note", sha, pid)])
+    assert w.side_panel.note_editor.edit.toPlainText() == "別のパソコンで書いたメモ"
+    # 入力の途中は上書きしない
+    w.side_panel.note_editor.edit.setPlainText("書きかけ")
+    w.library.set_note(pid, "さらに別の内容")
+    w._on_remote_changes([RemoteChange("note", sha, pid)])
+    assert w.side_panel.note_editor.edit.toPlainText() == "書きかけ"

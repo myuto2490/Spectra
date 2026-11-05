@@ -1,4 +1,4 @@
-"""ライブラリの詳細パネル（「論文の詳細」と「AI翻訳の詳細」のタブ）と、書誌情報の編集ダイアログ。"""
+"""ライブラリの詳細パネル（「論文の詳細」「AI翻訳の詳細」「ノート」のタブ）と、書誌情報の編集ダイアログ。"""
 
 from __future__ import annotations
 
@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 
 from ..library import Author, Metadata, Paper
 from .library_model import days_left, format_date, local_short, local_state, translation_status
+from .note_editor import NoteEditor
 from .widgets import FormGroup, button, label, link_button, plain_tooltip, set_prop
 
 
@@ -75,7 +76,8 @@ META_SOURCES = {
 
 FORMALITY_NAMES = {"default": "である調", "prefer_less": "である調", "prefer_more": "です・ます調"}
 
-PAPER_TAB, TRANSLATION_TAB, OTHER_PAGE, TRASH_PAGE = 0, 1, 2, 3
+PAPER_TAB, TRANSLATION_TAB, NOTE_TAB, OTHER_PAGE, TRASH_PAGE = 0, 1, 2, 3, 4
+TAB_NAMES = ("論文の詳細", "AI翻訳の詳細", "ノート")
 
 
 class _InfoGrid(QWidget):
@@ -129,7 +131,7 @@ class _InfoGrid(QWidget):
 
 
 class PaperDetail(QWidget):
-    """選んだ論文の詳細。「論文の詳細」（書誌情報）と「AI翻訳の詳細」（翻訳とファイル）のタブに分ける。"""
+    """選んだ論文の詳細。「論文の詳細」（書誌情報）・「AI翻訳の詳細」（翻訳とファイル）・「ノート」のタブに分ける。"""
 
     readRequested = Signal(int)
     translateRequested = Signal(list)  # 論文 ID の一覧
@@ -143,8 +145,9 @@ class PaperDetail(QWidget):
     purgeRequested = Signal(list)  # 完全に削除
     cancelDownloadRequested = Signal(int)
     retryDownloadRequested = Signal(int)
+    tabChanged = Signal(int)  # 選んだタブ（PAPER_TAB など）
 
-    def __init__(self, parent: QWidget | None = None):
+    def __init__(self, parent: QWidget | None = None, library=None):
         super().__init__(parent)
         self.setObjectName("Inspector")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
@@ -169,7 +172,7 @@ class PaperDetail(QWidget):
         self._tab_group = QButtonGroup(self)
         self._tab_group.setExclusive(True)
         self.tab_buttons: list[QPushButton] = []
-        for i, text in enumerate(("論文の詳細", "AI翻訳の詳細")):
+        for i, text in enumerate(TAB_NAMES):
             b = QPushButton(text)
             b.setCheckable(True)
             b.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -185,7 +188,11 @@ class PaperDetail(QWidget):
         self.pages = QStackedWidget()
         outer.addWidget(self.pages, 1)
         self.pages.addWidget(self._build_paper_page())
-        self.pages.addWidget(self._build_translation_page())
+        self._translation_page = self._build_translation_page()
+        self.pages.addWidget(self._translation_page)
+        self._translation_extra: QWidget | None = None
+        self.note_editor = NoteEditor(library)
+        self.pages.addWidget(self.note_editor)
         self.pages.addWidget(self._build_other_page())
         self.pages.addWidget(self._build_trash_page())
         self.show_papers([])
@@ -402,9 +409,28 @@ class PaperDetail(QWidget):
         return self._tab_group.checkedId()
 
     def set_tab(self, index: int) -> None:
+        changed = self._tab_group.checkedId() != index
         self.tab_buttons[index].setChecked(True)
         if self._paper is not None and self._paper.trashed_at is None:
             self.pages.setCurrentIndex(index)
+        if changed or self.sender() is self._tab_group:  # 押されたとき（すでに選ばれていても）か、切り替わったとき
+            self.tabChanged.emit(index)
+
+    def set_translation_widget(self, widget: QWidget | None) -> None:
+        """「AI翻訳の詳細」のタブの中身を差し替える（読書画面で、翻訳の設定のパネルを入れる）。None で元に戻す。"""
+        if widget is self._translation_extra:
+            return
+        shown = self.pages.currentIndex() == TRANSLATION_TAB
+        current = self._translation_extra or self._translation_page
+        self.pages.removeWidget(current)
+        if current is not self._translation_page:
+            current.hide()
+        new = widget or self._translation_page
+        self._translation_extra = widget
+        self.pages.insertWidget(TRANSLATION_TAB, new)
+        new.show()
+        if shown:
+            self.pages.setCurrentIndex(TRANSLATION_TAB)
 
     # -- 表示 ------------------------------------------------------------
 
@@ -425,6 +451,7 @@ class PaperDetail(QWidget):
         self._sync_on = sync_on
         self._sync_available = sync_available
         trashed = bool(papers) and all(p.trashed_at is not None for p in papers)
+        self.note_editor.set_paper(self._paper if not trashed else None)
         self.tabs.setVisible(self._paper is not None and not trashed)
         if self._paper is not None and trashed:
             self.pages.setCurrentIndex(TRASH_PAGE)

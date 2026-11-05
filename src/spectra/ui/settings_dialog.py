@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import time
+import uuid
 from pathlib import Path
 
 from PySide6.QtCore import QSize, Qt, QUrl, Signal
@@ -21,14 +23,16 @@ from PySide6.QtWidgets import (
     QRadioButton,
     QScrollArea,
     QStackedWidget,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
 from ..config import fonts as font_store
 from ..config import paths
-from ..config.secrets import SecretStore
-from ..config.settings import Settings
+from ..config.quota import QuotaBook
+from ..config.secrets import SecretStore, default_label, slot
+from ..config.settings import MAX_KEYS, Settings
 from ..translate import registry
 from ..translate.cache import TranslationCache
 from ..translate.errors import TranslatorError
@@ -50,20 +54,36 @@ from .widgets import (
 
 
 class KeyField(QWidget):
-    """API キー 1 つ分の入力欄（伏字・表示切替・確認・削除）。"""
+    """API キー 1 つ分の入力欄（名前・伏字・表示切替・確認・並べ替え・削除）。"""
 
     changed = Signal(str)  # engine_id
+    renamed = Signal(str, str)  # (キーの id, 名前)
+    moveRequested = Signal(str, int)  # (キーの id, -1 / +1)
+    removeRequested = Signal(str)  # キーの id（一覧から外す）
 
-    def __init__(self, engine_id: str, secrets: SecretStore, settings: Settings, parent: QWidget | None = None):
+    def __init__(
+        self,
+        engine_id: str,
+        secrets: SecretStore,
+        settings: Settings,
+        parent: QWidget | None = None,
+        key_id: str = "default",
+        name: str = "",
+        index: int = 0,
+        count: int = 1,
+    ):
         super().__init__(parent)
         self.engine_id = engine_id
+        self.key_id = key_id
+        self.slot = slot(engine_id, key_id)  # 資格情報ストアでの名前
         self.secrets = secrets
         self.settings = settings
         self.info = registry.ENGINES[engine_id]
+        self.multiple = count > 1
         self._task: worker.Task | None = None
         # 保存済みのキーは、設定を開いただけでは読まない（macOS ではキーチェーンの許可を求められるため）。
         # 目のアイコンで表示したとき・接続を確認したときに初めて読む
-        self._saved = secrets.has(engine_id, use_env=False)
+        self._saved = secrets.has(self.slot, use_env=False)
         self._loaded: str | None = None  # 読み出したキー（読んでいなければ None）
 
         lay = QVBoxLayout(self)
@@ -71,19 +91,22 @@ class KeyField(QWidget):
         lay.setSpacing(8)
 
         head = QHBoxLayout()
-        titles = QVBoxLayout()
-        titles.setSpacing(2)
-        titles.addWidget(label(self.info.name, "headline"))
-        titles.addWidget(label(self.info.description, "caption", wrap=True))
-        head.addLayout(titles, 1)
-        get_key = link_button("キーを取得")
-        self.get_key = get_key
-        get_key.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
-        get_key.setToolTip(self.info.key_url)
-        get_key.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(self.info.key_url)))
-        head.addWidget(get_key, 0, Qt.AlignmentFlag.AlignTop)
+        head.setSpacing(6)
+        head.addWidget(label(f"{index + 1}.", "secondary"))
+        self.name = QLineEdit(name)
+        self.name.setPlaceholderText(default_label(engine_id, index))
+        self.name.setMaxLength(40)
+        self.name.setAccessibleName(f"{index + 1} 番目のキーの名前")
+        self.name.editingFinished.connect(lambda: self.renamed.emit(self.key_id, self.name.text().strip()))
+        head.addWidget(self.name, 1)
+        self.up_btn = _arrow_button("↑", "上へ（先に使う）", index > 0)
+        self.up_btn.clicked.connect(lambda: self.moveRequested.emit(self.key_id, -1))
+        self.down_btn = _arrow_button("↓", "下へ", index < count - 1)
+        self.down_btn.clicked.connect(lambda: self.moveRequested.emit(self.key_id, 1))
+        for b in (self.up_btn, self.down_btn):
+            b.setVisible(self.multiple)
+            head.addWidget(b)
         lay.addLayout(head)
-        self.refresh_theme()
 
         row = QHBoxLayout()
         row.setSpacing(6)
@@ -92,7 +115,7 @@ class KeyField(QWidget):
         self.edit.setPlaceholderText(
             "保存済み（目のアイコンで表示）" if self._saved else f"{self.info.key_label}を貼り付け"
         )
-        self.edit.setAccessibleName(f"{self.info.name} の {self.info.key_label}")
+        self.edit.setAccessibleName(f"{name or default_label(engine_id, index)} の {self.info.key_label}")
         self.edit.editingFinished.connect(self._save)
         self.edit.textEdited.connect(lambda _t: self._set_status("", None))
         row.addWidget(self.edit, 1)
@@ -116,19 +139,19 @@ class KeyField(QWidget):
         status.addWidget(self.status, 1)
         lay.addLayout(status)
 
-        src = secrets.source(engine_id)
+        src = secrets.source(self.slot)
         if src and src.startswith("環境変数"):
             self._set_status(f"{src} の値が使われます。", "info")
         elif src:
             self._set_status(f"保存済み（{src}）", "success")
 
     def refresh_theme(self) -> None:
-        self.get_key.setIcon(icons.icon("external", theme.current().accent, 14))
+        pass
 
     def _load_saved(self) -> str:
         """保存済みのキーを読み出して欄に入れる（ここで初めてキーチェーンに問い合わせる）。"""
         if self._loaded is None and self._saved and not self.edit.text():
-            self._loaded = self.secrets.get(self.engine_id, use_env=False)
+            self._loaded = self.secrets.get(self.slot, use_env=False)
             self.edit.setText(self._loaded)
         return self.edit.text().strip()
 
@@ -159,7 +182,8 @@ class KeyField(QWidget):
             return  # 保存済みのキーを読んでいない（欄が空なのは、まだ表示していないだけ）
         if value == (self._loaded or ""):
             return
-        self.secrets.set(self.engine_id, value)
+        self.secrets.set(self.slot, value)
+        QuotaBook().forget(self.key_id)  # 別のキーに入れ替えたら、上限の記録は当てはまらない
         self._loaded, self._saved = value, bool(value)
         self._set_status(f"保存しました（{self.secrets.backend_name}）" if value else "削除しました", "success" if value else None)
         self.changed.emit(self.engine_id)
@@ -167,8 +191,12 @@ class KeyField(QWidget):
             self.verify()
 
     def _delete(self) -> None:
+        if self.multiple:
+            self.removeRequested.emit(self.key_id)  # 一覧から外す（キーの削除は一覧が行う）
+            return
         self.edit.clear()
-        self.secrets.delete(self.engine_id)
+        self.secrets.delete(self.slot)
+        QuotaBook().forget(self.key_id)
         self._loaded, self._saved = None, False
         self.edit.setPlaceholderText(f"{self.info.key_label}を貼り付け")
         self._set_status("削除しました", None)
@@ -180,7 +208,7 @@ class KeyField(QWidget):
             self._set_status("キーを入力してください。", "danger")
             return
         if key != (self._loaded or ""):
-            self.secrets.set(self.engine_id, key)
+            self.secrets.set(self.slot, key)
             self._loaded, self._saved = key, True
             self.changed.emit(self.engine_id)
         self.verify_btn.setEnabled(False)
@@ -206,6 +234,16 @@ class KeyField(QWidget):
             self._set_status(msg, "danger")
 
         self._task = worker.start(job, done, failed)
+
+
+def _arrow_button(text: str, tooltip: str, enabled: bool) -> QToolButton:
+    b = QToolButton()
+    b.setText(text)
+    b.setToolTip(tooltip)
+    b.setAccessibleName(tooltip)
+    b.setEnabled(enabled)
+    b.setCursor(Qt.CursorShape.PointingHandCursor)
+    return b
 
 
 class FontOption(QFrame):
@@ -332,8 +370,7 @@ class SettingsDialog(QDialog):
     def refresh_theme(self) -> None:
         for b in self.findChildren(QAbstractButton):
             refresh_icon(b)
-        for field in self.key_fields.values():
-            field.refresh_theme()
+        self.get_key.setIcon(icons.icon("external", theme.current().accent, 14))
 
     def show_tab(self, key: str) -> None:
         self.tabs.set_current(key)
@@ -346,12 +383,43 @@ class SettingsDialog(QDialog):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(16)
         group = FormGroup("API キー")
+        info = registry.ENGINES["gemini"]
+        head = QHBoxLayout()
+        titles = QVBoxLayout()
+        titles.setSpacing(2)
+        titles.addWidget(label(info.name, "headline"))
+        titles.addWidget(label(info.description, "caption", wrap=True))
+        head.addLayout(titles, 1)
+        self.get_key = link_button("キーを取得")
+        self.get_key.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+        self.get_key.setToolTip(info.key_url)
+        self.get_key.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(info.key_url)))
+        head.addWidget(self.get_key, 0, Qt.AlignmentFlag.AlignTop)
+        head_box = QWidget()
+        head_box.setLayout(head)
+        group.add_widget(head_box)
+        self.key_list = QWidget()
+        self.key_rows = QVBoxLayout(self.key_list)
+        self.key_rows.setContentsMargins(0, 0, 0, 0)
+        self.key_rows.setSpacing(14)
+        group.add_widget(self.key_list)
         self.key_fields: dict[str, KeyField] = {}
-        for eng in ("gemini",):
-            field = KeyField(eng, self.secrets, self.settings)
-            field.changed.connect(lambda _e: self.keysChanged.emit())
-            group.add_widget(field)
-            self.key_fields[eng] = field
+        self.add_key_btn = button("キーを追加…")
+        self.add_key_btn.clicked.connect(self._add_key)
+        add_row = QHBoxLayout()
+        add_row.addWidget(self.add_key_btn)
+        add_row.addStretch(1)
+        add_box = QWidget()
+        add_box.setLayout(add_row)
+        group.add_widget(add_box)
+        self.key_auto_switch = Switch(self.settings.key_auto_switch)
+        self.key_auto_switch.toggled.connect(self._on_key_auto_switch)
+        group.add_row(
+            "上限に達したら次のキーに切り替える",
+            self.key_auto_switch,
+            "1 日の無料枠の上限に達したら、一覧の次のキーで翻訳を続けます",
+        )
+        self._build_key_rows()
         if self.secrets.secure:
             group.set_footer(f"キーは {self.secrets.backend_name} に安全に保存され、選択した翻訳サービス以外には送信されません。")
         else:
@@ -385,6 +453,67 @@ class SettingsDialog(QDialog):
         lay.addWidget(model_group)
         lay.addStretch(1)
         return _scrollable(page)
+
+    # -- API キーの一覧 ----------------------------------------------------------------
+
+    def _key_entries(self) -> list[dict]:
+        """一覧に出すキー。目録が空なら、以前からのキー（default）の欄を 1 つ出す。"""
+        return self.settings.keys_for("gemini") or [{"id": "default", "provider": "gemini", "label": ""}]
+
+    def _build_key_rows(self) -> None:
+        while self.key_rows.count():
+            w = self.key_rows.takeAt(0).widget()
+            if w is not None:
+                w.deleteLater()
+        self.key_fields = {}
+        entries = self._key_entries()
+        exhausted = QuotaBook().exhausted_keys() if len(entries) > 1 else {}
+        for i, e in enumerate(entries):
+            field = KeyField("gemini", self.secrets, self.settings, key_id=e["id"], name=e["label"], index=i, count=len(entries))
+            field.changed.connect(lambda _e: self.keysChanged.emit())
+            field.renamed.connect(self._rename_key)
+            field.moveRequested.connect(self._move_key)
+            field.removeRequested.connect(self._remove_key)
+            if e["id"] in exhausted and field._saved:
+                when = time.strftime("%H:%M", time.localtime(exhausted[e["id"]]))
+                field._set_status(f"今日の上限に達しています（{when} ごろに戻ります）", "info")
+            self.key_rows.addWidget(field)
+            self.key_fields[field.slot] = field
+        self.add_key_btn.setEnabled(len(entries) < MAX_KEYS)
+
+    def _save_key_entries(self, entries: list[dict]) -> None:
+        self.settings.api_keys = entries
+        self.settings.save()
+        self._build_key_rows()
+        self.keysChanged.emit()
+
+    def _add_key(self) -> None:
+        entries = self._key_entries()
+        self._save_key_entries([*entries, {"id": uuid.uuid4().hex, "provider": "gemini", "label": ""}])
+        list(self.key_fields.values())[-1].edit.setFocus()
+
+    def _rename_key(self, key_id: str, name: str) -> None:
+        entries = [dict(e, label=name) if e["id"] == key_id else e for e in self._key_entries()]
+        if entries != self.settings.keys_for("gemini"):
+            self.settings.api_keys = entries
+            self.settings.save()
+
+    def _move_key(self, key_id: str, delta: int) -> None:
+        entries = self._key_entries()
+        i = next(n for n, e in enumerate(entries) if e["id"] == key_id)
+        j = i + delta
+        if 0 <= j < len(entries):
+            entries[i], entries[j] = entries[j], entries[i]
+            self._save_key_entries(entries)
+
+    def _remove_key(self, key_id: str) -> None:
+        self.secrets.delete(slot("gemini", key_id))
+        QuotaBook().forget(key_id)
+        self._save_key_entries([e for e in self._key_entries() if e["id"] != key_id])
+
+    def _on_key_auto_switch(self, on: bool) -> None:
+        self.settings.key_auto_switch = on
+        self.settings.save()
 
     def _refresh_model_desc(self) -> None:
         info = MODELS[self.settings.gemini_model]
@@ -510,6 +639,31 @@ class SettingsDialog(QDialog):
         lookup.add_row("インターネットで書誌情報を取得する", self.metadata_lookup)
         lay.addWidget(lookup)
 
+        updates = FormGroup(
+            "アップデート",
+            "オンにすると、起動時に 1 日 1 回まで、新しいバージョンがあるかを GitHub に問い合わせます。"
+            "送るのは Spectra のバージョンだけで、ライブラリや論文の情報は送りません。",
+        )
+        self.update_check = Switch(self.settings.update_check == "on")
+        self.update_check.toggled.connect(self._on_update_check)
+        updates.add_row("新しいバージョンを確認する", self.update_check)
+        self.check_now_btn = button("今すぐ確認")
+        self.check_now_btn.clicked.connect(self.check_for_update_now)
+        self.download_btn = link_button("ダウンロードのページを開く")
+        self.download_btn.hide()
+        self._update_url = ""
+        self.download_btn.clicked.connect(self._open_update_page)
+        buttons = QWidget()
+        row = QHBoxLayout(buttons)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.addWidget(self.download_btn)
+        row.addWidget(self.check_now_btn)
+        updates.add_row("新しいバージョン", buttons)
+        self.update_status = label("", "caption", wrap=True)
+        updates.add_widget(self.update_status)
+        self.update_status.parentWidget().setVisible(False)
+        lay.addWidget(updates)
+
         qa = FormGroup("品質", "翻訳後に、図表・数式・翻訳対象外の文字が変化していないかを自動で検査します。")
         self.verify = Switch(self.settings.verify_layout)
         self.verify.toggled.connect(self._on_verify)
@@ -550,6 +704,46 @@ class SettingsDialog(QDialog):
         self.settings.save()
         self.appearanceChanged.emit()
         self.refresh_theme()
+
+    def _on_update_check(self, on: bool) -> None:
+        self.settings.update_check = "on" if on else "off"
+        self.settings.save()
+
+    def check_for_update_now(self) -> None:
+        """「今すぐ確認」: 失敗も表示する。新しい版があればリリースのページを開くボタンを出す。"""
+        from .. import __version__
+        from .update_prompt import start_check
+
+        self.check_now_btn.setEnabled(False)
+        self.download_btn.hide()
+        self._show_update_status("確認しています…")
+
+        def found(info) -> None:
+            self.check_now_btn.setEnabled(True)
+            self._show_update_status(f"Spectra {info.version} が利用できます（今は {__version__}）。")
+            self._update_url = info.url
+            self.download_btn.show()
+
+        def none() -> None:
+            self.check_now_btn.setEnabled(True)
+            self._show_update_status(f"最新のバージョンです（{__version__}）。")
+
+        def error(err) -> None:
+            self.check_now_btn.setEnabled(True)
+            msg = err.user_message().replace("\n", " ") if hasattr(err, "user_message") else str(err)
+            self._show_update_status(msg, "danger")
+
+        self._update_task = start_check(found, on_error=error, on_none=none)
+
+    def _open_update_page(self) -> None:
+        from .update_prompt import open_release_page
+
+        open_release_page(self._update_url)
+
+    def _show_update_status(self, text: str, tone: str | None = None) -> None:
+        self.update_status.setText(text)
+        set_prop(self.update_status, "tone", tone)
+        self.update_status.parentWidget().setVisible(bool(text))
 
     def _on_lookup_toggle(self, on: bool) -> None:
         self.settings.metadata_lookup = on

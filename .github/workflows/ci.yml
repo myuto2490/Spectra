@@ -37,6 +37,7 @@ jobs:
     env:
       QT_QPA_PLATFORM: offscreen
       PYTHONUTF8: "1"
+      PYTHONFAULTHANDLER: "1"  # 終了時などにクラッシュしたとき、Python のスタックをログに出す
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

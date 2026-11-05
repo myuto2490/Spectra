@@ -603,3 +603,95 @@ def test_concurrent_offline_work_converges(make_device, pdf):
 
     assert len(a.lib.papers()) == 3
     assert snapshot(a) == snapshot(b)
+
+
+# -- ノート ------------------------------------------------------------------------
+
+
+def test_note_written_on_one_device_appears_on_the_other(make_device, pdf):
+    a, b = make_device("A"), make_device("B")
+    paper = a.lib.add(pdf(seed=1))[0]
+    a.lib.set_note(paper.id, "第 3 節を読み直す")
+    roundtrip(a, b)
+    got = b.paper(paper.sha256)
+    assert got.note == "第 3 節を読み直す" and not got.note_merged
+    assert any(c.kind == "note" and c.sha256 == paper.sha256 for c in b.changes)
+
+    b.changes.clear()
+    b.lib.set_note(got.id, "第 3 節を読み直した")  # 見てから書いたので、連結しない
+    roundtrip(a, b)
+    assert a.paper(paper.sha256).note == "第 3 節を読み直した" and not a.paper(paper.sha256).note_merged
+    assert [c.kind for c in a.changes if c.sha256 == paper.sha256][-1] == "note"
+
+
+def test_notes_written_at_the_same_time_are_both_kept(make_device, pdf):
+    a, b = make_device("A"), make_device("B")
+    paper = a.lib.add(pdf(seed=1))[0]
+    a.lib.set_note(paper.id, "共通")
+    roundtrip(a, b)
+
+    a.lib.set_note(paper.id, "A で追記")
+    time.sleep(0.01)
+    b.lib.set_note(b.paper(paper.sha256).id, "B で追記")
+    roundtrip(a, b)
+    texts = {d.paper(paper.sha256).note for d in (a, b)}
+    assert len(texts) == 1
+    text = texts.pop()
+    assert "A で追記" in text and "B で追記" in text and "同時に編集された内容" in text
+    assert text.index("B で追記") < text.index("A で追記")  # 新しい方（B）が先
+    assert a.paper(paper.sha256).note_merged and b.paper(paper.sha256).note_merged
+
+    roundtrip(a, b)
+    roundtrip(a, b)
+    assert a.paper(paper.sha256).note == b.paper(paper.sha256).note == text  # 往復して重ならない
+
+    a.lib.set_note(paper.id, "整理した")  # 連結を見てから書いたので、そのまま届く
+    roundtrip(a, b)
+    assert b.paper(paper.sha256).note == "整理した" and not b.paper(paper.sha256).note_merged
+
+
+def test_notes_from_three_devices_converge(make_device, pdf):
+    devices = [make_device(n) for n in ("A", "B", "C")]
+    paper = devices[0].lib.add(pdf(seed=1))[0]
+    roundtrip(*devices)
+    for d in devices:
+        d.lib.set_note(d.paper(paper.sha256).id, f"{d.name} のメモ")
+        time.sleep(0.01)
+    roundtrip(*devices)
+    roundtrip(*devices)
+    notes = {d.paper(paper.sha256).note for d in devices}
+    assert len(notes) == 1
+    text = devices[0].paper(paper.sha256).note
+    assert all(f"{n} のメモ" in text for n in ("A", "B", "C")) and text.count("同時に編集された内容") == 2
+
+
+def test_broken_note_in_the_sync_folder_is_ignored(make_device, pdf, sync_root):
+    a, b = make_device("A"), make_device("B")
+    paper = a.lib.add(pdf(seed=1))[0]
+    a.lib.set_note(paper.id, "元のメモ")
+    a.sync()
+    path = next(sync_root.glob(f"papers/{paper.sha256}/state.*.json"))
+    body = json.loads(path.read_text(encoding="utf-8"))
+    body["note"] = {"text": ["not", "text"], "hlc": "x", "vv": "y"}
+    path.write_text(json.dumps(body), encoding="utf-8")
+    b.sync()
+    got = b.paper(paper.sha256)
+    assert got is not None and got.note == ""  # ノートだけを捨て、論文は取り込む
+
+
+def test_state_file_from_an_older_version_without_note_keeps_the_note(make_device, pdf, sync_root):
+    """v0.3 以前の端末は note を知らずに自分の state ファイルを書く。それでノートが消えたり連結されたりしない。"""
+    a, b = make_device("A"), make_device("B")
+    paper = a.lib.add(pdf(seed=1))[0]
+    a.lib.set_note(paper.id, "v0.4 のノート")
+    roundtrip(a, b)
+    b.lib.set_favorite(b.paper(paper.sha256).id, True)  # B も自分の state ファイルを書く
+    roundtrip(a, b)
+    path = sync_root / "papers" / paper.sha256 / f"state.{b.engine.device.id}.json"
+    body = json.loads(path.read_text(encoding="utf-8"))
+    body.pop("note", None)  # 古い版が書いた形（実際の v0.3.0 のエンジンでも、ほかの端末のノートが残ることを手で確かめた）
+    path.write_text(json.dumps(body), encoding="utf-8")
+    roundtrip(a, b)
+    for d in (a, b):
+        got = d.paper(paper.sha256)
+        assert got.note == "v0.4 のノート" and not got.note_merged and got.favorite

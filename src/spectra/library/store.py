@@ -17,17 +17,23 @@ import shutil
 import sqlite3
 import threading
 import time
+import uuid
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
 
 from ..config import paths
 from ..core.pipeline import open_document
+from . import annotations as A
 from .errors import LibraryError, PaperNotFound
 from .metadata import extract_local
 from .models import (
+    MAX_ANNOTATIONS,
     META_STATUSES,
+    NOTE_MAX_CHARS,
     AddResult,
+    Annotation,
     Author,
     Collection,
     LibraryEvent,
@@ -107,6 +113,34 @@ STATE_MIGRATIONS: list[str] = [
     """,
 ]
 
+# ノート（v0.4）。表を足すだけなので版は上げない（上げると、v0.3 以前でライブラリを開けなくなる）。古い版はこの表を無視する
+NOTES_TABLE = """
+CREATE TABLE IF NOT EXISTS state.notes (
+    paper_id INTEGER PRIMARY KEY,
+    text TEXT NOT NULL,
+    updated_at REAL,
+    merged INTEGER NOT NULL DEFAULT 0   -- 同期で同時の編集を連結した
+)
+"""
+
+# 注釈（v0.4）。ノートと同じく、表を足すだけで版は上げない
+ANNOTATIONS_TABLE = """
+CREATE TABLE IF NOT EXISTS state.annotations (
+    id TEXT PRIMARY KEY,
+    paper_id INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    page INTEGER NOT NULL,
+    quads TEXT NOT NULL,                -- [[x0, y0, x1, y1], …]（原文のページの座標）
+    quote TEXT NOT NULL DEFAULT '',
+    color TEXT NOT NULL,
+    comment TEXT NOT NULL DEFAULT '',
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    comment_merged INTEGER NOT NULL DEFAULT 0
+)
+"""
+ANNOTATIONS_INDEX = "CREATE INDEX IF NOT EXISTS state.annotations_paper ON annotations (paper_id)"
+
 _TEXT_FIELDS = ("title", "venue", "volume", "issue", "pages", "doi", "arxiv_id", "abstract", "url")
 
 
@@ -126,8 +160,13 @@ class Library:
             self._db.execute("ATTACH DATABASE ? AS state", (str(self.root / STATE_DB_NAME),))
             self._db.execute("PRAGMA state.journal_mode=WAL")
             self._migrate_state()
+            self._db.execute(NOTES_TABLE)
+            self._db.execute(ANNOTATIONS_TABLE)
+            self._db.execute(ANNOTATIONS_INDEX)
             # 完全に削除するときは 2 つの DB にまたがるので、途中で落ちた分の残りを掃除する
             self._db.execute("DELETE FROM state.trash WHERE paper_id NOT IN (SELECT id FROM main.papers)")
+            self._db.execute("DELETE FROM state.notes WHERE paper_id NOT IN (SELECT id FROM main.papers)")
+            self._db.execute("DELETE FROM state.annotations WHERE paper_id NOT IN (SELECT id FROM main.papers)")
 
     # -- 接続・移行 ----------------------------------------------------------
 
@@ -361,6 +400,125 @@ class Library:
         self._update(paper_id, "favorite = ?", (int(bool(on)),))
         self._emit("favorite", paper_id)
 
+    def set_note(self, paper_id: int, text: str) -> None:
+        """ノートを保存する。書誌情報とは別に扱い、updated_at は進めない（同期では note_updated_at で時刻を付ける）。"""
+        if not isinstance(text, str) or len(text) > NOTE_MAX_CHARS:
+            raise ValueError(f"note must be a string of at most {NOTE_MAX_CHARS} characters")
+        paper = self._require(paper_id)
+        if text == paper.note and not paper.note_merged:
+            return
+        self._write_note(paper_id, text, merged=False)
+        self._emit("note", paper_id, paper.sha256)
+
+    def sync_set_note(self, paper_id: int, text: str, merged: bool) -> None:
+        """他の端末のノートを反映する（merged: 同時の編集を連結した結果）。"""
+        self._require(paper_id)
+        self._write_note(paper_id, text[:NOTE_MAX_CHARS], merged)
+        self._emit("note", paper_id)
+
+    def _write_note(self, paper_id: int, text: str, merged: bool) -> None:
+        with self._tx() as db:
+            db.execute(
+                "INSERT OR REPLACE INTO state.notes (paper_id, text, updated_at, merged) VALUES (?, ?, ?, ?)",
+                (paper_id, text, time.time(), int(merged)),
+            )
+
+    # -- 注釈 ------------------------------------------------------------------
+
+    def annotations(self, paper_id: int) -> list[Annotation]:
+        """論文の注釈（ページ順 → 上から → 左から）。"""
+        with self._lock:
+            rows = self._db.execute("SELECT * FROM state.annotations WHERE paper_id = ?", (paper_id,)).fetchall()
+        items = [_annotation(r) for r in rows]
+        return sorted(items, key=lambda a: (a.page, a.rect[1], a.rect[0], a.created_at))
+
+    def get_annotation(self, annotation_id: str) -> Annotation | None:
+        with self._lock:
+            row = self._db.execute("SELECT * FROM state.annotations WHERE id = ?", (annotation_id,)).fetchone()
+        return _annotation(row) if row else None
+
+    def add_annotation(
+        self, paper_id: int, kind: str, page: int, quads, *, quote: str = "", color: str = "yellow", comment: str = ""
+    ) -> Annotation:
+        """注釈を足す。不正な値は ValueError、1 本の論文の上限（MAX_ANNOTATIONS）を超えると LibraryError。"""
+        paper = self._require(paper_id)
+        A.check(kind, page, color, quote, comment)
+        if paper.page_count and page >= paper.page_count:
+            raise ValueError(f"page {page} is out of range")
+        now = time.time()
+        ann = Annotation(uuid.uuid4().hex, paper_id, kind, page, A.clean_quads(quads), quote, color, comment, now, now)
+        with self._tx() as db:
+            count = db.execute("SELECT COUNT(*) FROM state.annotations WHERE paper_id = ?", (paper_id,)).fetchone()[0]
+            if count >= MAX_ANNOTATIONS:
+                raise LibraryError(f"1 本の論文に付けられる注釈は {MAX_ANNOTATIONS:,} 件までです。")
+            _write_annotation(db, ann)
+        self._emit("annotations", paper_id, paper.sha256)
+        return ann
+
+    def update_annotation(
+        self, annotation_id: str, *, kind: str | None = None, color: str | None = None, comment: str | None = None
+    ) -> Annotation:
+        """注釈の種類・色・コメントを変える（None の項目は変えない）。コメントを保存すると連結の印を消す。"""
+        old = self._require_annotation(annotation_id)
+        new = replace(
+            old,
+            kind=old.kind if kind is None else kind,
+            color=old.color if color is None else color,
+            comment=old.comment if comment is None else comment,
+            comment_merged=old.comment_merged and comment is None,
+        )
+        A.check(new.kind, new.page, new.color, new.quote, new.comment)
+        if new == old:
+            return old
+        new = replace(new, updated_at=time.time())
+        with self._tx() as db:
+            _write_annotation(db, new)
+        self._emit_annotations(new.paper_id)
+        return new
+
+    def delete_annotation(self, annotation_id: str) -> Annotation:
+        """注釈を消し、消したものを返す（restore_annotation で元に戻せる）。"""
+        old = self._require_annotation(annotation_id)
+        with self._tx() as db:
+            db.execute("DELETE FROM state.annotations WHERE id = ?", (annotation_id,))
+        self._emit_annotations(old.paper_id)
+        return old
+
+    def restore_annotation(self, annotation: Annotation) -> Annotation:
+        """消した注釈を、同じ id で戻す（「元に戻す」）。"""
+        self._require(annotation.paper_id)
+        A.check(annotation.kind, annotation.page, annotation.color, annotation.quote, annotation.comment)
+        ann = replace(annotation, quads=A.clean_quads(annotation.quads), updated_at=time.time())
+        with self._tx() as db:
+            _write_annotation(db, ann)
+        self._emit_annotations(ann.paper_id)
+        return ann
+
+    def sync_put_annotation(self, annotation: Annotation) -> None:
+        """他の端末の注釈を、そのまま書き込む（同期が検証してから呼ぶ）。"""
+        with self._tx() as db:
+            _write_annotation(db, annotation)
+        self._emit_annotations(annotation.paper_id)
+
+    def sync_delete_annotation(self, annotation_id: str) -> None:
+        with self._lock:
+            row = self._db.execute("SELECT paper_id FROM state.annotations WHERE id = ?", (annotation_id,)).fetchone()
+        if row is None:
+            return
+        with self._tx() as db:
+            db.execute("DELETE FROM state.annotations WHERE id = ?", (annotation_id,))
+        self._emit_annotations(int(row[0]))
+
+    def _require_annotation(self, annotation_id: str) -> Annotation:
+        ann = self.get_annotation(annotation_id)
+        if ann is None:
+            raise PaperNotFound(f"注釈が見つかりません（id={annotation_id}）")
+        return ann
+
+    def _emit_annotations(self, paper_id: int) -> None:
+        paper = self.get(paper_id)
+        self._emit("annotations", paper_id, paper.sha256 if paper else "")
+
     def touch_opened(self, paper_id: int) -> None:
         with self._tx() as db:
             db.execute("UPDATE papers SET last_opened_at = ? WHERE id = ?", (time.time(), paper_id))
@@ -398,6 +556,8 @@ class Library:
             db.execute("DELETE FROM papers WHERE id = ?", (paper_id,))
         with self._tx() as db:  # 別の DB。落ちても起動時に掃除する
             db.execute("DELETE FROM state.trash WHERE paper_id = ?", (paper_id,))
+            db.execute("DELETE FROM state.notes WHERE paper_id = ?", (paper_id,))
+            db.execute("DELETE FROM state.annotations WHERE paper_id = ?", (paper_id,))
         shutil.rmtree(self.root / "files" / str(paper_id), ignore_errors=True)
         self._emit("removed", paper_id, row["sha256"])
 
@@ -568,7 +728,8 @@ class Library:
     def _load(self, where: str, params: tuple = ()) -> list[Paper]:
         with self._lock:
             rows = self._db.execute(
-                f"SELECT p.*, t.trashed_at AS trashed_at FROM papers p LEFT JOIN state.trash t ON t.paper_id = p.id {where}",
+                "SELECT p.*, t.trashed_at AS trashed_at, n.text AS note, n.updated_at AS note_updated_at, n.merged AS note_merged"
+                f" FROM papers p LEFT JOIN state.trash t ON t.paper_id = p.id LEFT JOIN state.notes n ON n.paper_id = p.id {where}",
                 params,
             ).fetchall()
             if not rows:
@@ -627,6 +788,9 @@ class Library:
             has_translation_file=translation is not None
             and (self.root / "files" / str(r["id"]) / "translated.pdf").exists(),
             trashed_at=r["trashed_at"],
+            note=r["note"] or "",
+            note_updated_at=r["note_updated_at"],
+            note_merged=bool(r["note_merged"]),
         )
 
 
@@ -647,6 +811,33 @@ def restore_backup(backup: Path, root: Path | None = None) -> None:
             (root / f"{name}{suffix}").unlink(missing_ok=True)
     for name in (DB_NAME, STATE_DB_NAME):
         shutil.copy2(backup / name, root / name)
+
+def _annotation(r: sqlite3.Row) -> Annotation:
+    return Annotation(
+        id=r["id"],
+        paper_id=int(r["paper_id"]),
+        kind=r["kind"],
+        page=int(r["page"]),
+        quads=tuple(tuple(float(v) for v in q) for q in _json(r["quads"], [])),
+        quote=r["quote"],
+        color=r["color"],
+        comment=r["comment"],
+        created_at=float(r["created_at"]),
+        updated_at=float(r["updated_at"]),
+        comment_merged=bool(r["comment_merged"]),
+    )
+
+
+def _write_annotation(db: sqlite3.Connection, a: Annotation) -> None:
+    db.execute(
+        "INSERT OR REPLACE INTO state.annotations (id, paper_id, kind, page, quads, quote, color, comment,"
+        " created_at, updated_at, comment_merged) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            a.id, a.paper_id, a.kind, a.page, json.dumps([list(q) for q in a.quads]), a.quote, a.color, a.comment,
+            a.created_at, a.updated_at, int(a.comment_merged),
+        ),
+    )
+
 
 def _write_atomic(path: Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)

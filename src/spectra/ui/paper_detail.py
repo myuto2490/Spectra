@@ -1,11 +1,12 @@
-"""ライブラリの詳細パネル（「論文の詳細」と「AI翻訳の詳細」のタブ）と、書誌情報の編集ダイアログ。"""
+"""ライブラリの詳細パネル（「論文の詳細」「AI翻訳の詳細」「ノート」「注釈」のタブ）と、書誌情報の編集ダイアログ。"""
 
 from __future__ import annotations
 
 import html
 from dataclasses import replace
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QEvent, QSize, Qt, Signal
+from PySide6.QtGui import QFontMetrics
 from PySide6.QtWidgets import (
     QButtonGroup,
     QDialog,
@@ -26,7 +27,9 @@ from PySide6.QtWidgets import (
 )
 
 from ..library import Author, Metadata, Paper
+from .annotation_list import AnnotationList
 from .library_model import days_left, format_date, local_short, local_state, translation_status
+from .note_editor import NoteEditor
 from .widgets import FormGroup, button, label, link_button, plain_tooltip, set_prop
 
 
@@ -75,7 +78,8 @@ META_SOURCES = {
 
 FORMALITY_NAMES = {"default": "である調", "prefer_less": "である調", "prefer_more": "です・ます調"}
 
-PAPER_TAB, TRANSLATION_TAB, OTHER_PAGE, TRASH_PAGE = 0, 1, 2, 3
+PAPER_TAB, TRANSLATION_TAB, NOTE_TAB, ANNOTATION_TAB, OTHER_PAGE, TRASH_PAGE = 0, 1, 2, 3, 4, 5
+TAB_NAMES = ("論文の詳細", "AI翻訳の詳細", "ノート", "注釈")
 
 
 class _InfoGrid(QWidget):
@@ -128,8 +132,54 @@ class _InfoGrid(QWidget):
         value.setText(f'<a href="{html.escape(url)}">{html.escape(_breakable(text))}</a>' if text else "")
 
 
+class TabButton(QPushButton):
+    """タブの見出し。幅が足りないときは、はみ出さずに「…」で省略して表示する（全体はツールチップに出す）。
+
+    フォントの幅は OS や拡大率で変わる（Windows の Segoe UI は macOS より広い）ので、幅を決め打ちにしない。
+    """
+
+    PAD = 4  # スタイルシートの左右の余白（2px ずつ）
+
+    def __init__(self, text: str, parent: QWidget | None = None):
+        super().__init__(text, parent)
+        self._full = text
+
+    def full_text(self) -> str:
+        return self._full
+
+    def _metrics(self) -> QFontMetrics:
+        return QFontMetrics(self.font())  # スタイルシートの太字を含む、いま描かれる文字の幅
+
+    def sizeHint(self) -> QSize:  # noqa: N802 - Qt の名前
+        # 省略した文字でなく、全体の文字の幅を希望の幅にする（省略したままレイアウトが狭いままにならないように）
+        hint = super().sizeHint()
+        fm = self._metrics()
+        return QSize(hint.width() + fm.horizontalAdvance(self._full) - fm.horizontalAdvance(self.text()), hint.height())
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802
+        return QSize(28, super().minimumSizeHint().height())
+
+    def changeEvent(self, event) -> None:  # noqa: N802
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.FontChange:
+            self.updateGeometry()
+            self._elide()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._elide()
+
+    def _elide(self) -> None:
+        fm = self._metrics()
+        avail = max(8, self.width() - self.PAD)
+        shown = self._full if fm.horizontalAdvance(self._full) <= avail + 1 else fm.elidedText(self._full, Qt.TextElideMode.ElideRight, avail)
+        if shown != self.text():
+            self.setText(shown)
+        self.setToolTip(self._full if shown != self._full else "")
+
+
 class PaperDetail(QWidget):
-    """選んだ論文の詳細。「論文の詳細」（書誌情報）と「AI翻訳の詳細」（翻訳とファイル）のタブに分ける。"""
+    """選んだ論文の詳細。「論文の詳細」（書誌情報）・「AI翻訳の詳細」（翻訳とファイル）・「ノート」のタブに分ける。"""
 
     readRequested = Signal(int)
     translateRequested = Signal(list)  # 論文 ID の一覧
@@ -143,8 +193,9 @@ class PaperDetail(QWidget):
     purgeRequested = Signal(list)  # 完全に削除
     cancelDownloadRequested = Signal(int)
     retryDownloadRequested = Signal(int)
+    tabChanged = Signal(int)  # 選んだタブ（PAPER_TAB など）
 
-    def __init__(self, parent: QWidget | None = None):
+    def __init__(self, parent: QWidget | None = None, library=None):
         super().__init__(parent)
         self.setObjectName("Inspector")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
@@ -155,6 +206,8 @@ class PaperDetail(QWidget):
         self._ids: list[int] = []
         self._paper: Paper | None = None
         self._job: str | None = None
+        self._reader_mode = False
+        self.library = library
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
@@ -164,13 +217,13 @@ class PaperDetail(QWidget):
         self.tabs.setObjectName("DetailTabs")
         self.tabs.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         tl = QHBoxLayout(self.tabs)
-        tl.setContentsMargins(18, 4, 18, 0)
-        tl.setSpacing(18)
+        tl.setContentsMargins(12, 4, 12, 0)  # タブが 4 つになったので、余白を詰める（フォントが広い Windows でも収める）
+        tl.setSpacing(10)
         self._tab_group = QButtonGroup(self)
         self._tab_group.setExclusive(True)
-        self.tab_buttons: list[QPushButton] = []
-        for i, text in enumerate(("論文の詳細", "AI翻訳の詳細")):
-            b = QPushButton(text)
+        self.tab_buttons: list[TabButton] = []
+        for i, text in enumerate(TAB_NAMES):
+            b = TabButton(text)
             b.setCheckable(True)
             b.setCursor(Qt.CursorShape.PointingHandCursor)
             b.setAccessibleName(f"{text}のタブ")
@@ -185,7 +238,13 @@ class PaperDetail(QWidget):
         self.pages = QStackedWidget()
         outer.addWidget(self.pages, 1)
         self.pages.addWidget(self._build_paper_page())
-        self.pages.addWidget(self._build_translation_page())
+        self._translation_page = self._build_translation_page()
+        self.pages.addWidget(self._translation_page)
+        self._translation_extra: QWidget | None = None
+        self.note_editor = NoteEditor(library)
+        self.pages.addWidget(self.note_editor)
+        self.annotation_list = AnnotationList()
+        self.pages.addWidget(self.annotation_list)
         self.pages.addWidget(self._build_other_page())
         self.pages.addWidget(self._build_trash_page())
         self.show_papers([])
@@ -402,9 +461,49 @@ class PaperDetail(QWidget):
         return self._tab_group.checkedId()
 
     def set_tab(self, index: int) -> None:
+        changed = self._tab_group.checkedId() != index
         self.tab_buttons[index].setChecked(True)
         if self._paper is not None and self._paper.trashed_at is None:
             self.pages.setCurrentIndex(index)
+        if changed or self.sender() is self._tab_group:  # 押されたとき（すでに選ばれていても）か、切り替わったとき
+            self.tabChanged.emit(index)
+
+    def _show_annotations(self, paper: Paper | None) -> None:
+        load = getattr(self.library, "annotations", None)
+        items = []
+        if paper is not None and load is not None:
+            try:
+                items = load(paper.id)
+            except Exception:  # noqa: BLE001 - 一覧が読めなくても、詳細パネルは使えるようにする
+                items = []
+        self.annotation_list.set_annotations(items)
+
+    def refresh_annotations(self) -> None:
+        """注釈が変わったとき（LibraryEvent の "annotations"）に、一覧を読み直す。"""
+        self._show_annotations(self._paper if self._paper is not None and self._paper.trashed_at is None else None)
+
+    def set_reader_mode(self, on: bool) -> None:
+        """読書画面の右のパネルとして使うとき True。すでに読んでいる論文なので「読む」のボタンは出さない。"""
+        self._reader_mode = on
+        self.read_btn.setVisible(not on)
+        self.tr_read_btn.setVisible(not on and self.tr_read_btn.isVisible())
+
+    def set_translation_widget(self, widget: QWidget | None) -> None:
+        """「AI翻訳の詳細」のタブの中身を差し替える（読書画面で、翻訳の設定のパネルを入れる）。None で元に戻す。"""
+        if widget is self._translation_extra:
+            return
+        shown = self.pages.currentIndex() == TRANSLATION_TAB
+        current = self._translation_extra or self._translation_page
+        self.pages.removeWidget(current)
+        if current is not self._translation_page:
+            current.hide()
+        new = widget or self._translation_page
+        self._translation_extra = widget
+        self.pages.insertWidget(TRANSLATION_TAB, new)
+        # 表示するのは、いま見えているタブのときだけ（show() すると、ほかのタブの上に重なって描かれる）
+        new.setVisible(self.pages.currentWidget() is new)
+        if shown:
+            self.pages.setCurrentIndex(TRANSLATION_TAB)
 
     # -- 表示 ------------------------------------------------------------
 
@@ -425,6 +524,8 @@ class PaperDetail(QWidget):
         self._sync_on = sync_on
         self._sync_available = sync_available
         trashed = bool(papers) and all(p.trashed_at is not None for p in papers)
+        self.note_editor.set_paper(self._paper if not trashed else None)
+        self._show_annotations(self._paper if not trashed else None)
         self.tabs.setVisible(self._paper is not None and not trashed)
         if self._paper is not None and trashed:
             self.pages.setCurrentIndex(TRASH_PAGE)
@@ -574,7 +675,7 @@ class PaperDetail(QWidget):
         else:
             self.translate_btn.setText("翻訳する")
             set_prop(self.translate_btn, "primary", True)
-        self.tr_read_btn.setVisible(t is not None or job in ("running", "queued"))
+        self.tr_read_btn.setVisible(not self._reader_mode and (t is not None or job in ("running", "queued")))
         set_prop(self.tr_read_btn, "primary", t is not None and job is None)
 
         for row in self.tr_rows:

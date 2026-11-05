@@ -29,6 +29,8 @@ from .models import (
     TextBlock,
     inflate,
     overlap_ratio,
+    rect_area,
+    rect_intersect,
 )
 from .options import AnalysisOptions
 
@@ -203,6 +205,22 @@ def _looks_like_equation(block: TextBlock, st: BlockStats) -> bool:
     return len(_LONG_WORD.findall(st.text)) <= 1 and st.words <= 4
 
 
+def _is_background_fill(d: dict) -> bool:
+    """枠線のない白（紙の色）の塗りつぶし。図の背景に敷かれるもので、図の中身ではない。"""
+    if d.get("type") != "f" or d.get("color") is not None:
+        return False
+    fill = d.get("fill")
+    return bool(fill) and all(c >= 0.97 for c in fill)
+
+
+def graphic_rects(page: pymupdf.Page, drawings: list[dict]) -> list:
+    """図の中身の領域：背景の白い塗りつぶしを除くベクター描画と、画像。"""
+    rects = [tuple(d["rect"]) for d in drawings if not _is_background_fill(d)]
+    for info in page.get_image_info():
+        rects.append(tuple(info["bbox"]))
+    return rects
+
+
 class DocumentClassifier:
     """ページを順に解析し、参考文献セクションなど文書全体の状態を引き継ぐ。"""
 
@@ -215,6 +233,7 @@ class DocumentClassifier:
         self.seen_title = False
         self.seen_abstract = False
         self._page_height = 842.0
+        self._graphics: list = []  # 今のページで、図の中身（背景の塗りつぶし以外の描画・画像）の領域
 
     def analyze_page(self, page: pymupdf.Page, blocks: list[TextBlock] | None = None) -> PageAnalysis:
         blocks = extract_blocks(page) if blocks is None else blocks
@@ -225,6 +244,7 @@ class DocumentClassifier:
         tabular = _tabular_blocks(blocks, stats)
         height = float(page.rect.height)
         self._page_height = height
+        self._graphics = graphic_rects(page, drawings)
         front = self._front_matter(page.number, blocks, stats)
         decisions = []
         for b in blocks:
@@ -297,6 +317,11 @@ class DocumentClassifier:
 
     # -- 除外判定 ---------------------------------------------------------
 
+    def _caption_over_graphics(self, b: TextBlock) -> bool:
+        """キャプションの文字の領域に、図の中身（背景の塗りつぶし以外の描画・画像）が重なっているか。"""
+        box = inflate(b.bbox, -1.5)
+        return any(rect_area(rect_intersect(box, g)) > 0 for g in self._graphics)
+
     def _skip(
         self,
         b: TextBlock,
@@ -341,7 +366,9 @@ class DocumentClassifier:
 
         fig_overlap = max((overlap_ratio(b.bbox, inflate(r, 4)) for r in figures), default=0.0)
         if kind == BlockKind.CAPTION:
-            if fig_overlap >= 0.9:
+            # 図の領域の中にあっても、その下に図の中身（描画・画像）が無ければ、図の背景（白い塗りつぶし）が
+            # 図とキャプションをまとめて覆っているだけなので、キャプションは訳す
+            if fig_overlap >= 0.9 and self._caption_over_graphics(b):
                 return SkipReason.FIGURE
         else:
             if fig_overlap >= 0.5:

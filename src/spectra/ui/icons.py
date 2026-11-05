@@ -43,6 +43,18 @@ _PATHS: dict[str, str] = {
     "refresh": '<path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3"/><path d="M19.5 4.5v4h-4"/>',
     "chevron": '<path d="M6 9l6 6 6-6"/>',
     "back": '<path d="M14.5 5.5L8 12l6.5 6.5"/>',
+    "forward": '<path d="M9.5 5.5L16 12l-6.5 6.5"/>',
+    "chevron_up": '<path d="M6 15l6-6 6 6"/>',
+    "pages": '<rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/>'
+    '<rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/>',
+    "copy": '<rect x="8.5" y="8.5" width="11" height="11" rx="2"/><path d="M15.5 8.5V6a1.5 1.5 0 0 0-1.5-1.5H6A1.5 1.5 0 0 0 4.5 6v8A1.5 1.5 0 0 0 6 15.5h2.5"/>',
+    "highlighter": '<path d="M14.5 4.5l5 5L10 19l-5.5.5.5-5.5z"/><path d="M12.2 6.8l5 5"/><path d="M4 21h16"/>',
+    "underline": '<path d="M7 4.5v7a5 5 0 0 0 10 0v-7"/><path d="M5 20.5h14"/>',
+    "comment": '<path d="M5 5.5h14a1.5 1.5 0 0 1 1.5 1.5v8.5a1.5 1.5 0 0 1-1.5 1.5H11l-4.5 3.5V17H5a1.5 1.5 0 0 1-1.5-1.5V7A1.5 1.5 0 0 1 5 5.5z"/>'
+    '<path d="M8 10h8M8 13h5"/>',
+    "sticky": '<path d="M5 4.5h14a1 1 0 0 1 1 1V15l-5.5 5.5H5a1 1 0 0 1-1-1v-14a1 1 0 0 1 1-1z"/><path d="M14.5 20.5V16a1 1 0 0 1 1-1H20"/>'
+    '<path d="M8 9h8M8 12.5h5"/>',
+    "fit_page": '<rect x="6.5" y="3.5" width="11" height="17" rx="1.5"/><path d="M9.5 8.5h5M9.5 12h5M9.5 15.5h3"/>',
     "plus": '<path d="M12 5v14M5 12h14"/>',
     "search": '<circle cx="10.5" cy="10.5" r="6"/><path d="M15 15l5 5"/>',
     "clock": '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>',

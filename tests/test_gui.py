@@ -541,3 +541,598 @@ def test_error_dialogs_hide_the_home_folder(window, monkeypatch):
     home = str(Path.home())
     w._alert("ファイルを読み込めませんでした", f"[Errno 2] No such file: '{home}/Documents/paper.pdf'")
     assert shown and home not in shown[-1][1] and "~/Documents/paper.pdf" in shown[-1][1]
+
+
+# -- PDF の表示（ページ n/N・ズーム・検索・ページの一覧・リンク・見ていた場所の記憶） -----------------------
+
+
+def test_page_box_zoom_menu_and_find_bar(window, paper_path, monkeypatch):
+    app, w = window
+    assert w.open_file(paper_path)
+    pump(app, 0.3)
+    view = w.preview.original
+    assert w.page_edit.text() == "1" and w.page_total.text() == f"/ {view.page_count()}"
+    assert not w.page_prev_btn.isEnabled() and w.page_next_btn.isEnabled()
+
+    w.page_edit.setText("3")
+    w.page_edit.returnPressed.emit()
+    pump(app, 0.2)
+    assert view.current_page() == 2 and w.page_edit.text() == "3"
+    w.page_edit.setText("999")  # 範囲の外は最後のページへ
+    w.page_edit.returnPressed.emit()
+    pump(app, 0.2)
+    assert view.current_page() == view.page_count() - 1 and not w.page_next_btn.isEnabled()
+
+    w.preview.set_zoom(1.5)
+    assert w.zoom_btn.text() == "150%"
+    w.zoom_menu.actions()[1].trigger()  # ページ全体に合わせる
+    pump(app, 0.2)
+    assert view.fit_mode() == "page"
+    w.zoom_menu.actions()[0].trigger()  # 幅に合わせる
+    pump(app, 0.2)
+    assert view.fit_mode() == "width"
+
+    # ⌘F は読書画面では PDF 内の検索の帯を開く（ライブラリには戻らない）
+    assert w.find_bar.isHidden()
+    w.focus_search()
+    assert w.screen_mode == "reader" and not w.find_bar.isHidden()
+    w.find_bar.edit.setText("neural")
+    w.find_bar.edit.returnPressed.emit()
+    pump(app, 0.2)
+    assert view.hit_count() >= 1 and "件" in w.find_bar.count.text()
+    w.find_bar.close_bar()
+    assert view.hit_count() == 0 and w.find_bar.isHidden()
+
+
+def test_nav_pane_toggle_and_page_jump(window, paper_path):
+    app, w = window
+    assert w.open_file(paper_path)
+    pump(app, 0.3)
+    assert w.nav_pane.isHidden()
+    w.nav_btn.setChecked(True)
+    pump(app, 0.2)
+    assert not w.nav_pane.isHidden() and w.nav_pane.thumbnails.count() == w.preview.original.page_count()
+    w.nav_pane.pageActivated.emit(2)
+    pump(app, 0.2)
+    assert w.preview.original.current_page() == 2
+    w.show_library()
+    assert w.nav_pane.isHidden()  # ライブラリ画面では出さない
+
+
+def test_pdf_link_asks_before_opening(window, monkeypatch):
+    app, w = window
+    from PySide6.QtWidgets import QMessageBox
+
+    opened, boxes = [], []
+    monkeypatch.setattr("spectra.ui.main_window.QDesktopServices.openUrl", lambda url: opened.append(url.toString()))
+
+    def fake_exec(box):
+        boxes.append(box.informativeText())
+        return 0
+
+    monkeypatch.setattr("spectra.ui.main_window.plain_box", lambda box: type("P", (), {"exec": lambda self: fake_exec(box)})())
+    # 確認で「開く」を選ぶ
+    monkeypatch.setattr(QMessageBox, "clickedButton", lambda self: next(b for b in self.buttons() if b.text() == "開く"))
+    w._open_pdf_link("https://example.com/paper")
+    assert opened == ["https://example.com/paper"] and boxes == ["https://example.com/paper"]
+    # Web とメール以外（file: や javascript:）は確認も出さずに開かない
+    w._open_pdf_link("file:///etc/passwd")
+    w._open_pdf_link("javascript:alert(1)")
+    assert opened == ["https://example.com/paper"] and len(boxes) == 1
+
+
+def test_reading_position_is_remembered_per_paper(window, paper_path):
+    app, w = window
+    assert w.open_file(paper_path)
+    pump(app, 0.3)
+    sha = w.paper.sha256
+    w.preview.original.set_zoom(1.25)
+    w.preview.original.go_to_page(1)
+    pump(app, 0.2)
+    w.show_library()
+    st = w.settings.reading_state[sha]
+    assert st["fit"] == "none" and st["page"] == 1 and st["zoom"] == pytest.approx(1.25, abs=1e-3)
+
+    assert w.open_paper(w.library.papers()[0].id)  # 開き直すと戻る
+    pump(app, 0.4)
+    assert w.preview.original.current_page() == 1
+    assert w.preview.original.zoom() == pytest.approx(1.25, abs=1e-3)
+
+
+def test_update_notice_flow(window, monkeypatch):
+    """初回に尋ね、オンなら確かめ、新しい版があればライブラリの上に帯を出す（通信はしない）。"""
+    app, w = window
+    from spectra import update
+    from spectra.ui import main_window as mw
+
+    asked, started = [], []
+    monkeypatch.setattr(mw, "ask_enable_update_check", lambda parent: asked.append(1) or True)
+
+    def fake_start(on_found, on_error=None, on_none=None, skipped="", **kw):
+        started.append(skipped)
+        on_found(update.UpdateInfo("99.0.0", "https://github.com/myuto2490/Spectra/releases/tag/v99.0.0"))
+
+    monkeypatch.setattr(mw, "start_check", fake_start)
+    w._check_updates = True
+    w.settings.update_check = "ask"
+    w.settings.update_last_checked = 0.0
+    w._startup_update_check()
+    assert asked == [1] and w.settings.update_check == "on"
+    assert started == [""] and w.settings.update_last_checked > 0
+    assert not w.update_wrap.isHidden() and "99.0.0" in w.update_banner._title.text()
+
+    w.update_banner.skip_btn.click()  # 「この版を通知しない」
+    assert w.settings.update_skipped_version == "99.0.0" and w.update_wrap.isHidden()
+
+    # 24 時間以内なら確かめない・「確認しない」と答えたら通信しない
+    started.clear()
+    w._startup_update_check()
+    assert started == []
+    w.settings.update_check = "off"
+    w.settings.update_last_checked = 0.0
+    w._startup_update_check()
+    assert started == [] and asked == [1]
+
+    # 環境変数で止めているとき（テスト・開発）は、尋ねも確かめもしない
+    w._check_updates = False
+    w.settings.update_check = "ask"
+    w._startup_update_check()
+    assert asked == [1] and w.settings.update_check == "ask"
+
+
+# ---- 右のパネルとノート -------------------------------------------------------
+
+
+class _FakePaper:
+    def __init__(self, id, note="", note_updated_at=None, note_merged=False):
+        self.id, self.note, self.note_updated_at, self.note_merged = id, note, note_updated_at, note_merged
+
+
+class _FakeNotes:
+    def __init__(self):
+        self.saved = []
+        self.fail = False
+
+    def set_note(self, paper_id, text):
+        if self.fail:
+            raise OSError("disk full")
+        self.saved.append((paper_id, text))
+
+
+def _note_editor(lib=None):
+    from spectra.ui.note_editor import NoteEditor
+
+    ed = NoteEditor(lib if lib is not None else _FakeNotes())
+    ed.show()
+    return ed
+
+
+def test_note_editor_autosaves_after_a_pause(window):
+    app, _w = window
+    lib = _FakeNotes()
+    ed = _note_editor(lib)
+    changed = []
+    ed.noteChanged.connect(lambda i, t: changed.append((i, t)))
+    ed.set_paper(_FakePaper(7, note="既存のメモ", note_updated_at=1_700_000_000))
+    assert ed.text() == "既存のメモ" and "最終更新" in ed.status.text() and not ed.dirty
+    ed.edit.setPlainText("既存のメモ\n追記")
+    assert ed.dirty and lib.saved == []  # 入力の直後は保存しない
+    ed._timer.setInterval(10)
+    ed._timer.start()
+    pump(app, 2, until=lambda: lib.saved)
+    assert lib.saved == [(7, "既存のメモ\n追記")] and changed == lib.saved and not ed.dirty
+
+
+def test_note_editor_saves_before_switching_papers(window):
+    lib = _FakeNotes()
+    ed = _note_editor(lib)
+    ed.set_paper(_FakePaper(1))
+    ed.edit.setPlainText("1 のメモ")
+    ed.set_paper(_FakePaper(2, note="2 のメモ"))  # 切り替えで、未保存の分を先に 1 に保存する
+    assert lib.saved == [(1, "1 のメモ")] and ed.text() == "2 のメモ" and ed.paper_id == 2
+    ed.edit.setPlainText("2 を編集")
+    ed.set_paper(None)  # 何も選ばない・閉じるときも保存する
+    assert lib.saved[-1] == (2, "2 を編集") and ed.text() == ""
+
+
+def test_note_editor_keeps_typing_when_the_same_paper_is_shown_again(window):
+    ed = _note_editor()
+    ed.set_paper(_FakePaper(1, note="古い"))
+    ed.edit.setPlainText("入力中")
+    ed.set_paper(_FakePaper(1, note="同期で届いた内容"))  # 入力の途中は上書きしない
+    assert ed.text() == "入力中" and ed.dirty
+    ed.flush()
+    ed.set_paper(_FakePaper(1, note="同期で届いた内容"))  # 保存したあとなら、届いた内容に更新する
+    assert ed.text() == "同期で届いた内容"
+
+
+def test_note_editor_merged_notice_and_save_error(window):
+    lib = _FakeNotes()
+    ed = _note_editor(lib)
+    ed.set_paper(_FakePaper(1, note="a", note_merged=True))
+    assert not ed.notice.isHidden() and "連結" in ed.notice.text()
+    ed.set_paper(_FakePaper(2, note="b"))
+    assert ed.notice.isHidden()
+    lib.fail = True
+    ed.edit.setPlainText("失敗する保存")
+    ed.flush()
+    assert ed.dirty and "保存できませんでした" in ed.status.text()  # 入力は残り、あとで再試行できる
+    lib.fail = False
+    ed.flush()
+    assert not ed.dirty and lib.saved == [(2, "失敗する保存")]
+
+
+def test_note_editor_limits_length(window):
+    from spectra.ui import note_editor
+
+    ed = _note_editor()
+    ed.set_paper(_FakePaper(1))
+    ed.edit.setPlainText("あ" * (note_editor.NOTE_MAX_CHARS + 50))
+    assert len(ed.text()) == note_editor.NOTE_MAX_CHARS and "超えた分" in ed.status.text()
+
+
+def test_side_panel_tabs_are_remembered(window, tmp_path):
+    app, w = window
+    from PySide6.QtWidgets import QLabel
+
+    from spectra.config.settings import Settings
+    from spectra.ui.side_panel import SidePanel
+
+    papers = _queue_papers(w, tmp_path, 1)
+    settings = Settings(side_panel_tab="note")
+    panel = SidePanel(w.library, settings, "reader")
+    panel.show()
+    seen = []
+    panel.tabChanged.connect(seen.append)
+    assert panel.current_tab() == "note"  # 覚えていたタブで開く
+
+    paper = w.library.get(papers[0].id)
+    panel.set_paper(paper)
+    assert panel.detail.pages.currentIndex() == panel.detail.pages.indexOf(panel.note_editor)
+    panel.detail.tab_buttons[0].click()
+    assert panel.current_tab() == "details" and settings.side_panel_tab == "details" and seen == ["details"]
+    panel.set_current_tab("translation")
+    assert settings.side_panel_tab == "translation" and seen[-1] == "translation"
+    panel.set_current_tab("nope")  # 知らないタブは無視する
+    assert panel.current_tab() == "translation"
+    assert Settings.load().side_panel_tab == "translation"  # 保存されている
+
+    # 読書画面では、翻訳の設定のパネルを「AI翻訳の詳細」に入れる。外すと元に戻る
+    extra = QLabel("インスペクタ")
+    panel.set_translation_widget(extra)
+    assert panel.detail.pages.currentWidget() is extra and extra.isVisible()
+    panel.set_current_tab("note")
+    panel.set_current_tab("translation")
+    assert panel.detail.pages.currentWidget() is extra
+    panel.set_translation_widget(None)
+    assert panel.detail.pages.currentWidget() is panel.detail._translation_page
+
+    # ノートの入力は、論文を選び直しても失われず、閉じるときに保存される
+    got = []
+    panel.noteChanged.connect(lambda i, t: got.append((i, t)))
+    panel.set_current_tab("note")
+    panel.note_editor.edit.setPlainText("メモ")
+    panel.flush_note()
+    assert got == [(paper.id, "メモ")]
+    with pytest.raises(ValueError):
+        SidePanel(w.library, settings, "other")
+
+
+def test_side_panel_forwards_detail_signals(window, tmp_path):
+    app, w = window
+    from spectra.config.settings import Settings
+    from spectra.ui.side_panel import SidePanel
+
+    papers = _queue_papers(w, tmp_path, 1)
+    panel = SidePanel(w.library, Settings(), "library")
+    panel.show()
+    panel.set_paper(w.library.get(papers[0].id))
+    read, translate = [], []
+    panel.readRequested.connect(read.append)
+    panel.translateRequested.connect(translate.append)
+    panel.detail.read_btn.click()
+    assert read == [papers[0].id]
+    panel.detail.translateRequested.emit([papers[0].id])
+    assert translate == [[papers[0].id]]
+    panel.set_paper(None)  # 何も選ばないときはノートの欄も空になる
+    assert panel.note_editor.paper_id is None
+
+
+# -- 読書画面の右のパネル ------------------------------------------------------------------
+
+
+def test_reader_side_panel_shows_paper_translation_and_note(window, paper_path):
+    app, w = window
+    assert w.open_file(paper_path)
+    pump(app, 0.3)
+    panel = w.side_panel
+    assert panel.mode == "reader" and panel.isVisible()
+    assert panel.detail._paper is not None and panel.detail._paper.id == w.paper.id
+    # 「AI 翻訳の詳細」には今のインスペクタが入り、「ノート」は論文ごとに保存される
+    panel.set_current_tab("translation")
+    pump(app, 0.1)
+    assert w.inspector.isVisible()
+    panel.set_current_tab("note")
+    panel.note_editor.edit.setPlainText("読書画面で書いたメモ")
+    w.show_library()  # 画面を離れるとき、入力中のノートを保存する
+    assert w.library.get(w.library.papers()[0].id).note == "読書画面で書いたメモ"
+    # ライブラリの右のパネルにも反映される
+    assert w.library_view.detail.note_editor.edit.toPlainText() == "読書画面で書いたメモ"
+    # 右のパネルを隠す・出すは、パネル全体で切り替える
+    assert w.open_paper(w.library.papers()[0].id)
+    pump(app, 0.2)
+    w.inspector_btn.setChecked(False)
+    assert w.side_panel.isHidden()
+    w.inspector_btn.setChecked(True)
+    assert not w.side_panel.isHidden()
+
+
+# ---- ノート：本物の Library とつなぐ ---------------------------------------------
+
+
+def test_note_editor_saves_to_the_library_and_shows_it_again(window, tmp_path):
+    app, w = window
+    from spectra.ui.note_editor import NoteEditor
+
+    paper = _queue_papers(w, tmp_path, 1)[0]
+    ed = NoteEditor(w.library)
+    ed.show()
+    ed.set_paper(w.library.get(paper.id))
+    assert ed.text() == "" and not ed.dirty
+    ed.edit.setPlainText("1 行目\n2 行目")
+    ed._timer.setInterval(10)
+    ed._timer.start()
+    pump(app, 2, until=lambda: not ed.dirty)
+    saved = w.library.get(paper.id)
+    assert saved.note == "1 行目\n2 行目" and saved.note_updated_at
+    assert "最終更新" in ed.status.text()
+
+    # 別の論文を挟んで、同じ論文を選び直すと、保存した内容が出る（アプリを開き直した場合も同じ DB から読む）
+    ed.set_paper(None)
+    ed.set_paper(w.library.get(paper.id))
+    assert ed.text() == "1 行目\n2 行目" and not ed.dirty
+
+    # 論文を切り替える直前の入力は、待たずに保存される
+    other = w.library.add(_distinct_paper(tmp_path / "other.pdf", "Another paper"))[0]
+    ed.edit.setPlainText("切り替え前の入力")
+    ed.set_paper(w.library.get(other.id))
+    assert w.library.get(paper.id).note == "切り替え前の入力" and ed.text() == ""
+
+
+def test_note_editor_rejects_text_over_the_limit(window, tmp_path):
+    app, w = window
+    from spectra.library.models import NOTE_MAX_CHARS
+    from spectra.ui.note_editor import NoteEditor
+
+    paper = _queue_papers(w, tmp_path, 1)[0]
+    with pytest.raises(ValueError):  # Library 自体も上限を超える保存を拒否する
+        w.library.set_note(paper.id, "あ" * (NOTE_MAX_CHARS + 1))
+    ed = NoteEditor(w.library)
+    ed.show()
+    ed.set_paper(w.library.get(paper.id))
+    ed.edit.setPlainText("い" * (NOTE_MAX_CHARS + 10))  # 欄が超えた分を入れないので、保存は失敗しない
+    ed.flush()
+    assert not ed.dirty and w.library.get(paper.id).note == "い" * NOTE_MAX_CHARS
+    assert "ノートを保存できませんでした" not in ed.status.text()
+
+
+def test_note_editor_shows_the_merged_notice_until_the_next_save(window, tmp_path):
+    app, w = window
+    from spectra.ui.note_editor import NoteEditor
+
+    paper = _queue_papers(w, tmp_path, 1)[0]
+    w.library.sync_set_note(paper.id, "手元の内容\n\n――― 同時に編集された内容 ―――\nほかの内容", merged=True)
+    ed = NoteEditor(w.library)
+    ed.show()
+    ed.set_paper(w.library.get(paper.id))
+    assert "同時に編集" in ed.text() and not ed.notice.isHidden() and "連結" in ed.notice.text()
+    ed.set_paper(w.library.get(paper.id))  # 再表示しても注意は残る（保存するまで）
+    assert not ed.notice.isHidden()
+    ed.edit.setPlainText(ed.text() + "\n整理した")
+    ed.flush()
+    assert ed.notice.isHidden() and w.library.get(paper.id).note_merged is False
+    ed.set_paper(w.library.get(paper.id))
+    assert ed.notice.isHidden()
+
+
+def test_side_panel_note_follows_remote_changes(window, tmp_path):
+    """同期で届いたノートは、入力していなければ表示に反映され、入力の途中なら上書きしない。"""
+    app, w = window
+    from spectra.config.settings import Settings
+    from spectra.ui.side_panel import SidePanel
+
+    paper = _queue_papers(w, tmp_path, 1)[0]
+    panel = SidePanel(w.library, Settings(side_panel_tab="note"), "library")
+    panel.show()
+    panel.set_paper(w.library.get(paper.id))
+    w.library.sync_set_note(paper.id, "ほかのパソコンのメモ", merged=False)
+    panel.set_paper(w.library.get(paper.id))
+    assert panel.note_editor.text() == "ほかのパソコンのメモ"
+    panel.note_editor.edit.setPlainText("入力中")
+    w.library.sync_set_note(paper.id, "さらに届いたメモ", merged=False)
+    panel.set_paper(w.library.get(paper.id))
+    assert panel.note_editor.text() == "入力中" and panel.note_editor.dirty
+
+
+def test_remote_note_change_updates_the_open_note_unless_typing(window, paper_path):
+    from spectra.library.sync import RemoteChange
+
+    app, w = window
+    assert w.open_file(paper_path)
+    pump(app, 0.3)
+    pid, sha = w.paper.id, w.paper.sha256
+    w.side_panel.set_current_tab("note")
+    w.library.set_note(pid, "別のパソコンで書いたメモ")  # 同期で届いた状態
+    w._on_remote_changes([RemoteChange("note", sha, pid)])
+    assert w.side_panel.note_editor.edit.toPlainText() == "別のパソコンで書いたメモ"
+    # 入力の途中は上書きしない
+    w.side_panel.note_editor.edit.setPlainText("書きかけ")
+    w.library.set_note(pid, "さらに別の内容")
+    w._on_remote_changes([RemoteChange("note", sha, pid)])
+    assert w.side_panel.note_editor.edit.toPlainText() == "書きかけ"
+
+
+def test_reader_side_panel_hides_the_read_buttons(window, tmp_path):
+    """読書画面の右のパネルでは「読む」のボタンを出さない（押しても何も起きないため）。ライブラリ画面では出す。"""
+    app, w = window
+    from spectra.config.settings import Settings
+    from spectra.ui.side_panel import SidePanel
+
+    paper = w.library.get(_queue_papers(w, tmp_path, 1)[0].id)
+    reader = SidePanel(w.library, Settings(), "reader")
+    library = SidePanel(w.library, Settings(), "library")
+    for panel in (reader, library):
+        panel.show()
+        panel.detail.show_papers([paper], job="running")  # 翻訳中は翻訳のタブの「読む」も出る条件
+    assert not reader.detail.read_btn.isVisible() and not reader.detail.tr_read_btn.isVisible()
+    assert library.detail.read_btn.isVisible() and not library.detail.tr_read_btn.isHidden()
+    # 再表示しても出てこない
+    reader.detail.show_papers([paper], job=None)
+    reader.set_current_tab("translation")
+    assert not reader.detail.read_btn.isVisible() and not reader.detail.tr_read_btn.isVisible()
+    reader.set_current_tab("details")
+    assert not reader.detail.read_btn.isVisible()
+
+
+# -- 複数のキーでの翻訳（偽の通信。実際には通信しない） -----------------------------------------------
+
+
+def _fake_gemini(monkeypatch, w, handler):
+    """翻訳エンジンの通信を MockTransport に差し替える（待ち時間もなくす）。"""
+    import httpx
+
+    from spectra.ui import main_window as mw
+
+    real = mw.registry.create
+
+    def create(*args, **kwargs):
+        t = real(*args, **kwargs)
+        t._client = httpx.Client(transport=httpx.MockTransport(handler))
+        t.sleep = lambda s: None
+        return t
+
+    monkeypatch.setattr(mw.registry, "create", create)
+
+
+def _two_keys(w):
+    from spectra.config.secrets import slot
+
+    w.settings.engine = "gemini"
+    w.settings.api_keys = [
+        {"id": "lab", "provider": "gemini", "label": "研究室"},
+        {"id": "mine", "provider": "gemini", "label": "個人"},
+    ]
+    w.secrets.set(slot("gemini", "lab"), "k-lab")
+    w.secrets.set(slot("gemini", "mine"), "k-mine")
+
+
+def test_key_switch_notice_is_shown_while_translating(window, paper_path, monkeypatch):
+    import httpx
+    from test_keys import PER_DAY
+    from test_translators import _quota_body, echo_handler
+
+    app, w = window
+    _two_keys(w)
+    seen_keys = []
+
+    def handler(req):
+        key = req.headers["x-goog-api-key"]
+        seen_keys.append(key)
+        if key == "k-lab":  # 1 本目は今日の上限に達している
+            return httpx.Response(429, json=_quota_body(PER_DAY))
+        return echo_handler()(req)
+
+    _fake_gemini(monkeypatch, w, handler)
+    shown = []
+    # 主の受け取り（_on_translation_notice）の後に、画面の状態を記録する
+    w.queue.notice.connect(lambda pid, text: shown.append((text, w.notice_label.text(), w.notice_label.isVisibleTo(w))))
+    assert w.open_file(paper_path)
+    pump(app, 0.2)
+    w.start_translation()
+    pump(app, 60, until=lambda: not w._busy())
+    assert w.result is not None and w.result.qa.ok  # 切り替えて、最後まで訳せた
+    assert seen_keys[0] == "k-lab" and "k-mine" in seen_keys
+    text = "API キー「研究室」が今日の上限に達したため、「個人」に切り替えました。"
+    assert shown == [(text, text, True)]  # 進み具合の行の下に出た
+    assert text in w.result.warnings  # 翻訳の後の通知にも残る
+    pump(app, 0.2)
+    assert not w.notice_label.isVisibleTo(w)  # 翻訳が終わったら下げる
+
+
+def test_single_key_translates_as_before(window, paper_path, monkeypatch):
+    from test_translators import echo_handler
+
+    app, w = window
+    from spectra.config.secrets import slot
+
+    w.settings.engine = "gemini"
+    w.settings.api_keys = []  # 目録が空で、以前からのキーだけがある（今までの使い方）
+    w.secrets.set(slot("gemini"), "k-only")
+    seen_keys, notices = [], []
+
+    def handler(req):
+        seen_keys.append(req.headers["x-goog-api-key"])
+        return echo_handler()(req)
+
+    _fake_gemini(monkeypatch, w, handler)
+    w.queue.notice.connect(lambda pid, text: notices.append(text))
+    assert w.open_file(paper_path)
+    pump(app, 0.2)
+    w.start_translation()
+    pump(app, 60, until=lambda: not w._busy())
+    assert w.result is not None and w.result.qa.ok
+    assert set(seen_keys) == {"k-only"} and notices == []
+    assert not w.result.warnings and not w.notice_label.isVisibleTo(w)
+
+
+def test_missing_key_asks_to_set_one(window, paper_path, monkeypatch):
+    app, w = window
+    w.settings.engine = "gemini"
+    w.settings.api_keys = []
+    asked = []
+    from spectra.ui import main_window as mw
+
+    monkeypatch.setattr(mw, "plain_box", lambda box: type("P", (), {"exec": lambda self: asked.append(box.text())})())
+    assert w.open_file(paper_path)
+    pump(app, 0.2)
+    w.start_translation()
+    assert asked and "API キー" in asked[0] and not w._busy()  # キーがなければ案内を出し、翻訳は始めない
+
+
+def test_find_button_in_the_reader_toolbar(window, paper_path):
+    app, w = window
+    # ライブラリ画面には出さない（一覧の検索があるため）
+    assert not w.find_btn.isVisibleTo(w)
+    assert w.open_file(paper_path)
+    pump(app, 0.3)
+    assert w.find_btn.isVisible() and "PDF 内を検索" in w.find_btn.toolTip()
+    assert w.find_btn.toolTip().endswith("F）") and w.find_btn.accessibleName() == w.find_btn.toolTip()
+    assert w.find_bar.isHidden() and not w.find_btn.isChecked()
+    w.find_btn.click()  # 押すと検索の帯が開き、検索欄に入る
+    assert not w.find_bar.isHidden() and w.find_btn.isChecked()
+    w.find_bar.edit.setText("neural")
+    w.find_bar.edit.returnPressed.emit()
+    pump(app, 0.2)
+    assert w.preview.original.hit_count() >= 1
+    w.find_btn.click()  # もう一度押すと閉じて、一致の色も消える
+    assert w.find_bar.isHidden() and not w.find_btn.isChecked() and w.preview.original.hit_count() == 0
+    w.focus_search()  # ⌘F で開いたときも、ボタンの状態が合う
+    assert w.find_btn.isChecked()
+    w.find_bar.close_bar()  # 帯の ✕・Esc で閉じたときも
+    assert not w.find_btn.isChecked()
+    w.show_library()
+    assert not w.find_btn.isVisibleTo(w)
+
+
+def test_context_menu_find_opens_the_find_bar_with_the_selection(window, paper_path):
+    app, w = window
+    assert w.open_file(paper_path)
+    pump(app, 0.3)
+    view = w.preview.original
+    w.preview.findRequested.emit("neural")  # 右クリックの「PDF 内を検索…」（選んでいた文字つき）
+    pump(app, 0.3)
+    assert not w.find_bar.isHidden() and w.find_btn.isChecked()
+    assert w.find_bar.edit.text() == "neural" and view.hit_count() >= 1  # すぐ探す
+    w.find_bar.close_bar()
+    w.preview.findRequested.emit("")  # 何も選んでいなければ、帯を開くだけ（前に探した語は残る）
+    assert not w.find_bar.isHidden() and w.find_bar.edit.text() == "neural"

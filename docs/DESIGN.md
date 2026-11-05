@@ -341,6 +341,11 @@ library/
 | PDF出力 | ⌘S | Ctrl+S |
 | 設定 | ⌘, | Ctrl+, |
 | ズーム | ⌘+ / ⌘− / ⌘0 | Ctrl+ / Ctrl− / Ctrl+0 |
+| PDF 内を検索（読書画面。ライブラリでは一覧の検索） | ⌘F | Ctrl+F |
+| 次の一致 / 前の一致 | ⌘G / ⇧⌘G | Ctrl+G / Ctrl+Shift+G |
+| ページを指定して移動 | ⌘J | Ctrl+J |
+| ページの一覧と目次の表示切替 | ⌥⌘T | Ctrl+Alt+T |
+| マーカー / コメント付き / 下線（文字を選んで） | ⌃⌘H / ⌃⌘N / ⌃⌘U | Ctrl+Alt+H / N / U |
 | インスペクタ表示切替 | ⌥⌘I | Ctrl+Alt+I |
 | キャンセル | Esc | Esc |
 

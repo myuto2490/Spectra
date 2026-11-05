@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..config.settings import Settings
 from ..library import Library, Paper
 from . import icons, theme
 from .library_model import (
@@ -37,7 +38,7 @@ from .library_model import (
     PaperIdRole,
     PaperTableModel,
 )
-from .paper_detail import PaperDetail
+from .side_panel import SidePanel
 from .widgets import button, label, link_button, plain_box, set_prop
 
 ScopeRole = Qt.ItemDataRole.UserRole + 10
@@ -190,7 +191,7 @@ class LibraryView(QWidget):
     emptyTrashRequested = Signal()
     settingsRequested = Signal()  # 設定（API キー）を開いてほしい
 
-    def __init__(self, library: Library, parent: QWidget | None = None):
+    def __init__(self, library: Library, settings: Settings | None = None, parent: QWidget | None = None):
         super().__init__(parent)
         self.library = library
         self.model = PaperTableModel(self)
@@ -358,8 +359,10 @@ class LibraryView(QWidget):
         ml.addWidget(self.center, 1)
         lay.addWidget(middle, 1)
 
-        self.detail = PaperDetail()
-        lay.addWidget(self.detail)
+        # 右のパネル（論文の詳細・AI 翻訳の詳細・ノート）。detail は中の PaperDetail（シグナルと表示の入口）
+        self.side_panel = SidePanel(library, settings or Settings(), "library")
+        self.detail = self.side_panel.detail
+        lay.addWidget(self.side_panel)
 
         for sig in (
             self.proxy.rowsInserted,

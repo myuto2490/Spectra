@@ -1,40 +1,54 @@
 """メインウィンドウ。
 
 論文を集めて整理する「ライブラリ」と、1 本の論文を原文・訳文で読む「読書画面」の 2 画面で構成する。
-読書画面は ツールバー（主操作）・プレビュー（主役）・インスペクタ（翻訳の設定）の 3 層。
+読書画面は ツールバー（主操作）・プレビュー（主役）・右のパネル（論文の詳細・翻訳の設定・ノート）の 3 層。
 翻訳はライブラリのどちらの画面からでもキューに入れられ、1 本ずつ順にバックグラウンドで進む。
 """
 
 from __future__ import annotations
 
 import logging
+import os
 import time
 from collections.abc import Callable
 from pathlib import Path
 
 import pymupdf
-from PySide6.QtCore import QByteArray, QSize, Qt, QTimer, QUrl
-from PySide6.QtGui import QAction, QDesktopServices, QGuiApplication, QKeySequence
+from PySide6.QtCore import QByteArray, QPoint, QSize, Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import (
+    QAction,
+    QActionGroup,
+    QColor,
+    QDesktopServices,
+    QGuiApplication,
+    QIcon,
+    QIntValidator,
+    QKeySequence,
+    QPainter,
+    QPixmap,
+)
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
     QFileDialog,
     QHBoxLayout,
-    QLabel,
     QLineEdit,
     QMainWindow,
     QMenu,
     QMessageBox,
     QProgressBar,
     QStackedWidget,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
-from .. import APP_NAME
+from .. import APP_NAME, update
 from ..config import paths
-from ..config.secrets import SecretStore
+from ..config.quota import QuotaBook
+from ..config.secrets import SecretStore, key_chain
 from ..config.settings import Settings
+from ..core.annotate import apply_annotations
 from ..core.export import build_output, finalize
 from ..core.options import OutputMode
 from ..core.pipeline import JobResult, Progress, TranslationJob, open_document
@@ -52,16 +66,19 @@ from ..translate.errors import (
 from ..translate.service import PartialTranslationError
 from . import icons, theme, worker
 from .about import AboutDialog
+from .annotation_popover import AnnotationPopover, UndoBar
 from .export_dialog import ExportDialog, suffix_for
 from .inspector import Inspector
-from .jobs import LookupQueue, TranslationQueue, TranslationRequest
+from .jobs import LookupQueue, TranslationNotice, TranslationQueue, TranslationRequest
 from .library_model import TRASH_DAYS
 from .library_view import LibraryView
 from .paper_detail import MetadataDialog
-from .pdf_view import PreviewPair
+from .pdf_view import ANNOTATION_NAMES, ANNOTATION_RGB, ZOOM_PRESETS, FindBar, NavPane, PreviewPair
 from .privacy import display_path
 from .settings_dialog import SettingsDialog
+from .side_panel import SidePanel
 from .sync_controller import ERROR, SYNCING, UNAVAILABLE, SyncController
+from .update_prompt import UpdateBanner, ask_enable_update_check, start_check
 from .widgets import (
     Banner,
     SegmentedControl,
@@ -85,12 +102,15 @@ def _mod(key: str) -> str:
 
 
 class MainWindow(QMainWindow):
+    _annotationsEvent = Signal(int)  # 注釈が変わった論文の id（ライブラリの合図は別のスレッドからも来るので、GUI のスレッドに渡す）
+
     def __init__(
         self,
         settings: Settings | None = None,
         secrets: SecretStore | None = None,
         library: Library | None = None,
         sync_engine_factory=None,
+        check_updates: bool | None = None,
     ):
         super().__init__()
         self.settings = settings or Settings.load()
@@ -120,12 +140,23 @@ class MainWindow(QMainWindow):
         self._banner_callback: Callable[[], None] | None = None
         self._job_ids: set[int] = set()
 
+        # 更新の確認（GitHub への問い合わせ）。テストでは環境変数で止める
+        self._check_updates = check_updates if check_updates is not None else not os.environ.get("SPECTRA_NO_UPDATE_CHECK")
+        self._update_info: update.UpdateInfo | None = None
+        self.annotations: list = []  # 読書画面で開いている論文の注釈
+        self._popover: AnnotationPopover | None = None
+        self._tool_kind = "highlight"  # マーカーの道具の種類（highlight / underline / note）
+        self._tool_color = "yellow"
+        self._startup_done = False
         self._build_ui()
         self._build_actions()
         self._restore_window()
         self._estimate_timer = QTimer(self, singleShot=True, interval=350, timeout=self._start_estimate)
         self.queue.changed.connect(self._on_queue_changed)
         self.queue.progress.connect(self._on_job_progress)
+        self._annotationsEvent.connect(self._on_annotations_changed)
+        self._unlisten = self.library.add_listener(self._on_library_event)
+        self.queue.notice.connect(self._on_translation_notice)
         self.queue.finished.connect(self._on_job_done)
         self.queue.failed.connect(self._on_job_failed)
         self.lookups.updated.connect(self._on_lookup_updated)
@@ -167,8 +198,31 @@ class MainWindow(QMainWindow):
         v = QVBoxLayout(root)
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(0)
-        self.library_view = LibraryView(self.library)
+        self.library_view = LibraryView(self.library, self.settings)
         v.addWidget(self._build_toolbar())
+
+        undo_wrap = QWidget()
+        ml = QVBoxLayout(undo_wrap)
+        ml.setContentsMargins(16, 12, 16, 0)
+        self.undo_bar = UndoBar(self.library)
+        self.undo_bar.undone.connect(lambda _a: self._on_annotation_restored())
+        self.undo_bar.undone.connect(lambda _a: undo_wrap.hide())
+        self.undo_bar.expired.connect(undo_wrap.hide)
+        ml.addWidget(self.undo_bar)
+        self.undo_wrap = undo_wrap
+        undo_wrap.hide()
+        v.addWidget(undo_wrap)
+
+        update_wrap = QWidget()
+        ul = QVBoxLayout(update_wrap)
+        ul.setContentsMargins(16, 12, 16, 0)
+        self.update_banner = UpdateBanner()
+        self.update_banner.dismissed.connect(self._on_update_later)
+        self.update_banner.skipRequested.connect(self._on_update_skip)
+        ul.addWidget(self.update_banner)
+        self.update_wrap = update_wrap
+        update_wrap.hide()
+        v.addWidget(update_wrap)
 
         banner_wrap = QWidget()
         bl = QVBoxLayout(banner_wrap)
@@ -210,16 +264,52 @@ class MainWindow(QMainWindow):
         rl = QHBoxLayout(reader)
         rl.setContentsMargins(0, 0, 0, 0)
         rl.setSpacing(0)
+        self.nav_pane = NavPane()
+        self.nav_pane.hide()
+        rl.addWidget(self.nav_pane)
+        center = QWidget()
+        cl = QVBoxLayout(center)
+        cl.setContentsMargins(0, 0, 0, 0)
+        cl.setSpacing(0)
+        self.find_bar = FindBar()
+        cl.addWidget(self.find_bar)
         self.preview = PreviewPair()
-        self.preview.original.pageChanged.connect(self._on_page_changed)
-        self.preview.translated.pageChanged.connect(self._on_page_changed)
-        self.preview.original.zoomChanged.connect(self._on_zoom_changed)
-        self.preview.translated.zoomChanged.connect(self._on_zoom_changed)
-        rl.addWidget(self.preview, 1)
+        for view in (self.preview.original, self.preview.translated):
+            view.pageChanged.connect(lambda _i, _n, v=view: v is self.preview.active_view() and self._refresh_page_indicator())
+            view.zoomChanged.connect(self._on_zoom_changed)
+        self.preview.linkRequested.connect(self._open_pdf_link)
+        self.preview.findRequested.connect(lambda text: self.show_find_bar(text))
+        self.preview.annotationRequested.connect(self._on_annotation_requested)
+        self.preview.annotationClicked.connect(self._on_annotation_clicked)
+        self.preview.annotationDeleteRequested.connect(self._delete_annotation)
+        self.preview.notePlaced.connect(self._on_note_placed)
+        self.preview.originalRequested.connect(self._on_original_requested)
+        self.preview.toolCancelled.connect(lambda: self.marker_btn.setChecked(False))
+        self.preview.colorPicked.connect(self._set_tool_color)
+        self.preview.add_context_provider(self._annotation_menu_items)
+        self.preview.searchChanged.connect(self.find_bar.set_count)
+        self.find_bar.queryChanged.connect(self.preview.search)
+        self.find_bar.nextRequested.connect(self.preview.find_next)
+        self.find_bar.previousRequested.connect(self.preview.find_previous)
+        self.find_bar.closed.connect(self._on_find_closed)
+        self.nav_pane.pageActivated.connect(self.preview.go_to_page)
+        cl.addWidget(self.preview, 1)
+        rl.addWidget(center, 1)
         self.inspector = Inspector(self.settings)
         self.inspector.settingsChanged.connect(self._on_settings_changed)
         self.inspector.openSettings.connect(self.show_settings)
-        rl.addWidget(self.inspector)
+        # 右のパネル: 読書画面でも「論文の詳細・AI 翻訳の詳細（今のインスペクタ）・ノート」の 3 つのタブ
+        self.side_panel = SidePanel(self.library, self.settings, "reader")
+        self.side_panel.set_translation_widget(self.inspector)
+        self.side_panel.readRequested.connect(lambda _id: self.preview.active_view().setFocus())
+        self.side_panel.editRequested.connect(self.edit_metadata)
+        self.side_panel.copyBibtexRequested.connect(self.copy_bibtex)
+        self.side_panel.retryLookupRequested.connect(lambda pid: self._lookup([pid]))
+        self.side_panel.enableLookupRequested.connect(self.enable_lookup)
+        self.side_panel.noteChanged.connect(self._on_reader_note_saved)
+        self.side_panel.annotationActivated.connect(self._go_to_annotation)
+        self.library_view.side_panel.annotationActivated.connect(self._open_annotation_from_library)
+        rl.addWidget(self.side_panel)
         self.content = reader
         self.stack.addWidget(reader)
         v.addWidget(self.stack, 1)
@@ -260,6 +350,13 @@ class MainWindow(QMainWindow):
         self.back_btn = tool_button("back", f"ライブラリに戻る（{_mod('[')}）")
         self.back_btn.clicked.connect(self.show_library)
         h.addWidget(self.back_btn)
+        self.nav_btn = tool_button("pages", f"ページの一覧と目次を表示/隠す（{_mod('Alt+T') if not theme.IS_MAC else '⌥⌘T'}）", checkable=True)
+        self.nav_btn.toggled.connect(lambda on: self.nav_pane.setVisible(on and self.screen_mode == READER))
+        h.addWidget(self.nav_btn)
+        self.find_btn = tool_button("search", f"PDF 内を検索（{_mod('F')}）", checkable=True)
+        self.find_btn.clicked.connect(self._toggle_find_bar)
+        h.addWidget(self.find_btn)
+        self._build_marker_tool(h)
         titles = QVBoxLayout()
         titles.setSpacing(0)
         self.doc_title = label("", "headline")
@@ -290,18 +387,90 @@ class MainWindow(QMainWindow):
         self.settings_btn = tool_button("gear", "設定")
         self.settings_btn.clicked.connect(lambda: self.show_settings())
         h.addWidget(self.settings_btn)
-        self.inspector_btn = tool_button("sidebar", "インスペクタを表示/隠す", checkable=True)
+        self.inspector_btn = tool_button("sidebar", "右のパネルを表示/隠す", checkable=True)
         self.inspector_btn.setChecked(True)
-        self.inspector_btn.toggled.connect(lambda on: self.inspector.setVisible(on))
+        self.inspector_btn.toggled.connect(lambda on: self.side_panel.setVisible(on))
         h.addWidget(self.inspector_btn)
         self._library_widgets = [self.sidebar_btn, self.search, self.add_btn]
-        self._reader_widgets = [self.back_btn, self.doc_title, self.doc_subtitle, self.view_mode, self.inspector_btn]
+        self._reader_widgets = [self.back_btn, self.nav_btn, self.find_btn, self.marker_btn, self.marker_menu_btn, self.doc_title, self.doc_subtitle, self.view_mode, self.inspector_btn]
         return bar
 
+    def _build_marker_tool(self, h: QHBoxLayout) -> None:
+        """ツールバーのマーカーの道具: 押している間は、文字を選ぶとすぐ付ける（付箋はクリックした位置に置く）。▾ で種類と色。"""
+        keys = "Ctrl+Alt+H" if not theme.IS_MAC else "⌃⌘H"
+        self.marker_btn = tool_button("highlighter", f"マーカーの道具（押している間、選んだ文字にすぐ付ける。選んだ文字に 1 つ付けるのは {keys}）", checkable=True)
+        menu = QMenu(self)
+        self._kind_group = QActionGroup(self)
+        self._kind_actions: dict[str, QAction] = {}
+        for kind, text in (("highlight", "マーカー"), ("underline", "下線"), ("note", "付箋（クリックした位置に置く）")):
+            a = menu.addAction(text)
+            a.setCheckable(True)
+            a.setChecked(kind == self._tool_kind)
+            self._kind_group.addAction(a)
+            a.triggered.connect(lambda _c=False, k=kind: self._set_tool_kind(k))
+            self._kind_actions[kind] = a
+        menu.addSeparator()
+        self._color_group = QActionGroup(self)
+        self._color_actions: dict[str, QAction] = {}
+        for name, (r, g, b) in ANNOTATION_RGB.items():
+            pm = QPixmap(14, 14)
+            pm.fill(Qt.GlobalColor.transparent)
+            painter = QPainter(pm)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            painter.setBrush(QColor(r, g, b))
+            painter.setPen(QColor(0, 0, 0, 70))
+            painter.drawEllipse(1, 1, 12, 12)
+            painter.end()
+            a = menu.addAction(QIcon(pm), ANNOTATION_NAMES[name])
+            a.setCheckable(True)
+            a.setChecked(name == self._tool_color)
+            self._color_group.addAction(a)
+            a.triggered.connect(lambda _c=False, n=name: self._set_tool_color(n))
+            self._color_actions[name] = a
+        self.marker_btn.toggled.connect(self._on_marker_tool_toggled)
+        h.addWidget(self.marker_btn)
+        # 種類と色を選ぶメニュー（道具のボタンを押す操作とは別のボタンにする）
+        self.marker_menu_btn = tool_button("chevron", "マーカーの種類と色")
+        self.marker_menu_btn.setIconSize(QSize(12, 12))
+        self.marker_menu_btn.setFixedWidth(20)
+        self.marker_menu_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.marker_menu_btn.setMenu(menu)
+        h.addWidget(self.marker_menu_btn)
+
+    def _on_marker_tool_toggled(self, on: bool) -> None:
+        self.preview.set_tool(self._tool_kind if on else "")
+        if on:
+            self.preview.original.setFocus()
+
+    def _set_tool_kind(self, kind: str) -> None:
+        self._tool_kind = kind
+        self._kind_actions[kind].setChecked(True)
+        if self.marker_btn.isChecked():
+            self.preview.set_tool(kind)
+
+    def _set_tool_color(self, color: str) -> None:
+        if color not in ANNOTATION_RGB:
+            return
+        self._tool_color = color
+        self._color_actions[color].setChecked(True)
+        self.preview.set_current_color(color)
+
     def _build_footer(self) -> QWidget:
-        bar = QWidget()
-        bar.setObjectName("Footer")
+        outer = QWidget()
+        outer.setObjectName("Footer")
+        ol = QVBoxLayout(outer)
+        ol.setContentsMargins(0, 0, 0, 0)
+        ol.setSpacing(0)
+        bar = QWidget()  # 1 行目: 進み具合・ページ・ズーム
         bar.setFixedHeight(36)
+        ol.addWidget(bar)
+        # 2 行目: 翻訳の途中の出来事（キーの自動切り替えなど）。ないときは出さない
+        self._translation_notice = ""
+        self.notice_label = label("", "caption")
+        self.notice_label.setContentsMargins(14, 0, 10, 6)
+        self.notice_label.setAccessibleName("翻訳の途中のお知らせ")
+        self.notice_label.hide()
+        ol.addWidget(self.notice_label)
         h = QHBoxLayout(bar)
         h.setContentsMargins(14, 4, 10, 4)
         h.setSpacing(8)
@@ -318,23 +487,60 @@ class MainWindow(QMainWindow):
         self.queue_cancel_btn.hide()
         h.addWidget(self.queue_cancel_btn)
         h.addStretch(1)
-        self.page_label = label("", "caption")
-        h.addWidget(self.page_label)
-        h.addSpacing(8)
+        # ページ n/N（番号を入れて Enter で移動）
+        self.page_prev_btn = tool_button("back", "前のページ")
+        self.page_prev_btn.clicked.connect(lambda: self.preview.previous_page())
+        self.page_edit = QLineEdit()
+        self.page_edit.setObjectName("PageEdit")
+        self.page_edit.setValidator(QIntValidator(1, 99999, self))
+        self.page_edit.setFixedWidth(48)
+        self.page_edit.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.page_edit.setAccessibleName("ページ番号（入力して Enter で移動）")
+        self.page_edit.setToolTip(f"ページ番号を入れて Enter（{_mod('J')}）")
+        self.page_edit.returnPressed.connect(self._go_to_typed_page)
+        self.page_total = label("", "caption")
+        self.page_next_btn = tool_button("forward", "次のページ")
+        self.page_next_btn.clicked.connect(lambda: self.preview.next_page())
+        # ズーム（倍率の一覧・幅に合わせる・ページ全体に合わせる）
         self.zoom_out_btn = tool_button("zoom_out", "縮小")
         self.zoom_out_btn.clicked.connect(lambda: self._zoom_by(1 / 1.2))
-        self.zoom_label = QLabel("100%")
-        self.zoom_label.setProperty("role", "caption")
-        self.zoom_label.setFixedWidth(44)
-        self.zoom_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.zoom_btn = QToolButton()
+        self.zoom_btn.setObjectName("ZoomButton")
+        self.zoom_btn.setText("100%")
+        self.zoom_btn.setToolTip("倍率を選ぶ")
+        self.zoom_btn.setAccessibleName("倍率")
+        self.zoom_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.zoom_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.zoom_btn.setFixedWidth(64)
+        self.zoom_menu = QMenu(self.zoom_btn)
+        self.zoom_menu.addAction("幅に合わせる", lambda: self.preview.fit_width())
+        self.zoom_menu.addAction("ページ全体に合わせる", lambda: self.preview.fit_page())
+        self.zoom_menu.addSeparator()
+        for z in ZOOM_PRESETS:
+            self.zoom_menu.addAction(f"{round(z * 100)}%", lambda z=z: self.preview.set_zoom(z))
+        self.zoom_btn.setMenu(self.zoom_menu)
         self.zoom_in_btn = tool_button("zoom_in", "拡大")
         self.zoom_in_btn.clicked.connect(lambda: self._zoom_by(1.2))
         self.fit_btn = tool_button("fit", "幅に合わせる")
         self.fit_btn.clicked.connect(self.preview.fit_width)
-        self._zoom_widgets = [self.page_label, self.zoom_out_btn, self.zoom_label, self.zoom_in_btn, self.fit_btn]
-        for w in self._zoom_widgets[1:]:
+        self.fit_page_btn = tool_button("fit_page", "ページ全体に合わせる")
+        self.fit_page_btn.clicked.connect(self.preview.fit_page)
+        self._zoom_widgets = [
+            self.page_prev_btn,
+            self.page_edit,
+            self.page_total,
+            self.page_next_btn,
+            self.zoom_out_btn,
+            self.zoom_btn,
+            self.zoom_in_btn,
+            self.fit_btn,
+            self.fit_page_btn,
+        ]
+        for i, w in enumerate(self._zoom_widgets):
+            if i == 4:
+                h.addSpacing(8)
             h.addWidget(w)
-        return bar
+        return outer
 
     def _build_actions(self) -> None:
         mod = "Ctrl"
@@ -404,11 +610,32 @@ class MainWindow(QMainWindow):
             act("拡大", lambda: self._zoom_by(1.2), QKeySequence.StandardKey.ZoomIn),
             act("縮小", lambda: self._zoom_by(1 / 1.2), QKeySequence.StandardKey.ZoomOut),
             act("幅に合わせる", self.preview.fit_width, f"{mod}+0"),
+            act("ページ全体に合わせる", self.preview.fit_page, f"{mod}+9"),
         ]
         view.addActions(self._zoom_actions)
         view.addSeparator()
-        self.act_inspector = act("インスペクタ", self.inspector_btn.toggle, f"{mod}+Alt+I")
+        self._page_actions = [
+            act("次のページ", lambda: self.preview.next_page(), f"{mod}+Down"),
+            act("前のページ", lambda: self.preview.previous_page(), f"{mod}+Up"),
+            act("ページを指定…", self._focus_page_edit, f"{mod}+J"),
+            act("次の一致", lambda: self.preview.find_next(), f"{mod}+G"),
+            act("前の一致", lambda: self.preview.find_previous(), f"{mod}+Shift+G"),
+            act("ページの一覧と目次", self.nav_btn.toggle, f"{mod}+Alt+T"),
+        ]
+        view.addActions(self._page_actions)
+        view.addSeparator()
+        self.act_inspector = act("右のパネル", self.inspector_btn.toggle, f"{mod}+Alt+I")
         view.addAction(self.act_inspector)
+
+        ann = mb.addMenu("注釈")
+        hk, nk = ("Meta+Ctrl+H", "Meta+Ctrl+N") if theme.IS_MAC else ("Ctrl+Alt+H", "Ctrl+Alt+N")
+        self._annotation_actions = [
+            act("選んだ文字にマーカーを付ける", lambda: self._annotate_selection("highlight"), hk),
+            act("選んだ文字にコメントを付ける", lambda: self._annotate_selection("highlight", True), nk),
+            act("選んだ文字に下線を引く", lambda: self._annotate_selection("underline"), "Meta+Ctrl+U" if theme.IS_MAC else "Ctrl+Alt+U"),
+            act("マーカーの道具", self.marker_btn.toggle),
+        ]
+        ann.addActions(self._annotation_actions)
 
         help_menu = mb.addMenu("ヘルプ")
         help_menu.addAction(act(f"{APP_NAME} について", self.show_about, role=QAction.MenuRole.AboutRole))
@@ -416,6 +643,7 @@ class MainWindow(QMainWindow):
         help_menu.addAction(act("問題を報告…", lambda: QDesktopServices.openUrl(QUrl(f"{REPO_URL}/issues/new/choose"))))
 
         self.view_mode.changed.connect(self.preview.set_mode)
+        self.view_mode.changed.connect(lambda _k: QTimer.singleShot(0, self._refresh_page_indicator))
 
     # ======================================================================
     # 状態の反映
@@ -437,7 +665,9 @@ class MainWindow(QMainWindow):
         for w in self._reader_widgets:
             w.setVisible(reader)
         self.primary_btn.setVisible(reader)
-        self.inspector.setVisible(reader and self.inspector_btn.isChecked())
+        self.side_panel.setVisible(reader and self.inspector_btn.isChecked())
+        self.nav_pane.setVisible(reader and self.nav_btn.isChecked())
+        self.update_wrap.setVisible(not reader and self._update_info is not None)
 
         job = self._paper_job() if reader else None
         has_result = reader and self.translated_pdf is not None and not self.result_stale
@@ -451,13 +681,13 @@ class MainWindow(QMainWindow):
         self.act_translate.setEnabled((reader and job is None) or bool(selected))
         self.act_cancel.setEnabled(job is not None or (not reader and bool(self.search.text())))
         self.act_cancel_all.setEnabled(self._busy())
-        self.act_find.setEnabled(not reader)
+        self.act_find.setEnabled(True)  # ライブラリでは一覧の検索、読書画面では PDF 内の検索
         for a in (self.act_open_paper, self.act_favorite, self.act_edit, self.act_lookup, self.act_bibtex, self.act_remove):
             a.setEnabled(bool(selected))
         self.act_open_paper.setEnabled(len(selected) == 1)
         self.act_edit.setEnabled(len(selected) == 1)
         self.act_new_collection.setEnabled(not reader)
-        for a in (*self._view_actions, *self._zoom_actions, self.act_inspector):
+        for a in (*self._view_actions, *self._zoom_actions, *self._page_actions, *self._annotation_actions, self.act_inspector):
             a.setEnabled(reader)
         for w in self._zoom_widgets:
             w.setVisible(reader)
@@ -530,6 +760,10 @@ class MainWindow(QMainWindow):
         if not text:
             text = self._status_message
         self.status.setText(text)
+        if current is None:  # 翻訳が終わったら、途中のお知らせは下げる（結果は帯と、訳文の警告に残る）
+            self._translation_notice = ""
+        self.notice_label.setText(self._translation_notice)
+        self.notice_label.setVisible(bool(self._translation_notice))
         self.progress.setVisible(show_progress)
         self.queue_cancel_btn.setVisible(not reader and current is not None)
         self.footer.setVisible(reader or bool(text))
@@ -668,7 +902,160 @@ class MainWindow(QMainWindow):
         self.library_view.refresh_paper(paper_id)
         if self.paper is not None and self.paper.id == paper_id:
             self.paper = self.library.get(paper_id) or self.paper
+            self._refresh_reader_panel()
             self._update_state()
+
+    # ======================================================================
+    # 注釈（マーカー・下線・コメント・付箋。原文に付け、訳文には余白の帯で示す）
+    # ======================================================================
+
+    def _on_library_event(self, event) -> None:
+        """ライブラリの変更の合図（別のスレッドからも来る）。注釈のときだけ、GUI のスレッドに渡す。"""
+        if getattr(event, "kind", "") == "annotations":
+            self._annotationsEvent.emit(int(event.paper_id or 0))
+
+    def _on_annotations_changed(self, paper_id: int) -> None:
+        if self.paper is not None and self.paper.id == paper_id:
+            self._reload_annotations()
+        self.library_view.side_panel.refresh_annotations()
+
+    def _reload_annotations(self) -> None:
+        """開いている論文の注釈を読み直して、PDF の印と右のパネルの一覧を更新する。"""
+        self.annotations = self.library.annotations(self.paper.id) if self.paper is not None else []
+        self.preview.set_annotations(self.annotations)
+        self.side_panel.refresh_annotations()
+
+    def _annotation(self, annotation_id: str):
+        return next((a for a in self.annotations if a.id == annotation_id), None)
+
+    def _annotate_selection(self, kind: str, with_comment: bool = False) -> None:
+        """ショートカットなど: 原文で選んでいる文字に、今の色の印を付ける。"""
+        if self.screen_mode != READER:
+            return
+        if not self.preview.original.has_selection():
+            self._set_status("原文で文字を選んでから、付けてください")
+            return
+        self._on_annotation_requested(kind, self._tool_color, with_comment)
+        self.preview.original.clear_selection()
+
+    def _on_annotation_requested(self, kind: str, color: str, with_comment: bool) -> None:
+        """選んでいる文字（原文）に注釈を付ける。ページをまたぐ選択は、ページごとに 1 件ずつ付ける。"""
+        if self.paper is None:
+            return
+        from ..library.models import MAX_QUOTE
+
+        created = []
+        try:
+            for page, quads, quote in self.preview.original.selection_parts():
+                created.append(
+                    self.library.add_annotation(self.paper.id, kind, page, quads, quote=quote[:MAX_QUOTE], color=color)
+                )
+        except (ValueError, SpectraError) as e:
+            self._show_banner("warning", "注釈を付けられませんでした", str(e))
+        self._reload_annotations()
+        if with_comment and created:
+            self._edit_annotation(created[0])
+
+    def _on_note_placed(self, page: int, x: float, y: float) -> None:
+        """付箋の道具でクリックした位置に付箋を置き、すぐコメントを書けるようにする。"""
+        if self.paper is None:
+            return
+        try:
+            a = self.library.add_annotation(self.paper.id, "note", page, [(x, y, x, y)], color=self._tool_color)
+        except (ValueError, SpectraError) as e:
+            self._show_banner("warning", "付箋を置けませんでした", str(e))
+            return
+        self._reload_annotations()
+        self._edit_annotation(a)
+
+    def _on_annotation_clicked(self, annotation_id: str, pos: QPoint) -> None:
+        a = self._annotation(annotation_id)
+        if a is not None:
+            self._edit_annotation(a, pos)
+
+    def _edit_annotation(self, annotation, pos: QPoint | None = None) -> None:
+        """印の吹き出し（色・種類・コメント・削除）を出す。"""
+        if self._popover is not None:
+            self._popover.close()
+        pop = AnnotationPopover(annotation, self.library, self)
+        pop.changed.connect(lambda _a: self._reload_annotations())
+        pop.deleted.connect(self._on_annotation_deleted)
+        self._popover = pop
+        pop.popup_at(pos if pos is not None and not pos.isNull() else self.preview.original.global_pos_of(annotation))
+
+    def _delete_annotation(self, annotation_id: str) -> None:
+        """選んでいる印を消す（Delete キー）。5 秒の間は「元に戻す」を出す。"""
+        try:
+            removed = self.library.delete_annotation(annotation_id)
+        except (ValueError, SpectraError) as e:
+            self._show_banner("warning", "注釈を削除できませんでした", str(e))
+            return
+        self._on_annotation_deleted(removed)
+
+    def _on_annotation_deleted(self, annotation) -> None:
+        self._reload_annotations()
+        self.undo_wrap.show()
+        self.undo_bar.show_deleted(annotation)
+
+    def _on_annotation_restored(self) -> None:
+        self._reload_annotations()
+
+    def _go_to_annotation(self, annotation_id: str, page: int = 0) -> None:
+        """一覧で選んだ注釈の場所へ移って、印を少しの間だけ強調する。"""
+        if self.screen_mode == READER and not self.preview.go_to_annotation(annotation_id):
+            self.preview.go_to_page(page)
+
+    def _open_annotation_from_library(self, annotation_id: str, page: int) -> None:
+        """ライブラリの詳細パネルの一覧から: その論文を読書画面で開いて、注釈の場所へ移る。"""
+        paper_id = self.library_view.detail.current_id()
+        if paper_id is None or not self.open_paper(paper_id):
+            return
+        QTimer.singleShot(0, lambda: self._go_to_annotation(annotation_id, page))
+
+    def _on_original_requested(self, page: int) -> None:
+        """訳文で選んだ文字に付けたいとき: 原文を表示して、同じページへ移る（注釈は原文に付ける）。"""
+        self.view_mode.set_current("original")
+        self.preview.set_mode("original")
+        QTimer.singleShot(0, lambda: self.preview.original.go_to_page(page))
+        self._set_status("注釈は原文に付けます。文字を選び直してください")
+
+    def _annotation_menu_items(self, index: int, pt) -> list:
+        """PDF の右クリックのメニューに足す項目（原文の表示のときだけ）。"""
+        if self.paper is None or self.preview.active_view() is not self.preview.original:
+            return []
+        view = self.preview.original
+        items: list = []
+        hit = view.annotation_at_point(index, pt)
+        if view.has_selection():
+            for kind, text, comment in (("highlight", "マーカーを付ける", False), ("underline", "下線を付ける", False), ("highlight", "コメントを付ける", True)):
+                a = QAction(text, self)
+                a.triggered.connect(lambda _c=False, k=kind, c=comment: self._annotate_selection(k, c))
+                items.append(a)
+        elif hit is not None:
+            edit = QAction("注釈を編集…", self)
+            edit.triggered.connect(lambda _c=False, h=hit: self._edit_annotation(h))
+            delete = QAction("注釈を削除", self)
+            delete.triggered.connect(lambda _c=False, h=hit: self._delete_annotation(h.id))
+            items += [edit, delete]
+        else:
+            note = QAction("ここに付箋を付ける", self)
+            note.triggered.connect(lambda _c=False: self._on_note_placed(index, float(pt.x), float(pt.y)))
+            items.append(note)
+        return items
+
+    def _on_reader_note_saved(self, paper_id: int, _text: str) -> None:
+        """読書画面で書いたノートを、ライブラリの一覧と右のパネルにも反映する。"""
+        self.library_view.refresh_paper(paper_id)
+        self._refresh_detail()
+
+    def _refresh_reader_panel(self) -> None:
+        """読書画面の右のパネルの「論文の詳細」を、最新の書誌情報に更新する（入力中のノートは触らない）。"""
+        if self.paper is not None and self.screen_mode == READER:
+            paper = self.library.get(self.paper.id)
+            if paper is not None:
+                self.side_panel.detail.show_papers(
+                    [paper], lookup_enabled=self.settings.metadata_lookup, sync_on=self.sync.enabled()
+                )
 
     def _on_lookups_changed(self) -> None:
         waiting = {p.id for p in self.library_view.model.papers() if self.lookups.is_waiting(p.id)}
@@ -692,14 +1079,42 @@ class MainWindow(QMainWindow):
         self._release_document()
         self._show_screen(LIBRARY)
         if current is not None:
+            self.library_view.refresh_paper(current)  # 読書画面で書いたノートや直した書誌情報を反映する
             self.library_view.reveal(current)
+        self._refresh_detail()
         self.library_view.table.setFocus()
 
     def focus_search(self) -> None:
+        """ライブラリでは一覧の検索欄へ、読書画面では PDF 内の検索の帯を開く。"""
         if self.screen_mode == READER:
-            self.show_library()
+            self.show_find_bar()
+            return
         self.search.setFocus()
         self.search.selectAll()
+
+    def show_find_bar(self, text: str = "") -> None:
+        """検索の帯を開く。text（選んでいた文字など）があれば検索欄に入れて、すぐ探す。"""
+        if self.screen_mode != READER or self.original_doc is None:
+            return
+        self.find_bar.open()
+        self.find_btn.setChecked(True)
+        if text:
+            self.find_bar.set_query(text)
+        elif self.find_bar.query():
+            self.preview.search(self.find_bar.query())
+
+    def _toggle_find_bar(self) -> None:
+        """ツールバーの検索ボタン: 検索の帯を開く・閉じる。"""
+        if self.find_bar.isHidden():
+            self.show_find_bar()
+        else:
+            self.find_bar.close_bar()
+        self.find_btn.setChecked(not self.find_bar.isHidden())
+
+    def _on_find_closed(self) -> None:
+        self.find_btn.setChecked(False)
+        self.preview.clear_search()
+        self.preview.active_view().setFocus()
 
     def _refresh_detail(self) -> None:
         papers = self.library_view.selected_papers()
@@ -740,6 +1155,9 @@ class MainWindow(QMainWindow):
             return
         self.library.update_metadata(paper_id, md, manual_fields=changed)
         self.library_view.refresh_paper(paper_id)
+        if self.paper is not None and self.paper.id == paper_id:
+            self.paper = self.library.get(paper_id) or self.paper
+            self._refresh_reader_panel()
         if changed & {"doi", "arxiv_id"} and (md.doi or md.arxiv_id):
             self._lookup([paper_id])
 
@@ -909,12 +1327,18 @@ class MainWindow(QMainWindow):
         self._release_document()
         self.paper, self.source_bytes, self.original_doc = paper, data, doc
         self.inspector.set_page_count(doc.page_count)
+        self.side_panel.set_paper(paper)
+        self.find_bar.close_bar()
         self.preview.original.set_document(doc)
+        self.nav_pane.set_document(doc, self.preview.original.outline())
         mode = "original"
         if self._load_saved_translation(paper):
             mode = "both"
+        self.preview.original.restore_view_state(self.settings.reading_state.get(paper.sha256))  # 前回の倍率と位置
+        self._reload_annotations()
         self.view_mode.set_current(mode)
         self.preview.set_mode(mode)
+        self._refresh_page_indicator()
         self.library.touch_opened(paper.id)
         self._show_screen(READER)
         self._start_estimate()
@@ -941,11 +1365,30 @@ class MainWindow(QMainWindow):
         self.result_stale = False
         self.preview.translated.set_document(doc)
 
+    def _remember_reading(self) -> None:
+        """今の論文の倍率と位置を覚える（次に開いたときに戻す）。"""
+        if self.paper is None or self.original_doc is None:
+            return
+        st = self.preview.active_view().view_state()
+        self.settings.remember_reading(self.paper.sha256, st["zoom"], st["fit"], st["page"], st["ratio"])
+
     def _release_document(self) -> None:
+        self.side_panel.flush_note()  # 入力中のノートを今すぐ保存する
+        if self.paper is not None:
+            self._remember_reading()
+            self.settings.save()
+        self.find_bar.close_bar()
+        if self._popover is not None:
+            self._popover.close()
+            self._popover = None
+        self.marker_btn.setChecked(False)
         self.preview.original.set_document(None)
         self.preview.translated.set_document(None)
+        self.nav_pane.set_document(None, [])
         self.original_doc = self.translated_doc = None
         self.paper = None
+        self.annotations = []
+        self.preview.set_annotations([])
         self.source_bytes = None
         self.translated_pdf = None
         self.result = None
@@ -1014,15 +1457,16 @@ class MainWindow(QMainWindow):
         else:
             self.start_translation()
 
-    def _api_key(self) -> str | None:
-        """翻訳に使う API キー。未設定なら案内を出して None を返す。"""
+    def _api_key(self) -> list | None:
+        """翻訳に使うキー（config.secrets.KeyRef のリスト、使う順）。要らないエンジンは空のリスト。
+        必要なのに 1 本もなければ、案内を出して None を返す。"""
         engine = self.settings.engine
         info = registry.ENGINES.get(engine)
         if not (info and info.needs_key):
-            return ""
-        key = self.secrets.get(engine)
-        if key:
-            return key
+            return []
+        keys = key_chain(self.settings, self.secrets, engine)
+        if keys:
+            return keys
         box = QMessageBox(self)
         box.setIcon(QMessageBox.Icon.Information)
         box.setText(f"{info.name} の API キーを設定してください")
@@ -1034,14 +1478,14 @@ class MainWindow(QMainWindow):
             self.show_settings("engines")
         return None
 
-    def _request(self, paper: Paper, key: str, first: int = 0, last: int | None = None, allow_partial: bool = False) -> TranslationRequest:
+    def _request(self, paper: Paper, keys: list, first: int = 0, last: int | None = None, allow_partial: bool = False) -> TranslationRequest:
         s = self.settings
         return TranslationRequest(
             paper_id=paper.id,
             title=paper.display_title,
             engine=s.engine,
             model=s.gemini_model,
-            api_key=key,
+            api_key="",
             auto_fallback=s.auto_fallback,
             translate_options=s.translate_options(),
             analysis_options=s.analysis_options(first, last),
@@ -1056,6 +1500,8 @@ class MainWindow(QMainWindow):
                 "references": not s.skip_references,
                 "font": s.font,
             },
+            keys=keys,
+            key_auto_switch=s.key_auto_switch,
         )
 
     def start_translation(self, allow_partial: bool = False) -> None:
@@ -1065,24 +1511,24 @@ class MainWindow(QMainWindow):
             return
         if self._paper_job() is not None:
             return
-        key = self._api_key()
-        if key is None:
+        keys = self._api_key()
+        if keys is None:
             return
         first, last = self.inspector.page_range()
         self.banner_wrap.hide()
         self._status_message = ""
-        self.queue.enqueue(self._request(self.paper, key, first, last, allow_partial))
+        self.queue.enqueue(self._request(self.paper, keys, first, last, allow_partial))
         self._update_state()
 
     def translate_papers(self, ids: list[int]) -> None:
         papers = [p for p in (self.library.get(i) for i in ids) if p is not None and self.queue.state(p.id) is None]
         if not papers:
             return
-        key = self._api_key()
-        if key is None:
+        keys = self._api_key()
+        if keys is None:
             return
         for p in papers:
-            self.queue.enqueue(self._request(p, key))
+            self.queue.enqueue(self._request(p, keys))
         if len(papers) > 1:
             self._show_banner("info", f"{len(papers)} 件の論文を翻訳キューに追加しました", "1 本ずつ順に翻訳します。翻訳中もライブラリや論文を読めます。")
 
@@ -1102,9 +1548,19 @@ class MainWindow(QMainWindow):
             if paper is None:
                 raise CancelledError
         translator = registry.create(
-            req.engine, api_key=req.api_key, options=req.translate_options, model=req.model, auto_fallback=req.auto_fallback
+            req.engine,
+            api_key=req.api_key,
+            options=req.translate_options,
+            model=req.model,
+            auto_fallback=req.auto_fallback,
+            keys=req.keys,
+            quota=QuotaBook(),
+            key_auto_switch=req.key_auto_switch,
         )
         translator.cancel_event = cancel
+        # キーの切り替えなどは、ワーカーのスレッドから呼ばれる。report 経由で GUI のスレッドに渡す
+        if hasattr(translator, "on_notice"):
+            translator.on_notice = lambda note: report(TranslationNotice(note))
         job = TranslationJob(
             paper.pdf_path,
             translator,
@@ -1174,6 +1630,12 @@ class MainWindow(QMainWindow):
     def _on_job_progress(self, paper_id: int, p: Progress) -> None:
         percent = p.done * 100 // p.total if p.stage.value == "translate" and p.total else None
         self.library_view.model.set_job(paper_id, "running", percent)
+        self._refresh_footer()
+
+    def _on_translation_notice(self, paper_id: int, text: str) -> None:
+        """翻訳の途中の出来事（キーを切り替えた、など）を、進み具合の行の下に 1 行出す。"""
+        self._translation_notice = text
+        self.notice_label.setToolTip(text)
         self._refresh_footer()
 
     def _on_job_done(self, req: TranslationRequest, result: JobResult) -> None:
@@ -1288,7 +1750,8 @@ class MainWindow(QMainWindow):
         if self.translated_pdf is None or self.paper is None or self.original_doc is None:
             return
         pages = len(self._output_pages())
-        dlg = ExportDialog(OutputMode(self.settings.output_mode), pages, self)
+        annotations = self.library.annotations(self.paper.id)
+        dlg = ExportDialog(OutputMode(self.settings.output_mode), pages, self, annotation_count=len(annotations))
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
         mode = dlg.selected()
@@ -1304,7 +1767,7 @@ class MainWindow(QMainWindow):
         if target.suffix.lower() != ".pdf":
             target = target.with_suffix(".pdf")
         try:
-            target.write_bytes(self._output_bytes(mode))
+            target.write_bytes(self._output_bytes(mode, annotations=dlg.include_annotations()))
         except OSError as e:
             self._alert("PDF を出力できませんでした", str(e))
             return
@@ -1320,15 +1783,22 @@ class MainWindow(QMainWindow):
         count = self.original_doc.page_count if self.original_doc is not None else 0
         return range(first, (last if last is not None else count - 1) + 1)
 
-    def _output_bytes(self, mode: OutputMode | None = None) -> bytes:
-        """指定した形式の PDF。翻訳結果から作り直すだけなので再翻訳は不要。"""
+    def _output_bytes(self, mode: OutputMode | None = None, annotations: bool = False) -> bytes:
+        """指定した形式の PDF。翻訳結果から作り直すだけなので再翻訳は不要。
+
+        annotations: 注釈（マーカー・下線・コメント・付箋）を PDF の注釈として書き込む。書くのは出力だけで、ライブラリの PDF は変えない。
+        """
         assert self.translated_pdf is not None and self.source_bytes is not None
         mode = mode or OutputMode(self.settings.output_mode)
-        if mode == OutputMode.TRANSLATED:
+        notes = self.library.annotations(self.paper.id) if annotations and self.paper is not None else []
+        if mode == OutputMode.TRANSLATED and not notes:
             return self.translated_pdf
         original = pymupdf.open(stream=self.source_bytes, filetype="pdf")
         translated = pymupdf.open(stream=self.translated_pdf, filetype="pdf")
-        return finalize(build_output(original, translated, mode, self._output_pages()))
+        out = build_output(original, translated, mode, self._output_pages())
+        if notes:
+            apply_annotations(out, notes, mode, self._output_pages())
+        return finalize(out)
 
     # ======================================================================
     # その他
@@ -1494,7 +1964,12 @@ class MainWindow(QMainWindow):
                 )
             elif c.kind == "metadata" and here:
                 self.paper = self.library.get(pid) or self.paper
+                self._refresh_reader_panel()
                 self._update_state()
+            elif c.kind == "note" and here:
+                self._refresh_reader_panel()  # 入力の途中でなければ、別のパソコンで書いたノートに更新する
+            elif c.kind == "annotations":
+                self._on_annotations_changed(pid)  # 別のパソコンで付けた・直した・消した注釈
             if c.kind != "collections":
                 self.library_view.refresh_paper(pid)
         self._refresh_detail()
@@ -1562,10 +2037,83 @@ class MainWindow(QMainWindow):
         view.set_zoom(view.zoom() * factor)
 
     def _on_zoom_changed(self, zoom: float) -> None:
-        self.zoom_label.setText(f"{round(zoom * 100)}%")
+        self.zoom_btn.setText(f"{round(zoom * 100)}%")
 
-    def _on_page_changed(self, index: int, total: int) -> None:
-        self.page_label.setText(f"{index + 1} / {total} ページ" if total else "")
+    def _refresh_page_indicator(self) -> None:
+        view = self.preview.active_view()
+        index, total = view.current_page(), view.page_count()
+        if not self.page_edit.hasFocus():  # 入力している間は書き換えない
+            self.page_edit.setText(str(index + 1) if total else "")
+        self.page_total.setText(f"/ {total}" if total else "")
+        self.page_edit.setEnabled(total > 0)
+        self.page_prev_btn.setEnabled(total > 0 and index > 0)
+        self.page_next_btn.setEnabled(total > 0 and index < total - 1)
+        self.nav_pane.set_current_page(index)
+
+    def _go_to_typed_page(self) -> None:
+        text = self.page_edit.text().strip()
+        if text.isdigit():
+            self.preview.go_to_page(int(text) - 1)
+        self.page_edit.clearFocus()
+        self.preview.active_view().setFocus()
+        self._refresh_page_indicator()
+
+    def _focus_page_edit(self) -> None:
+        if self.screen_mode == READER:
+            self.page_edit.setFocus()
+            self.page_edit.selectAll()
+
+    def _open_pdf_link(self, url: str) -> None:
+        """PDF の中の外へのリンク。http(s) と mailto だけ、確認してから開く。"""
+        if QUrl(url).scheme().lower() not in ("http", "https", "mailto"):
+            self._show_banner("warning", "このリンクは開けません", "安全のため、Web のページとメールのリンクだけを開きます。")
+            return
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setText("この PDF のリンクを、ブラウザで開きますか？")
+        box.setInformativeText(url if len(url) <= 200 else url[:200] + "…")
+        open_btn = box.addButton("開く", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("キャンセル", QMessageBox.ButtonRole.RejectRole)
+        plain_box(box).exec()
+        if box.clickedButton() is open_btn:
+            QDesktopServices.openUrl(QUrl(url))
+
+    # -- 更新の通知 ------------------------------------------------------------
+
+    def _startup_update_check(self) -> None:
+        """初回は確認するかを 1 回だけ尋ね、オンなら（前回から 24 時間以上たっていれば）新しい版を確かめる。"""
+        s = self.settings
+        if not self._check_updates:
+            return
+        if s.update_check == "ask":
+            s.update_check = "on" if ask_enable_update_check(self) else "off"
+            s.save()
+        if not update.should_check_on_startup(s.update_check, s.update_last_checked):
+            return
+        start_check(self._on_update_found, on_none=self._on_update_none, skipped=s.update_skipped_version)
+
+    def _record_update_check(self) -> None:
+        self.settings.update_last_checked = time.time()
+        self.settings.save()
+
+    def _on_update_none(self) -> None:
+        self._record_update_check()
+
+    def _on_update_found(self, info: update.UpdateInfo) -> None:
+        self._record_update_check()
+        self._update_info = info
+        self.update_banner.show_update(info)
+        self._update_state()
+
+    def _on_update_later(self) -> None:
+        self._update_info = None
+        self._update_state()
+
+    def _on_update_skip(self, version: str) -> None:
+        self.settings.update_skipped_version = version
+        self.settings.save()
+        self._update_info = None
+        self._update_state()
 
     def apply_appearance(self) -> None:
         theme.set_appearance(self.settings.appearance)
@@ -1576,11 +2124,21 @@ class MainWindow(QMainWindow):
         for b in (
             self.sidebar_btn,
             self.back_btn,
+            self.nav_btn,
+            self.find_btn,
+            self.marker_btn,
+            self.marker_menu_btn,
             self.settings_btn,
             self.inspector_btn,
+            self.page_prev_btn,
+            self.page_next_btn,
             self.zoom_in_btn,
             self.zoom_out_btn,
             self.fit_btn,
+            self.fit_page_btn,
+            self.find_bar.prev_btn,
+            self.find_bar.next_btn,
+            self.find_bar.close_btn,
             self.banner._close,
         ):
             refresh_icon(b)
@@ -1631,9 +2189,13 @@ class MainWindow(QMainWindow):
             self.resize(1320, 860)
         self.inspector_btn.setChecked(self.settings.window.get("inspector", True))
         self.sidebar_btn.setChecked(self.settings.window.get("sidebar", True))
+        self.nav_btn.setChecked(self.settings.window.get("nav_pane", False))
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
+        if not self._startup_done:
+            self._startup_done = True
+            QTimer.singleShot(0, self._startup_update_check)
         if self.library_view.paper_count() == 0:
             self.library_view.empty_add_btn.setFocus()
         else:
@@ -1654,12 +2216,17 @@ class MainWindow(QMainWindow):
                 event.ignore()
                 return
             self.queue.cancel_all()
+        self.side_panel.flush_note()
+        self.library_view.side_panel.flush_note()
+        self._unlisten()
         self.sync.close()
         self.settings.window = {
             "geometry": bytes(self.saveGeometry().toBase64()).decode(),
             "inspector": self.inspector_btn.isChecked(),
             "sidebar": self.sidebar_btn.isChecked(),
+            "nav_pane": self.nav_btn.isChecked(),
         }
+        self._remember_reading()
         self.settings.save()
         super().closeEvent(event)
 

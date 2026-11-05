@@ -10,7 +10,7 @@ import math
 import re
 import unicodedata
 
-from ..models import Metadata
+from ..models import NOTE_MAX_CHARS, Metadata
 from .hlc import HLC
 
 FILE_VERSION = 1
@@ -26,6 +26,7 @@ _DEFAULT_TEXT_LIMIT = 500
 MAX_AUTHORS = 1_000
 MAX_NAME = 300
 MAX_OPTIONS_BYTES = 10_000
+MAX_NOTE_DEVICES = 1_000
 _MAX_TIME = 4_102_444_800.0  # 2100 年。時刻として受け付ける上限（無限大・巨大な値で表示が落ちないように）
 _KEEP = {"\n", "\t"}
 # ゼロ幅非接合子・接合子は、ペルシア語やインド系の文字、絵文字の組み合わせに必要なので、文章では残す
@@ -184,7 +185,20 @@ def parse_paper_state(obj: dict, sha: str) -> dict | None:
         "file": {"name": name, "pages": pages, "added_at": added},
         "opened": opened,
         "collections": members,
+        "note": parse_note(obj.get("note")),
     }
+
+
+def parse_note(raw) -> dict | None:
+    """ノートの版 {"text", "hlc", "vv"} を検証する（notes.py）。合わなければ None（ノートなしとして扱う）。"""
+    if not isinstance(raw, dict) or not isinstance(raw.get("text"), str) or len(raw["text"]) > NOTE_MAX_CHARS:
+        return None
+    vv = raw.get("vv")
+    if not _hlc(raw.get("hlc")) or not isinstance(vv, dict) or not vv or len(vv) > MAX_NOTE_DEVICES:
+        return None
+    if not all(isinstance(dev, str) and HEX32_RE.match(dev) and _hlc(h) for dev, h in vv.items()):
+        return None
+    return {"text": clean_text(raw["text"]), "hlc": raw["hlc"], "vv": dict(vv)}
 
 
 def parse_translation(obj: dict, sha: str) -> dict | None:

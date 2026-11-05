@@ -113,3 +113,21 @@ def test_update_check_setting_and_check_now(dialog, monkeypatch):
     d.check_for_update_now()
     assert "つながりません" in d.update_status.text()
     d.close()
+
+
+def test_rebuilding_the_list_leaves_no_old_rows_on_screen(dialog):
+    """キーを足して一覧を作り直した直後も、古い欄が残って新しい欄と重ならない（deleteLater の前に隠す）。"""
+    app, make, settings, secrets = dialog
+    from spectra.ui.settings_dialog import KeyField
+
+    secrets.set("gemini", "k1")
+    d = make()
+    d.resize(600, 560)
+    d.show()
+    app.processEvents()
+    d._add_key()
+    app.processEvents()  # 新しい欄が表示される。古い欄の削除（deleteLater）はまだ行われない
+    rows = [w for w in d.findChildren(KeyField) if w.isVisible()]
+    assert len(rows) == 2 == len(settings.api_keys)
+    assert {w.slot for w in rows} == set(d.key_fields)
+    d.close()

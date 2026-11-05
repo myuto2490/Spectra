@@ -543,6 +543,143 @@ def test_error_dialogs_hide_the_home_folder(window, monkeypatch):
     assert shown and home not in shown[-1][1] and "~/Documents/paper.pdf" in shown[-1][1]
 
 
+# -- PDF の表示（ページ n/N・ズーム・検索・ページの一覧・リンク・見ていた場所の記憶） -----------------------
+
+
+def test_page_box_zoom_menu_and_find_bar(window, paper_path, monkeypatch):
+    app, w = window
+    assert w.open_file(paper_path)
+    pump(app, 0.3)
+    view = w.preview.original
+    assert w.page_edit.text() == "1" and w.page_total.text() == f"/ {view.page_count()}"
+    assert not w.page_prev_btn.isEnabled() and w.page_next_btn.isEnabled()
+
+    w.page_edit.setText("3")
+    w.page_edit.returnPressed.emit()
+    pump(app, 0.2)
+    assert view.current_page() == 2 and w.page_edit.text() == "3"
+    w.page_edit.setText("999")  # 範囲の外は最後のページへ
+    w.page_edit.returnPressed.emit()
+    pump(app, 0.2)
+    assert view.current_page() == view.page_count() - 1 and not w.page_next_btn.isEnabled()
+
+    w.preview.set_zoom(1.5)
+    assert w.zoom_btn.text() == "150%"
+    w.zoom_menu.actions()[1].trigger()  # ページ全体に合わせる
+    pump(app, 0.2)
+    assert view.fit_mode() == "page"
+    w.zoom_menu.actions()[0].trigger()  # 幅に合わせる
+    pump(app, 0.2)
+    assert view.fit_mode() == "width"
+
+    # ⌘F は読書画面では PDF 内の検索の帯を開く（ライブラリには戻らない）
+    assert w.find_bar.isHidden()
+    w.focus_search()
+    assert w.screen_mode == "reader" and not w.find_bar.isHidden()
+    w.find_bar.edit.setText("neural")
+    w.find_bar.edit.returnPressed.emit()
+    pump(app, 0.2)
+    assert view.hit_count() >= 1 and "件" in w.find_bar.count.text()
+    w.find_bar.close_bar()
+    assert view.hit_count() == 0 and w.find_bar.isHidden()
+
+
+def test_nav_pane_toggle_and_page_jump(window, paper_path):
+    app, w = window
+    assert w.open_file(paper_path)
+    pump(app, 0.3)
+    assert w.nav_pane.isHidden()
+    w.nav_btn.setChecked(True)
+    pump(app, 0.2)
+    assert not w.nav_pane.isHidden() and w.nav_pane.thumbnails.count() == w.preview.original.page_count()
+    w.nav_pane.pageActivated.emit(2)
+    pump(app, 0.2)
+    assert w.preview.original.current_page() == 2
+    w.show_library()
+    assert w.nav_pane.isHidden()  # ライブラリ画面では出さない
+
+
+def test_pdf_link_asks_before_opening(window, monkeypatch):
+    app, w = window
+    from PySide6.QtWidgets import QMessageBox
+
+    opened, boxes = [], []
+    monkeypatch.setattr("spectra.ui.main_window.QDesktopServices.openUrl", lambda url: opened.append(url.toString()))
+
+    def fake_exec(box):
+        boxes.append(box.informativeText())
+        return 0
+
+    monkeypatch.setattr("spectra.ui.main_window.plain_box", lambda box: type("P", (), {"exec": lambda self: fake_exec(box)})())
+    # 確認で「開く」を選ぶ
+    monkeypatch.setattr(QMessageBox, "clickedButton", lambda self: next(b for b in self.buttons() if b.text() == "開く"))
+    w._open_pdf_link("https://example.com/paper")
+    assert opened == ["https://example.com/paper"] and boxes == ["https://example.com/paper"]
+    # Web とメール以外（file: や javascript:）は確認も出さずに開かない
+    w._open_pdf_link("file:///etc/passwd")
+    w._open_pdf_link("javascript:alert(1)")
+    assert opened == ["https://example.com/paper"] and len(boxes) == 1
+
+
+def test_reading_position_is_remembered_per_paper(window, paper_path):
+    app, w = window
+    assert w.open_file(paper_path)
+    pump(app, 0.3)
+    sha = w.paper.sha256
+    w.preview.original.set_zoom(1.25)
+    w.preview.original.go_to_page(1)
+    pump(app, 0.2)
+    w.show_library()
+    st = w.settings.reading_state[sha]
+    assert st["fit"] == "none" and st["page"] == 1 and st["zoom"] == pytest.approx(1.25, abs=1e-3)
+
+    assert w.open_paper(w.library.papers()[0].id)  # 開き直すと戻る
+    pump(app, 0.4)
+    assert w.preview.original.current_page() == 1
+    assert w.preview.original.zoom() == pytest.approx(1.25, abs=1e-3)
+
+
+def test_update_notice_flow(window, monkeypatch):
+    """初回に尋ね、オンなら確かめ、新しい版があればライブラリの上に帯を出す（通信はしない）。"""
+    app, w = window
+    from spectra import update
+    from spectra.ui import main_window as mw
+
+    asked, started = [], []
+    monkeypatch.setattr(mw, "ask_enable_update_check", lambda parent: asked.append(1) or True)
+
+    def fake_start(on_found, on_error=None, on_none=None, skipped="", **kw):
+        started.append(skipped)
+        on_found(update.UpdateInfo("99.0.0", "https://github.com/myuto2490/Spectra/releases/tag/v99.0.0"))
+
+    monkeypatch.setattr(mw, "start_check", fake_start)
+    w._check_updates = True
+    w.settings.update_check = "ask"
+    w.settings.update_last_checked = 0.0
+    w._startup_update_check()
+    assert asked == [1] and w.settings.update_check == "on"
+    assert started == [""] and w.settings.update_last_checked > 0
+    assert not w.update_wrap.isHidden() and "99.0.0" in w.update_banner._title.text()
+
+    w.update_banner.skip_btn.click()  # 「この版を通知しない」
+    assert w.settings.update_skipped_version == "99.0.0" and w.update_wrap.isHidden()
+
+    # 24 時間以内なら確かめない・「確認しない」と答えたら通信しない
+    started.clear()
+    w._startup_update_check()
+    assert started == []
+    w.settings.update_check = "off"
+    w.settings.update_last_checked = 0.0
+    w._startup_update_check()
+    assert started == [] and asked == [1]
+
+    # 環境変数で止めているとき（テスト・開発）は、尋ねも確かめもしない
+    w._check_updates = False
+    w.settings.update_check = "ask"
+    w._startup_update_check()
+    assert asked == [1] and w.settings.update_check == "ask"
+
+
 # ---- 右のパネルとノート -------------------------------------------------------
 
 
@@ -701,6 +838,35 @@ def test_side_panel_forwards_detail_signals(window, tmp_path):
     assert panel.note_editor.paper_id is None
 
 
+# -- 読書画面の右のパネル ------------------------------------------------------------------
+
+
+def test_reader_side_panel_shows_paper_translation_and_note(window, paper_path):
+    app, w = window
+    assert w.open_file(paper_path)
+    pump(app, 0.3)
+    panel = w.side_panel
+    assert panel.mode == "reader" and panel.isVisible()
+    assert panel.detail._paper is not None and panel.detail._paper.id == w.paper.id
+    # 「AI 翻訳の詳細」には今のインスペクタが入り、「ノート」は論文ごとに保存される
+    panel.set_current_tab("translation")
+    pump(app, 0.1)
+    assert w.inspector.isVisible()
+    panel.set_current_tab("note")
+    panel.note_editor.edit.setPlainText("読書画面で書いたメモ")
+    w.show_library()  # 画面を離れるとき、入力中のノートを保存する
+    assert w.library.get(w.library.papers()[0].id).note == "読書画面で書いたメモ"
+    # ライブラリの右のパネルにも反映される
+    assert w.library_view.detail.note_editor.edit.toPlainText() == "読書画面で書いたメモ"
+    # 右のパネルを隠す・出すは、パネル全体で切り替える
+    assert w.open_paper(w.library.papers()[0].id)
+    pump(app, 0.2)
+    w.inspector_btn.setChecked(False)
+    assert w.side_panel.isHidden()
+    w.inspector_btn.setChecked(True)
+    assert not w.side_panel.isHidden()
+
+
 # ---- ノート：本物の Library とつなぐ ---------------------------------------------
 
 
@@ -786,3 +952,21 @@ def test_side_panel_note_follows_remote_changes(window, tmp_path):
     w.library.sync_set_note(paper.id, "さらに届いたメモ", merged=False)
     panel.set_paper(w.library.get(paper.id))
     assert panel.note_editor.text() == "入力中" and panel.note_editor.dirty
+
+
+def test_remote_note_change_updates_the_open_note_unless_typing(window, paper_path):
+    from spectra.library.sync import RemoteChange
+
+    app, w = window
+    assert w.open_file(paper_path)
+    pump(app, 0.3)
+    pid, sha = w.paper.id, w.paper.sha256
+    w.side_panel.set_current_tab("note")
+    w.library.set_note(pid, "別のパソコンで書いたメモ")  # 同期で届いた状態
+    w._on_remote_changes([RemoteChange("note", sha, pid)])
+    assert w.side_panel.note_editor.edit.toPlainText() == "別のパソコンで書いたメモ"
+    # 入力の途中は上書きしない
+    w.side_panel.note_editor.edit.setPlainText("書きかけ")
+    w.library.set_note(pid, "さらに別の内容")
+    w._on_remote_changes([RemoteChange("note", sha, pid)])
+    assert w.side_panel.note_editor.edit.toPlainText() == "書きかけ"

@@ -43,6 +43,11 @@ _PATHS: dict[str, str] = {
     "refresh": '<path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3"/><path d="M19.5 4.5v4h-4"/>',
     "chevron": '<path d="M6 9l6 6 6-6"/>',
     "back": '<path d="M14.5 5.5L8 12l6.5 6.5"/>',
+    "forward": '<path d="M9.5 5.5L16 12l-6.5 6.5"/>',
+    "chevron_up": '<path d="M6 15l6-6 6 6"/>',
+    "pages": '<rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/>'
+    '<rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/>',
+    "fit_page": '<rect x="6.5" y="3.5" width="11" height="17" rx="1.5"/><path d="M9.5 8.5h5M9.5 12h5M9.5 15.5h3"/>',
     "plus": '<path d="M12 5v14M5 12h14"/>',
     "search": '<circle cx="10.5" cy="10.5" r="6"/><path d="M15 15l5 5"/>',
     "clock": '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>',

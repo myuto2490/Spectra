@@ -12,6 +12,7 @@ from pdf_factory import make_paper  # noqa: E402
 def _isolate_user_data(tmp_path_factory, monkeypatch):
     """テストが利用者の設定・キャッシュ・API キー（キーチェーン）に触れないようにする。"""
     monkeypatch.setenv("SPECTRA_HOME", str(tmp_path_factory.mktemp("spectra-home")))
+    monkeypatch.setenv("SPECTRA_NO_UPDATE_CHECK", "1")  # 起動時の更新の確認（GitHub への通信と問い合わせの画面）を止める
     for var in ("SPECTRA_GEMINI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"):
         monkeypatch.delenv(var, raising=False)
 

@@ -162,3 +162,57 @@ def test_delete_clears_cached_key():
     assert store.get("gemini") == "AIzaKey"
     store.delete("gemini")
     assert store.get("gemini") == ""
+
+
+def test_settings_v6_defaults_and_migration():
+    s = Settings.from_dict({"schema": 5, "gemini_model": "gemini-3.6-flash"})  # v0.3 の設定
+    assert s.schema == 6 and s.gemini_model == "gemini-3.6-flash"
+    assert s.api_keys == [] and s.key_auto_switch is True
+    assert s.update_check == "ask" and s.update_last_checked == 0.0  # 更新した人にも初回に尋ねる
+    assert s.side_panel_tab == "details" and s.reading_state == {}
+
+
+def test_api_key_catalog_is_validated():
+    good = "a" * 32
+    s = Settings.from_dict({"api_keys": [
+        {"id": "default", "provider": "gemini", "label": "  Gemini \n "},
+        {"id": good, "provider": "gemini", "label": "研究室" * 20},
+        {"id": good, "provider": "gemini", "label": "重複"},
+        {"id": "../x", "provider": "gemini", "label": "x"},
+        {"id": "b" * 32, "provider": "deepl", "label": "未対応"},
+        {"id": "c" * 32, "provider": "gemini", "label": 3, "key": "AIza-should-be-dropped"},
+        "nope",
+    ]})
+    assert [k["id"] for k in s.api_keys] == ["default", good, "c" * 32]
+    assert s.api_keys[0]["label"] == "Gemini" and len(s.api_keys[1]["label"]) == 40 and s.api_keys[2]["label"] == ""
+    assert all(set(k) == {"id", "provider", "label"} for k in s.api_keys)  # キーの中身は目録に残さない
+    assert s.keys_for("gemini") == s.api_keys
+    assert Settings.from_dict({"api_keys": "x"}).api_keys == []
+
+
+def test_update_and_panel_settings_are_validated():
+    s = Settings.from_dict({"update_check": "maybe", "update_last_checked": -5, "side_panel_tab": "x", "update_skipped_version": " 0.5.0 "})
+    assert s.update_check == "ask" and s.update_last_checked == 0.0 and s.side_panel_tab == "details"
+    assert s.update_skipped_version == "0.5.0"
+    assert Settings.from_dict({"update_last_checked": 1_700_000_000}).update_last_checked == 1_700_000_000.0
+    for value in ("on", "off"):
+        assert Settings.from_dict({"update_check": value}).update_check == value
+
+
+def test_reading_state_is_validated_and_bounded():
+    sha = "f" * 64
+    s = Settings.from_dict({"reading_state": {
+        sha: {"zoom": 1.5, "fit": "width", "page": 3, "ratio": 0.25},
+        "e" * 64: {"zoom": 99, "fit": "width", "page": 0, "ratio": 0},
+        "d" * 64: {"zoom": 1, "fit": "nope", "page": 0, "ratio": 0},
+        "c" * 64: {"zoom": 1, "fit": "page", "page": True, "ratio": 0},
+        "not-a-sha": {"zoom": 1, "fit": "page", "page": 0, "ratio": 0},
+    }})
+    assert s.reading_state == {sha: {"zoom": 1.5, "fit": "width", "page": 3, "ratio": 0.25}}
+    for i in range(250):
+        s.remember_reading(f"{i:064x}", 1.0, "none", i, 0.5)
+    s.remember_reading(sha, 2.0, "page", 1, 0.0)
+    assert len(s.reading_state) == 200 and list(s.reading_state)[-1] == sha
+    assert f"{0:064x}" not in s.reading_state  # 古いものから捨てる
+    s.save()
+    assert Settings.load().reading_state == s.reading_state

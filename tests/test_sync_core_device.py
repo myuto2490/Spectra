@@ -121,6 +121,6 @@ def test_unchanged_name_does_not_rewrite(engine):
 
 def test_settings_device_name():
     s = Settings()
-    assert s.device_name == "" and s.schema == 5
+    assert s.device_name == "" and s.schema >= 5
     assert Settings.from_dict({"device_name": 12, "schema": 4}).device_name == ""
     assert Settings.from_dict({"device_name": "Lab", "schema": 5}).device_name == "Lab"

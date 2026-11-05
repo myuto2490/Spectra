@@ -290,7 +290,6 @@ def test_side_panel_has_four_tabs_and_lists_annotations(app, lib_and_paper):
     panel = SidePanel(wrapped, settings, "reader")
     panel.show()
     assert len(panel.detail.tab_buttons) == 4 and [b.text() for b in panel.detail.tab_buttons][-1] == "注釈"
-    assert panel.detail.tabs.sizeHint().width() <= 324  # 4 つのタブが右のパネルの幅に収まる
     panel.set_paper(paper)
     assert len(panel.annotation_list.rows) == 4
     got = []
@@ -554,3 +553,47 @@ def test_note_editor_takes_japanese_input(app):
     _preedit(ed.edit, "めも")
     _commit(ed.edit, "メモ")
     assert ed.text() == "メモ" and ed.dirty
+
+
+def test_side_panel_tabs_fit_even_with_a_wider_font(app, lib_and_paper):
+    """4 つのタブは、フォントが広くても（Windows の Segoe UI・拡大表示）右のパネルの幅からはみ出さない。"""
+    from PySide6.QtGui import QFont
+
+    from spectra.config.settings import Settings
+    from spectra.ui.side_panel import SidePanel
+
+    lib, paper = lib_and_paper
+    panel = SidePanel(lib, Settings(), "reader")
+    panel.show()
+    panel.set_paper(paper)
+
+    def check(panel):
+        app.processEvents()
+        tabs = panel.detail.tabs
+        assert tabs.width() == panel.width() == 324
+        for b in panel.detail.tab_buttons:
+            tl, br = b.mapTo(tabs, b.rect().topLeft()), b.mapTo(tabs, b.rect().bottomRight())
+            assert tl.x() >= 0 and br.x() < tabs.width(), f"{b.full_text()} のタブがパネルからはみ出す"
+        buttons = panel.detail.tab_buttons
+        xs = [(b.mapTo(tabs, b.rect().topLeft()).x(), b.mapTo(tabs, b.rect().bottomRight()).x()) for b in buttons]
+        assert all(a[1] < b[0] for a, b in zip(xs, xs[1:])), "タブどうしが重ならない"
+
+    check(panel)  # 普通のフォント
+    assert [b.full_text() for b in panel.detail.tab_buttons] == ["論文の詳細", "AI翻訳の詳細", "ノート", "注釈"]
+    for size in (12, 14, 18):  # フォントを広くしていくと、省略して収める（macOS だけで通る値にしない）
+        f = QFont(panel.font())
+        f.setPointSize(size)
+        panel.setFont(f)
+        for b in panel.detail.tab_buttons:
+            b.setFont(f)
+        check(panel)
+    elided = [b for b in panel.detail.tab_buttons if b.text() != b.full_text()]
+    assert elided and all(b.text().endswith("…") and b.toolTip() == b.full_text() for b in elided)  # 省略したら全体をツールチップに出す
+    # 元の大きさに戻すと、省略は解ける
+    f = QFont(panel.font())
+    f.setPointSize(10)
+    panel.setFont(f)
+    for b in panel.detail.tab_buttons:
+        b.setFont(f)
+    check(panel)
+    assert all(b.text() == b.full_text() and not b.toolTip() for b in panel.detail.tab_buttons)

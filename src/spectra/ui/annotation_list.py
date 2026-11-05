@@ -19,6 +19,7 @@ from .annotation_popover import (
     ANNOTATION_COLORS,
     COLOR_LABELS,
     KIND_LABELS,
+    ClampedLabel,
     ColorSwatch,
     annotation_rgb,
 )
@@ -88,22 +89,14 @@ class AnnotationRow(QFrame):
         head.addWidget(self.kind)
         head.addStretch(1)
         lay.addLayout(head)
-        self.quote = self._text(annotation.quote, None, 2)
+        self.quote = ClampedLabel(annotation.quote, 2, "label")
         lay.addWidget(self.quote)
         self.quote.setVisible(bool(annotation.quote))
-        self.comment = self._text(annotation.comment, "secondary", 3)
+        self.comment = ClampedLabel(annotation.comment, 3, "secondary")
         lay.addWidget(self.comment)
         self.comment.setVisible(bool(annotation.comment))
         if getattr(annotation, "comment_merged", False):
             lay.addWidget(label("ほかのパソコンでの編集と連結しました", "caption", tone="warning", wrap=True))
-
-    @staticmethod
-    def _text(text: str, role: str | None, lines: int):
-        lb = label(text, role, wrap=True)
-        lb.setTextFormat(Qt.TextFormat.PlainText)  # 論文の本文やコメントを、HTML として解釈しない
-        lb.setMaximumHeight(lb.fontMetrics().lineSpacing() * lines + 2)
-        lb.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-        return lb
 
     def set_selected(self, on: bool) -> None:
         self.setProperty("selected", on)
@@ -227,7 +220,10 @@ class AnnotationList(QWidget):
 
     def _rebuild(self) -> None:
         for r in self.rows:
+            # deleteLater だけでは、削除が処理されるまで古い行が描かれ続ける。外して隠してから消す
             self._lay.removeWidget(r)
+            r.hide()
+            r.setParent(None)
             r.deleteLater()
         self.rows = []
         shown = [a for a in self._all if self._matches(a)]

@@ -162,7 +162,7 @@ def test_startup_check_only_when_on_and_a_day_has_passed():
     assert not update.should_check_on_startup("on", now - day + 1, now)
     assert not update.should_check_on_startup("on", now - 60, now)
     assert update.should_check_on_startup("on", now + 3600, now)  # 時計が戻っていた
-    for answer in ("", "off", "unknown"):  # 未回答・オフでは通信しない
+    for answer in ("ask", "off", "", "unknown"):  # 未回答（ask）・オフでは通信しない
         assert not update.should_check_on_startup(answer, 0, now)
 
 

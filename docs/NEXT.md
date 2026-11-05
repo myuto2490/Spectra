@@ -273,3 +273,48 @@ state ファイル（`papers/<sha>/state.<端末>.json`）に、`fields` とは�
 | F | 新 `tests/test_pdf_view.py`・`tests/test_gui.py` に追加 | §7 の PDF の表示 |
 
 どのテストも通信をしない（`httpx.MockTransport`・偽の `keyring`・`SPECTRA_HOME` の一時フォルダ）。
+
+---
+
+## 付録: 担当の間の受け渡し（名前と形）
+
+空の実装でつなぎ、後で中身を入れる。名前・引数を変えるときは、使う側の担当と e8 に知らせる。
+
+### 設定（A。`config/settings.py`、版 6）
+
+| 項目 | 型・値 | 使う担当 |
+| --- | --- | --- |
+| `api_keys` | `[{"id": "default" か 32 桁の 16 進, "provider": "gemini", "label": str}]`（使う順。中身は持たない）。`Settings.keys_for("gemini")` | B |
+| `key_auto_switch` | `bool`（既定 `True`） | B |
+| `update_check` | `"ask"`（未回答。既定）/ `"on"` / `"off"` | D・F・B（設定の「詳細」） |
+| `update_last_checked` | `float`（秒。0 は未確認） | D |
+| `update_skipped_version` | `str`（「この版を通知しない」の版） | D |
+| `side_panel_tab` | `"details"` / `"translation"` / `"note"` | E |
+| `reading_state` | `{sha256: {"zoom": float, "fit": "none"/"width"/"page", "page": int, "ratio": float}}`（新しい順に 200 件）。`Settings.remember_reading(sha256, zoom, fit, page, ratio)` で書く | F |
+| 右のパネルの開閉・幅 | 今の `window` の辞書に入れる（`main_window.py` の持ち主が決める） | F |
+
+`api_keys` が空で、資格情報ストアに以前のキー（`gemini-api-key`）があるときは、B が `{"id": "default", "provider": "gemini", "label": "Gemini"}` として扱う（設定には、利用者がキーの一覧を変えたときに書く）。
+
+### ノート（C。`library/`）
+
+- `Paper.note: str`・`Paper.note_updated_at: float | None`・`Paper.note_merged: bool`（同期で同時の編集を連結した。利用者が次にノートを保存すると `False` に戻る）
+- `Library.set_note(paper_id: int, text: str) -> None`。長さの上限 `library.models.NOTE_MAX_CHARS = 100_000`（超えたら `ValueError`）。保存すると `LibraryEvent(kind="note")` を通知する
+- 同期で変わったときは `RemoteChange(kind="note", sha256, paper_id)`
+
+### 更新の通知（D。`spectra/update.py`・`ui/update_prompt.py`）
+
+- `update.Release(version: str, url: str, notes: str)`（`url` は `https://github.com/myuto2490/Spectra/releases/` で始まるものだけ）
+- `update.check_for_update(current: str = __version__, client: httpx.Client | None = None) -> Release | None`（新しい版がなければ `None`、失敗は `update.UpdateCheckError`）
+- `update.should_check(settings, now: float | None = None) -> bool`（`update_check == "on"` で、前回から 24 時間以上）
+- `ui.update_prompt.ask_update_check(parent, settings) -> None`（初回の問い合わせ。答えを `settings.update_check` に入れて保存）
+- `ui.update_prompt.UpdateChecker(QObject)`: `start(settings, force: bool = False)`、シグナル `available(Release)`・`failed(str)`（`force=False` のときは失敗を出さない）
+- F は起動時に、`update_check == "ask"` なら `ask_update_check`、その後 `UpdateChecker.start`。`available` で帯を出す。B は設定の「詳細」に、オン・オフと「今すぐ確認」（`start(force=True)`）を置く
+
+### 右のパネル（E。`ui/side_panel.py`（新）・`paper_detail.py`・`inspector.py`・`note_editor.py`）
+
+- `SidePanel(library, settings, mode: "library" | "reader", parent=None)`
+  - `set_paper(paper: Paper | None)`、`set_translation_widget(widget)`（読書画面で、今のインスペクタを「AI 翻訳の詳細」に入れる）
+  - `current_tab() -> str`・`set_current_tab(tab: str)`、シグナル `tabChanged(str)`（`settings.side_panel_tab` に保存）
+  - 今の `PaperDetail` のシグナル（読む・翻訳・情報を編集 など）は、そのまま外へ出す
+- `NoteEditor(library, parent=None)`: `set_paper(paper)`。入力をやめて 1 秒後に `Library.set_note`
+- F は、ライブラリ画面の詳細パネルと読書画面の右のパネルを `SidePanel` に置き換える

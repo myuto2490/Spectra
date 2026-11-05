@@ -418,3 +418,36 @@ def test_display_equation_fragments_are_not_translated():
     # 1 行だけの表の見出し（列の間が 2 か所以上空いている）
     header = _block(_line(_span("Wavelength", _R, 8, 51.0, 90.0, 95.0), _span("Intensity", _R, 8, 150.0, 190.0, 95.0), _span("Width", _R, 8, 260.0, 290.0, 95.0)))
     assert has_column_gaps(header, 8)
+
+
+def test_caption_covered_by_a_white_figure_background_is_translated():
+    """図とキャプションをまとめて覆う白い背景があっても、キャプションは訳す（図の中の文字は原文のまま）。"""
+    from pdf_factory import make_figure_on_white_background
+
+    a = analyze_document(make_figure_on_white_background())
+    pa = a.pages[0]
+    # 白い背景は図の中身ではないが、図の領域としてはキャプションを含んで検出される（この現象の前提）
+    cap = _find(a, "Fig. 3.")
+    assert any(r[1] <= cap.block.bbox[1] and r[3] >= cap.block.bbox[3] for r in pa.figure_rects)
+    assert cap.kind == BlockKind.CAPTION and cap.translate and cap.skip is None
+    assert _find(a, "frequency (GHz)").skip == SkipReason.FIGURE  # 軸ラベルは今までどおり原文のまま
+
+
+def test_caption_over_figure_graphics_is_still_kept():
+    """キャプションの文字の下に図の線が通っているときは、図の一部として原文のまま残す。"""
+    from pdf_factory import make_figure_on_white_background
+
+    a = analyze_document(make_figure_on_white_background(caption_over_graphic=True))
+    assert _find(a, "Fig. 3.").skip == SkipReason.FIGURE
+
+
+def test_background_fill_is_not_figure_content():
+    from spectra.core.classify import _is_background_fill
+
+    white = {"type": "f", "fill": (1.0, 1.0, 1.0), "color": None}
+    assert _is_background_fill(white)
+    assert _is_background_fill({**white, "fill": (0.98, 0.98, 0.99)})
+    assert not _is_background_fill({**white, "fill": (0.9, 0.9, 0.9)})  # 灰色の塗りは図の中身かもしれない
+    assert not _is_background_fill({**white, "color": (0, 0, 0)})  # 枠線がある
+    assert not _is_background_fill({**white, "type": "s"})
+    assert not _is_background_fill({"type": "f", "fill": None, "color": None})

@@ -220,3 +220,44 @@ def make_library_paper(
     if path:
         doc.save(path)
     return doc
+
+
+def make_figure_on_white_background(caption_over_graphic: bool = False) -> pymupdf.Document:
+    """図とキャプションをまとめて覆う白い背景（枠線なしの塗りつぶし）の上に、図とキャプションを置いた 1 ページ。
+
+    Elsevier などの PDF では、図の背景に白い矩形が敷かれ、その矩形がキャプションまで覆うことがある。
+    caption_over_graphic=True のときは、キャプションの文字の下に図の線も通す（キャプションが図の中にある場合）。
+    """
+    doc = pymupdf.open()
+    page = doc.new_page(width=595, height=842)
+    write_paragraph(page, LEFT_COL, 80, LOREM, 8)
+    write_paragraph(page, RIGHT_COL, 80, LOREM, 8)
+
+    background = pymupdf.Rect(56, 200, 539, 420)  # 図とキャプションの両方を覆う
+    shape = page.new_shape()
+    shape.draw_rect(background)
+    shape.finish(color=None, fill=(1, 1, 1))
+    shape.commit()
+    plot = page.new_shape()
+    # 図の枠は背景の縁のすぐ内側まで届く（描画のまとまりが背景とつながり、図の領域がキャプションまで広がる）
+    plot.draw_rect(pymupdf.Rect(60, 203, 535, 330))
+    plot.draw_polyline([(115, 320), (180, 280), (250, 250), (330, 240), (400, 225), (470, 222)])
+    for i in range(8):
+        plot.draw_line((115 + i * 50, 330), (115 + i * 50, 326))
+    plot.finish(color=(0, 0, 0.6), width=1)
+    plot.commit()
+    for i in range(8):
+        page.insert_text((111 + i * 50, 342), f"{i * 10}", fontname=BODY, fontsize=7)
+    page.insert_text((270, 356), "frequency (GHz)", fontname=BODY, fontsize=7)
+
+    caption = "Fig. 3. Models of the spectrum corresponding to the best-fit profile in blue and the second profile in red."
+    page.insert_textbox(pymupdf.Rect(56, 380, 539, 412), caption, fontname=BODY, fontsize=9)
+    if caption_over_graphic:
+        line = page.new_shape()
+        line.draw_polyline([(60, 384), (200, 392), (330, 386), (530, 394)])
+        line.draw_polyline([(60, 402), (200, 398), (330, 406), (530, 400)])
+        line.finish(color=(0.8, 0, 0), width=1)
+        line.commit()
+    write_paragraph(page, LEFT_COL, 460, LOREM, 8)
+    write_paragraph(page, RIGHT_COL, 460, LOREM, 8)
+    return doc

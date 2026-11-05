@@ -1,4 +1,4 @@
-"""右のパネル：「論文の詳細」「AI 翻訳の詳細」「ノート」の 3 つのタブ。
+"""右のパネル：「論文の詳細」「AI 翻訳の詳細」「ノート」「注釈」の 4 つのタブ。
 
 ライブラリ画面（mode="library"）でも読書画面（mode="reader"）でも同じ部品を使う。選んだタブは
 ``settings.side_panel_tab`` に覚える。論文の詳細・翻訳の操作のシグナルは ``PaperDetail`` のものをそのまま出す。
@@ -11,9 +11,9 @@ from PySide6.QtWidgets import QVBoxLayout, QWidget
 
 from ..config.settings import Settings
 from ..library import Paper
-from .paper_detail import NOTE_TAB, PAPER_TAB, TRANSLATION_TAB, PaperDetail
+from .paper_detail import ANNOTATION_TAB, NOTE_TAB, PAPER_TAB, TRANSLATION_TAB, PaperDetail
 
-TAB_KEYS = {PAPER_TAB: "details", TRANSLATION_TAB: "translation", NOTE_TAB: "note"}
+TAB_KEYS = {PAPER_TAB: "details", TRANSLATION_TAB: "translation", NOTE_TAB: "note", ANNOTATION_TAB: "annotations"}
 TAB_INDEX = {key: i for i, key in TAB_KEYS.items()}
 
 _FORWARDED = (
@@ -45,7 +45,8 @@ class SidePanel(QWidget):
     purgeRequested = Signal(list)
     cancelDownloadRequested = Signal(int)
     retryDownloadRequested = Signal(int)
-    tabChanged = Signal(str)  # "details" / "translation" / "note"
+    tabChanged = Signal(str)  # "details" / "translation" / "note" / "annotations"
+    annotationActivated = Signal(str, int)  # 一覧で選んだ注釈の id・ページ（0 始まり）
     noteChanged = Signal(int, str)  # 保存したノート（論文 ID・本文）
 
     def __init__(self, library, settings: Settings, mode: str = "library", parent: QWidget | None = None):
@@ -67,6 +68,7 @@ class SidePanel(QWidget):
         for name in _FORWARDED:
             getattr(self.detail, name).connect(getattr(self, name))
         self.detail.note_editor.noteChanged.connect(self.noteChanged)
+        self.detail.annotation_list.annotationActivated.connect(self.annotationActivated)
         self.detail.tabChanged.connect(self._on_tab_changed)
         self.detail.set_tab(TAB_INDEX.get(settings.side_panel_tab, PAPER_TAB))
 
@@ -83,6 +85,14 @@ class SidePanel(QWidget):
     def set_translation_widget(self, widget: QWidget | None) -> None:
         """「AI 翻訳の詳細」のタブに、翻訳の設定のパネル（読書画面のインスペクタ）を入れる。"""
         self.detail.set_translation_widget(widget)
+
+    @property
+    def annotation_list(self):
+        return self.detail.annotation_list
+
+    def refresh_annotations(self) -> None:
+        """注釈が変わったとき（LibraryEvent の "annotations"）に、一覧を読み直す。"""
+        self.detail.refresh_annotations()
 
     def flush_note(self) -> None:
         """入力中のノートを今すぐ保存する（論文を閉じる・アプリを終了するとき）。"""

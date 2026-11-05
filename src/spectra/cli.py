@@ -17,6 +17,7 @@ import json
 import logging
 import sys
 import threading
+import uuid
 from pathlib import Path
 
 from . import APP_NAME, __version__
@@ -80,6 +81,7 @@ def _build_parser() -> argparse.ArgumentParser:
     k = sub.add_parser("key", help="API キーを管理する")
     k.add_argument("action", choices=["set", "delete", "status"])
     k.add_argument("engine", nargs="?", choices=["gemini"], default="gemini")
+    k.add_argument("--label", default="", help="キーの名前（設定の一覧の名前。省略すると 1 本目のキー）")
 
     lib = sub.add_parser("library", help="論文ライブラリを管理する")
     lib_sub = lib.add_subparsers(dest="library_command", metavar="<action>", required=True)
@@ -99,19 +101,25 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _translator(engine: str, settings: Settings, secrets: SecretStore):
+    from .config.quota import QuotaBook
+    from .config.secrets import key_chain
     from .translate import registry
     from .translate.errors import MissingKeyError
 
-    key = secrets.get(engine) if engine != "dummy" else ""
-    if engine != "dummy" and not key:
+    keys = key_chain(settings, secrets, engine) if engine != "dummy" else []
+    if engine != "dummy" and not keys:
         raise MissingKeyError(hint=f"`spectra key set {engine}` で API キーを保存するか、環境変数を設定してください。")
-    return registry.create(
+    translator = registry.create(
         engine,
-        api_key=key,
+        keys=keys,
+        quota=QuotaBook(),
+        key_auto_switch=settings.key_auto_switch,
         options=settings.translate_options(),
         model=settings.gemini_model,
         auto_fallback=settings.auto_fallback,
     )
+    translator.on_notice = lambda note: print(note, file=sys.stderr)
+    return translator
 
 
 def _cache(args, settings: Settings):
@@ -229,23 +237,45 @@ def _cmd_estimate(args) -> int:
 
 
 def _cmd_key(args) -> int:
-    secrets = SecretStore()
+    from .config.secrets import default_label, slot
+
+    secrets, settings = SecretStore(), Settings.load()
+    entries = settings.keys_for(args.engine) or [{"id": "default", "provider": args.engine, "label": ""}]
     if args.action == "status":
-        src = secrets.source(args.engine)
-        print(f"{args.engine}: {'設定済み（' + src + '）' if src else '未設定'}")
+        for i, e in enumerate(entries):
+            src = secrets.source(slot(args.engine, e["id"]))
+            name = e["label"] or default_label(args.engine, i)
+            print(f"{i + 1}. {name}: {'設定済み（' + src + '）' if src else '未設定'}")
         if not secrets.secure:
             print("注意: OS の資格情報ストアが使えないため、キーは設定ファイルに保存されます。")
         return 0
+    if args.label:
+        entry = next((e for e in entries if e["label"] == args.label), None)
+        if entry is None and args.action == "delete":
+            print(f"「{args.label}」という名前のキーはありません。", file=sys.stderr)
+            return 1
+        if entry is None:
+            entry = {"id": uuid.uuid4().hex, "provider": args.engine, "label": args.label}
+            entries = [*entries, entry]
+    else:
+        entry = entries[0]
+    name = entry["label"] or default_label(args.engine, entries.index(entry))
     if args.action == "delete":
-        secrets.delete(args.engine)
-        print(f"{args.engine} の API キーを削除しました。")
+        secrets.delete(slot(args.engine, entry["id"]))
+        if len(entries) > 1:
+            settings.api_keys = [e for e in settings.api_keys if e["id"] != entry["id"]]
+            settings.save()
+        print(f"{name} の API キーを削除しました。")
         return 0
-    value = getpass.getpass(f"{args.engine} の API キー: ")
+    value = getpass.getpass(f"{name} の API キー: ")
     if not value.strip():
         print("入力が空のため保存しませんでした。", file=sys.stderr)
         return 1
-    secrets.set(args.engine, value)
-    print(f"{args.engine} の API キーを保存しました（{secrets.backend_name}）。")
+    secrets.set(slot(args.engine, entry["id"]), value)
+    if entry not in settings.keys_for(args.engine) and args.label:  # 新しい名前のキーを目録に足す
+        settings.api_keys = entries
+        settings.save()
+    print(f"{name} の API キーを保存しました（{secrets.backend_name}）。")
     return 0
 
 

@@ -580,15 +580,23 @@ def test_side_panel_tabs_fit_even_with_a_wider_font(app, lib_and_paper):
 
     check(panel)  # 普通のフォント
     assert [b.full_text() for b in panel.detail.tab_buttons] == ["論文の詳細", "AI翻訳の詳細", "ノート", "注釈"]
-    for size in (12, 14, 18):  # フォントを広くしていくと、省略して収める（macOS だけで通る値にしない）
+    # フォントを広くしていく。どの大きさでも、はみ出さない・重ならない（check）。省略するかどうかはフォントの幅で決まる
+    # （Linux のフォントは細く、12〜18pt では収まる）ので、省略が起きるまで広げて、そのときの形を確かめる
+    elided = []
+    for size in (12, 14, 18, 24, 36, 48, 64):
         f = QFont(panel.font())
         f.setPointSize(size)
         panel.setFont(f)
         for b in panel.detail.tab_buttons:
             b.setFont(f)
         check(panel)
-    elided = [b for b in panel.detail.tab_buttons if b.text() != b.full_text()]
-    assert elided and all(b.text().endswith("…") and b.toolTip() == b.full_text() for b in elided)  # 省略したら全体をツールチップに出す
+        elided = [b for b in panel.detail.tab_buttons if b.text() != b.full_text()]
+        if elided:
+            break
+    # 64pt の見出しは、324 px に全体では収まらない。省略せずにはみ出してはいない（check が確かめている）
+    assert elided, "フォントを広げても省略されない（見出しが全体で収まらない大きさのはず）"
+    assert all(b.text().endswith("…") and b.toolTip() == b.full_text() for b in elided)  # 省略したら全体をツールチップに出す
+    assert all(b.toolTip() == "" for b in panel.detail.tab_buttons if b not in elided)
     # 元の大きさに戻すと、省略は解ける
     f = QFont(panel.font())
     f.setPointSize(10)

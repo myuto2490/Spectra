@@ -11,6 +11,8 @@ import contextlib
 import json
 import logging
 import os
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 from .. import APP_NAME
@@ -25,6 +27,44 @@ ENV_VARS = {
 
 def _account(engine: str) -> str:
     return f"{engine}-api-key"
+
+
+def slot(provider: str, key_id: str = "default") -> str:
+    """キー 1 つの保存場所の名前。以前からのキー（default）は今までどおり provider だけ（アカウント名 gemini-api-key）で、
+    書き直さない（macOS で、アドホック署名のアプリがキーチェーンの許可を求める回数を増やさないため）。"""
+    return provider if key_id == "default" else f"{provider}-{key_id}"
+
+
+@dataclass(frozen=True)
+class KeyRef:
+    """翻訳に使うキー 1 つ。中身は read() で、使う直前に初めて読む。"""
+
+    id: str  # 設定の目録の id（環境変数なら "env"）
+    label: str
+    read: Callable[[], str]
+
+
+def key_chain(settings, secrets: SecretStore, provider: str = "gemini") -> list[KeyRef]:
+    """翻訳に使うキーを、使う順に返す。環境変数があればそれだけを使う（切り替えない）。
+
+    目録が空で、以前からのキー（default）が保存されていれば、それを 1 本目として扱う。
+    """
+    for var in ENV_VARS.get(provider, ()):
+        if os.environ.get(var):
+            return [KeyRef("env", f"環境変数 {var}", lambda v=var: os.environ.get(v, "").strip())]
+    entries = settings.keys_for(provider) if settings is not None else []
+    if not entries and secrets.has(provider, use_env=False):
+        entries = [{"id": "default", "provider": provider, "label": ""}]
+    return [KeyRef(e["id"], e["label"] or default_label(provider, i), _reader(secrets, slot(provider, e["id"]))) for i, e in enumerate(entries)]
+
+
+def _reader(secrets: SecretStore, name: str) -> Callable[[], str]:
+    return lambda: secrets.get(name, use_env=False)
+
+
+def default_label(provider: str, index: int) -> str:
+    name = {"gemini": "Gemini"}.get(provider, provider)
+    return name if index == 0 else f"{name} {index + 1}"
 
 
 class SecretStore:

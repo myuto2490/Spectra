@@ -62,6 +62,7 @@ class SidePanel(QWidget):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
         self.detail = PaperDetail(library=library)
+        self.detail.set_reader_mode(mode == "reader")  # 読書画面では「読む」のボタンを出さない
         lay.addWidget(self.detail)
         for name in _FORWARDED:
             getattr(self.detail, name).connect(getattr(self, name))

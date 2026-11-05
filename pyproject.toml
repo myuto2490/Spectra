@@ -31,6 +31,7 @@ dependencies = [
     "keyring>=24",
     "platformdirs>=4",
     "fonttools>=4.47",
+    "tzdata; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]

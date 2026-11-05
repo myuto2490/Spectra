@@ -677,3 +677,21 @@ def test_broken_note_in_the_sync_folder_is_ignored(make_device, pdf, sync_root):
     b.sync()
     got = b.paper(paper.sha256)
     assert got is not None and got.note == ""  # ノートだけを捨て、論文は取り込む
+
+
+def test_state_file_from_an_older_version_without_note_keeps_the_note(make_device, pdf, sync_root):
+    """v0.3 以前の端末は note を知らずに自分の state ファイルを書く。それでノートが消えたり連結されたりしない。"""
+    a, b = make_device("A"), make_device("B")
+    paper = a.lib.add(pdf(seed=1))[0]
+    a.lib.set_note(paper.id, "v0.4 のノート")
+    roundtrip(a, b)
+    b.lib.set_favorite(b.paper(paper.sha256).id, True)  # B も自分の state ファイルを書く
+    roundtrip(a, b)
+    path = sync_root / "papers" / paper.sha256 / f"state.{b.engine.device.id}.json"
+    body = json.loads(path.read_text(encoding="utf-8"))
+    body.pop("note", None)  # 古い版が書いた形（実際の v0.3.0 のエンジンでも、ほかの端末のノートが残ることを手で確かめた）
+    path.write_text(json.dumps(body), encoding="utf-8")
+    roundtrip(a, b)
+    for d in (a, b):
+        got = d.paper(paper.sha256)
+        assert got.note == "v0.4 のノート" and not got.note_merged and got.favorite

@@ -28,7 +28,7 @@ class TranslationRequest:
     title: str
     engine: str
     model: str
-    api_key: str
+    api_key: str  # キーを 1 本だけ直接渡すとき（キーの目録を使うなら "" にして keys を渡す）
     auto_fallback: bool
     translate_options: TranslateOptions
     analysis_options: AnalysisOptions
@@ -37,6 +37,15 @@ class TranslationRequest:
     cache: object = None  # TranslationCache（キャッシュを使わない設定なら None）
     allow_partial: bool = False
     options: dict = field(default_factory=dict)  # ライブラリに記録する設定（表示用）
+    keys: list = field(default_factory=list)  # config.secrets.KeyRef のリスト（使う順）。空なら api_key を使う
+    key_auto_switch: bool = True  # 1 日の上限に達したら、次のキーに切り替える
+
+
+@dataclass(frozen=True)
+class TranslationNotice:
+    """翻訳の途中の出来事（キーの自動切り替えなど）。進捗の代わりに report で送ると、notice シグナルで届く。"""
+
+    text: str
 
 
 Runner = Callable[[TranslationRequest, Callable[[object], None], threading.Event], object]
@@ -49,6 +58,7 @@ class TranslationQueue(QObject):
     progress = Signal(int, object)  # (paper_id, pipeline.Progress)
     finished = Signal(object, object)  # (TranslationRequest, JobResult)
     failed = Signal(object, object)  # (TranslationRequest, 例外)
+    notice = Signal(int, str)  # (paper_id, 翻訳の途中の出来事。キーの切り替えなど)
 
     def __init__(self, runner: Runner, parent: QObject | None = None):
         super().__init__(parent)
@@ -139,6 +149,10 @@ class TranslationQueue(QObject):
         self.changed.emit()
 
     def _on_progress(self, req: TranslationRequest, p: object) -> None:
+        if isinstance(p, TranslationNotice):  # 進捗の表示は変えずに、出来事だけを知らせる
+            if req is self._current:
+                self.notice.emit(req.paper_id, p.text)
+            return
         if req is self._current:
             self.last_progress = p
             self.progress.emit(req.paper_id, p)

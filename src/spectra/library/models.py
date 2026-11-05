@@ -8,6 +8,11 @@ from typing import ClassVar
 
 META_STATUSES = ("pending", "done", "failed", "local")  # local: オンライン照会をしない設定
 NOTE_MAX_CHARS = 100_000  # 論文ごとのノートの長さの上限
+ANNOTATION_KINDS = ("highlight", "underline", "note")  # マーカー・下線・付箋
+ANNOTATION_COLORS = ("yellow", "green", "blue", "pink", "purple")
+MAX_ANNOTATIONS = 5_000  # 1 本の論文あたり（同期のファイルの大きさの上限に収める）
+MAX_QUOTE = 2_000
+MAX_COMMENT = 10_000
 
 
 @dataclass(frozen=True)
@@ -90,7 +95,7 @@ class Translation:
 class LibraryEvent:
     """ライブラリの変更の合図（同期の層が受け取る）。中身は最小限で、詳しくは読み直してもらう。
 
-    kind: added / metadata / favorite / opened / removed / translation / collections / note
+    kind: added / metadata / favorite / opened / removed / translation / collections / note / annotations
     """
 
     kind: str
@@ -102,6 +107,37 @@ class LibraryEvent:
 class AddResult:
     paper: Paper
     status: str  # new（新しく追加）/ existing（既にあった）/ restored（ゴミ箱から戻した）
+
+
+@dataclass(frozen=True)
+class Annotation:
+    """原文に付けた注釈（docs/ANNOTATIONS.md）。位置は原文のページの座標（pt）で持つ。"""
+
+    id: str  # uuid4 の 16 進 32 桁
+    paper_id: int
+    kind: str  # ANNOTATION_KINDS
+    page: int  # 0 始まり
+    quads: tuple[tuple[float, float, float, float], ...]  # 行ごとの矩形。付箋は (x, y, x, y) の 1 つ
+    quote: str
+    color: str  # ANNOTATION_COLORS
+    comment: str
+    created_at: float
+    updated_at: float
+    comment_merged: bool = False  # 同期で同時の編集を連結した（次にコメントを保存すると False）
+
+    @property
+    def rect(self) -> tuple[float, float, float, float]:
+        """全体を囲む矩形。"""
+        return (
+            min(q[0] for q in self.quads),
+            min(q[1] for q in self.quads),
+            max(q[2] for q in self.quads),
+            max(q[3] for q in self.quads),
+        )
+
+    @property
+    def has_comment(self) -> bool:
+        return bool(self.comment.strip())
 
 
 @dataclass(frozen=True)

@@ -1122,3 +1122,17 @@ def test_find_button_in_the_reader_toolbar(window, paper_path):
     assert not w.find_btn.isChecked()
     w.show_library()
     assert not w.find_btn.isVisibleTo(w)
+
+
+def test_context_menu_find_opens_the_find_bar_with_the_selection(window, paper_path):
+    app, w = window
+    assert w.open_file(paper_path)
+    pump(app, 0.3)
+    view = w.preview.original
+    w.preview.findRequested.emit("neural")  # 右クリックの「PDF 内を検索…」（選んでいた文字つき）
+    pump(app, 0.3)
+    assert not w.find_bar.isHidden() and w.find_btn.isChecked()
+    assert w.find_bar.edit.text() == "neural" and view.hit_count() >= 1  # すぐ探す
+    w.find_bar.close_bar()
+    w.preview.findRequested.emit("")  # 何も選んでいなければ、帯を開くだけ（前に探した語は残る）
+    assert not w.find_bar.isHidden() and w.find_bar.edit.text() == "neural"

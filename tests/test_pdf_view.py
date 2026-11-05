@@ -476,3 +476,117 @@ def test_find_bar_flow(app):
     bar.open()
     assert not bar.isHidden()
     bar.close()
+
+
+# -- 右クリックのメニュー ----------------------------------------------------------------
+
+
+def _labels(actions):
+    return [a.text() if a is not None else "-" for a in actions]
+
+
+def test_context_menu_items_and_enabled_state(view):
+    pt = pymupdf.Point(100, 300)
+    actions = view.context_actions(0, pt)
+    assert _labels(actions) == ["コピー", "すべてを選択", "-", "PDF 内を検索…"]
+    copy, select_all, _sep, find = actions
+    assert not copy.isEnabled()  # 何も選んでいなければ、コピーは押せない
+    assert select_all.isEnabled() and find.isEnabled()
+    drag_select(view, 0, (52, 96), (140, 96))
+    assert view.context_actions(0, pt)[0].isEnabled()
+
+
+def test_context_menu_actions_work(view, app):
+    from PySide6.QtGui import QGuiApplication
+
+    asked = []
+    view.findRequested.connect(asked.append)
+    menu = view.build_context_menu(0, pymupdf.Point(100, 300))
+    by_text = {a.text(): a for a in menu.actions() if not a.isSeparator()}
+    assert [a.isSeparator() for a in menu.actions()] == [False, False, True, False]
+
+    by_text["PDF 内を検索…"].trigger()  # 何も選んでいなければ、空で開く
+    assert asked == [""]
+    by_text["すべてを選択"].trigger()
+    assert view.has_selection()
+    drag_select(view, 0, (52, 96), (80, 96))  # 1 語を選んでから開くと、その語が検索欄に入る
+    selected = view.selected_text()
+    menu = view.build_context_menu(0, pymupdf.Point(100, 300))
+    {a.text(): a for a in menu.actions() if not a.isSeparator()}["PDF 内を検索…"].trigger()
+    assert asked[-1] == selected and len(selected.split()) <= 3
+    {a.text(): a for a in menu.actions() if not a.isSeparator()}["コピー"].trigger()
+    assert QGuiApplication.clipboard().text() == selected
+
+
+def test_long_selection_is_not_put_in_the_find_box(view):
+    view.select_all()
+    asked = []
+    view.findRequested.connect(asked.append)
+    view.context_actions(0, pymupdf.Point(0, 0))[3].trigger()
+    assert asked == [""]  # 100 文字を超える選択は、検索欄に入れない
+
+
+def test_context_menu_can_be_extended_with_providers(view):
+    from PySide6.QtGui import QAction
+
+    seen = []
+
+    def marker(index, pt):
+        seen.append((index, round(pt.x), round(pt.y)))
+        a = QAction("マーカーを付ける", view)
+        return [a]
+
+    def nothing(index, pt):
+        return []  # 何も足さないときは、区切り線も入れない
+
+    view.add_context_provider(marker)
+    view.add_context_provider(nothing)
+    view.add_context_provider(lambda i, p: [QAction("コメントを付ける", view), None, QAction("ほか", view)])
+    labels = _labels(view.context_actions(2, pymupdf.Point(12, 34)))
+    assert labels == ["コピー", "すべてを選択", "-", "PDF 内を検索…", "-", "マーカーを付ける", "-", "コメントを付ける", "-", "ほか"]
+    assert seen == [(2, 12, 34)]  # 右クリックしたページと位置が渡る
+
+
+def test_context_menu_is_shown_from_the_page_widget(view, monkeypatch):
+    """ページを右クリックすると、そのページと位置でメニューを作って出す（本物のメニューは開かない）。"""
+    from PySide6.QtCore import QPoint
+    from PySide6.QtGui import QContextMenuEvent
+
+    shown = []
+
+    class FakeMenu:
+        def exec(self, pos):
+            shown.append(("exec", pos))
+
+    def build(index, pt):
+        shown.append(("build", index, round(pt.x), round(pt.y)))
+        return FakeMenu()
+
+    monkeypatch.setattr(view, "build_context_menu", build)
+    w = view._pages[1]
+    r = w._page_rect()
+    at = QPoint(int(r.x() + 100 * view.zoom()), int(r.y() + 50 * view.zoom()))
+    w.contextMenuEvent(QContextMenuEvent(QContextMenuEvent.Reason.Mouse, at, at))
+    assert shown[0] == ("build", 1, 100, 50)  # 右クリックしたページと、ページの中の位置
+    assert shown[1][0] == "exec"
+
+
+def test_preview_pair_forwards_find_requests_and_providers(app):
+    from PySide6.QtGui import QAction
+
+    from spectra.ui.pdf_view import PreviewPair
+
+    pair = PreviewPair()
+    pair.resize(1000, 600)
+    pair.show()
+    pair.original.set_document(plain_doc(2))
+    pair.translated.set_document(plain_doc(2))
+    pump(app)
+    got = []
+    pair.findRequested.connect(got.append)
+    pair.add_context_provider(lambda i, p: [QAction("マーカーを付ける", pair)])
+    for view in (pair.original, pair.translated):  # 原文・訳文のどちらでも
+        assert "マーカーを付ける" in _labels(view.context_actions(0, pymupdf.Point(1, 1)))
+        view.context_actions(0, pymupdf.Point(1, 1))[3].trigger()
+    assert got == ["", ""]
+    pair.close()

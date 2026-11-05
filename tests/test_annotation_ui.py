@@ -457,3 +457,100 @@ def test_popover_marks_the_selected_kind(app):
     assert p.kind_buttons["underline"].property("primary") is True and not p.kind_buttons["highlight"].property("primary")
     p.kind_buttons["highlight"].click()
     assert p.kind_buttons["highlight"].property("primary") is True and not p.kind_buttons["underline"].property("primary")
+
+
+# ---- 日本語入力（IME） -------------------------------------------------------------
+
+
+def _preedit(widget, text):
+    from PySide6.QtGui import QInputMethodEvent
+    from PySide6.QtWidgets import QApplication
+
+    QApplication.sendEvent(widget, QInputMethodEvent(text, []))
+
+
+def _commit(widget, text):
+    from PySide6.QtGui import QInputMethodEvent
+    from PySide6.QtWidgets import QApplication
+
+    ev = QInputMethodEvent()
+    ev.setCommitString(text)
+    QApplication.sendEvent(widget, ev)
+
+
+def _press(popover, global_pos):
+    from PySide6.QtCore import QEvent, QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+
+    ev = QMouseEvent(
+        QEvent.Type.MouseButtonPress, QPointF(1, 1), QPointF(global_pos), Qt.MouseButton.LeftButton,
+        Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
+    )
+    popover.eventFilter(None, ev)
+
+
+def test_popover_is_not_a_popup_window_and_accepts_input_methods(app):
+    """Qt.Popup は IME の変換候補の窓で閉じたり入力が届かなかったりするので、通常の小窓にする。"""
+    from PySide6.QtCore import Qt
+
+    from spectra.ui.annotation_popover import AnnotationPopover
+
+    p = AnnotationPopover(Ann("a"))
+    assert p.windowType() == Qt.WindowType.Tool and p.windowType() != Qt.WindowType.Popup
+    assert p.comment.testAttribute(Qt.WidgetAttribute.WA_InputMethodEnabled)
+
+
+def test_popover_comment_takes_japanese_input_and_stays_open_while_composing(app):
+    from PySide6.QtCore import QPoint
+
+    from spectra.ui.annotation_popover import AnnotationPopover
+
+    lib = FakeLibrary([Ann("a")])
+    p = AnnotationPopover(lib.items["a"], lib)
+    p.popup_at(QPoint(100, 100))
+    app.processEvents()
+    outside = p.frameGeometry().bottomRight() + QPoint(50, 50)
+
+    _preedit(p.comment, "にほんご")  # 変換中（確定前）
+    assert p.composing
+    _press(p, outside)  # 変換中は、外のクリックでも閉じない（入力中の文字を失わない）
+    assert p.isVisible()
+    _commit(p.comment, "日本語")  # 確定
+    assert not p.composing and p.comment.toPlainText() == "日本語" and p.isVisible()
+    _commit(p.comment, "のコメント")
+    assert p.comment.toPlainText() == "日本語のコメント"
+    p.flush()
+    assert lib.items["a"].comment == "日本語のコメント"
+
+    _press(p, outside)  # 変換中でなければ、外のクリックで閉じる
+    assert not p.isVisible()
+
+
+def test_popover_closes_on_escape_and_inside_clicks_keep_it_open(app):
+    from PySide6.QtCore import QPoint, Qt
+    from PySide6.QtTest import QTest
+
+    from spectra.ui.annotation_popover import AnnotationPopover
+
+    p = AnnotationPopover(Ann("a"))
+    p.popup_at(QPoint(100, 100))
+    _press(p, p.frameGeometry().center())  # 中のクリックでは閉じない
+    assert p.isVisible()
+    _preedit(p.comment, "かんじ")
+    QTest.keyClick(p, Qt.Key.Key_Escape)  # 変換中の Esc は、変換の取り消しに使う（吹き出しは閉じない）
+    assert p.isVisible()
+    _commit(p.comment, "")
+    p.comment.composing = False
+    QTest.keyClick(p, Qt.Key.Key_Escape)
+    assert not p.isVisible()
+
+
+def test_note_editor_takes_japanese_input(app):
+    from spectra.ui.note_editor import NoteEditor
+
+    ed = NoteEditor(None)
+    ed.show()
+    ed.set_paper(type("P", (), {"id": 1, "note": "", "note_updated_at": None, "note_merged": False})())
+    _preedit(ed.edit, "めも")
+    _commit(ed.edit, "メモ")
+    assert ed.text() == "メモ" and ed.dirty

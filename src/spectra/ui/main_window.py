@@ -1,7 +1,7 @@
 """メインウィンドウ。
 
 論文を集めて整理する「ライブラリ」と、1 本の論文を原文・訳文で読む「読書画面」の 2 画面で構成する。
-読書画面は ツールバー（主操作）・プレビュー（主役）・インスペクタ（翻訳の設定）の 3 層。
+読書画面は ツールバー（主操作）・プレビュー（主役）・右のパネル（論文の詳細・翻訳の設定・ノート）の 3 層。
 翻訳はライブラリのどちらの画面からでもキューに入れられ、1 本ずつ順にバックグラウンドで進む。
 """
 
@@ -62,6 +62,7 @@ from .paper_detail import MetadataDialog
 from .pdf_view import ZOOM_PRESETS, FindBar, NavPane, PreviewPair
 from .privacy import display_path
 from .settings_dialog import SettingsDialog
+from .side_panel import SidePanel
 from .sync_controller import ERROR, SYNCING, UNAVAILABLE, SyncController
 from .update_prompt import UpdateBanner, ask_enable_update_check, start_check
 from .widgets import (
@@ -174,7 +175,7 @@ class MainWindow(QMainWindow):
         v = QVBoxLayout(root)
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(0)
-        self.library_view = LibraryView(self.library)
+        self.library_view = LibraryView(self.library, self.settings)
         v.addWidget(self._build_toolbar())
 
         update_wrap = QWidget()
@@ -253,7 +254,16 @@ class MainWindow(QMainWindow):
         self.inspector = Inspector(self.settings)
         self.inspector.settingsChanged.connect(self._on_settings_changed)
         self.inspector.openSettings.connect(self.show_settings)
-        rl.addWidget(self.inspector)
+        # 右のパネル: 読書画面でも「論文の詳細・AI 翻訳の詳細（今のインスペクタ）・ノート」の 3 つのタブ
+        self.side_panel = SidePanel(self.library, self.settings, "reader")
+        self.side_panel.set_translation_widget(self.inspector)
+        self.side_panel.readRequested.connect(lambda _id: self.preview.active_view().setFocus())
+        self.side_panel.editRequested.connect(self.edit_metadata)
+        self.side_panel.copyBibtexRequested.connect(self.copy_bibtex)
+        self.side_panel.retryLookupRequested.connect(lambda pid: self._lookup([pid]))
+        self.side_panel.enableLookupRequested.connect(self.enable_lookup)
+        self.side_panel.noteChanged.connect(lambda *_: self._refresh_detail())
+        rl.addWidget(self.side_panel)
         self.content = reader
         self.stack.addWidget(reader)
         v.addWidget(self.stack, 1)
@@ -327,9 +337,9 @@ class MainWindow(QMainWindow):
         self.settings_btn = tool_button("gear", "設定")
         self.settings_btn.clicked.connect(lambda: self.show_settings())
         h.addWidget(self.settings_btn)
-        self.inspector_btn = tool_button("sidebar", "インスペクタを表示/隠す", checkable=True)
+        self.inspector_btn = tool_button("sidebar", "右のパネルを表示/隠す", checkable=True)
         self.inspector_btn.setChecked(True)
-        self.inspector_btn.toggled.connect(lambda on: self.inspector.setVisible(on))
+        self.inspector_btn.toggled.connect(lambda on: self.side_panel.setVisible(on))
         h.addWidget(self.inspector_btn)
         self._library_widgets = [self.sidebar_btn, self.search, self.add_btn]
         self._reader_widgets = [self.back_btn, self.nav_btn, self.doc_title, self.doc_subtitle, self.view_mode, self.inspector_btn]
@@ -492,7 +502,7 @@ class MainWindow(QMainWindow):
         ]
         view.addActions(self._page_actions)
         view.addSeparator()
-        self.act_inspector = act("インスペクタ", self.inspector_btn.toggle, f"{mod}+Alt+I")
+        self.act_inspector = act("右のパネル", self.inspector_btn.toggle, f"{mod}+Alt+I")
         view.addAction(self.act_inspector)
 
         help_menu = mb.addMenu("ヘルプ")
@@ -523,7 +533,7 @@ class MainWindow(QMainWindow):
         for w in self._reader_widgets:
             w.setVisible(reader)
         self.primary_btn.setVisible(reader)
-        self.inspector.setVisible(reader and self.inspector_btn.isChecked())
+        self.side_panel.setVisible(reader and self.inspector_btn.isChecked())
         self.nav_pane.setVisible(reader and self.nav_btn.isChecked())
         self.update_wrap.setVisible(not reader and self._update_info is not None)
 
@@ -756,7 +766,17 @@ class MainWindow(QMainWindow):
         self.library_view.refresh_paper(paper_id)
         if self.paper is not None and self.paper.id == paper_id:
             self.paper = self.library.get(paper_id) or self.paper
+            self._refresh_reader_panel()
             self._update_state()
+
+    def _refresh_reader_panel(self) -> None:
+        """読書画面の右のパネルの「論文の詳細」を、最新の書誌情報に更新する（入力中のノートは触らない）。"""
+        if self.paper is not None and self.screen_mode == READER:
+            paper = self.library.get(self.paper.id)
+            if paper is not None:
+                self.side_panel.detail.show_papers(
+                    [paper], lookup_enabled=self.settings.metadata_lookup, sync_on=self.sync.enabled()
+                )
 
     def _on_lookups_changed(self) -> None:
         waiting = {p.id for p in self.library_view.model.papers() if self.lookups.is_waiting(p.id)}
@@ -781,6 +801,7 @@ class MainWindow(QMainWindow):
         self._show_screen(LIBRARY)
         if current is not None:
             self.library_view.reveal(current)
+        self._refresh_detail()  # 読書画面で書いたノートや直した書誌情報を反映する
         self.library_view.table.setFocus()
 
     def focus_search(self) -> None:
@@ -841,6 +862,9 @@ class MainWindow(QMainWindow):
             return
         self.library.update_metadata(paper_id, md, manual_fields=changed)
         self.library_view.refresh_paper(paper_id)
+        if self.paper is not None and self.paper.id == paper_id:
+            self.paper = self.library.get(paper_id) or self.paper
+            self._refresh_reader_panel()
         if changed & {"doi", "arxiv_id"} and (md.doi or md.arxiv_id):
             self._lookup([paper_id])
 
@@ -1010,6 +1034,7 @@ class MainWindow(QMainWindow):
         self._release_document()
         self.paper, self.source_bytes, self.original_doc = paper, data, doc
         self.inspector.set_page_count(doc.page_count)
+        self.side_panel.set_paper(paper)
         self.find_bar.close_bar()
         self.preview.original.set_document(doc)
         self.nav_pane.set_document(doc, self.preview.original.outline())
@@ -1054,6 +1079,7 @@ class MainWindow(QMainWindow):
         self.settings.remember_reading(self.paper.sha256, st["zoom"], st["fit"], st["page"], st["ratio"])
 
     def _release_document(self) -> None:
+        self.side_panel.flush_note()  # 入力中のノートを今すぐ保存する
         if self.paper is not None:
             self._remember_reading()
             self.settings.save()
@@ -1855,6 +1881,8 @@ class MainWindow(QMainWindow):
                 event.ignore()
                 return
             self.queue.cancel_all()
+        self.side_panel.flush_note()
+        self.library_view.side_panel.flush_note()
         self.sync.close()
         self.settings.window = {
             "geometry": bytes(self.saveGeometry().toBase64()).decode(),

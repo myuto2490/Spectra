@@ -836,3 +836,32 @@ def test_side_panel_forwards_detail_signals(window, tmp_path):
     assert translate == [[papers[0].id]]
     panel.set_paper(None)  # 何も選ばないときはノートの欄も空になる
     assert panel.note_editor.paper_id is None
+
+
+# -- 読書画面の右のパネル ------------------------------------------------------------------
+
+
+def test_reader_side_panel_shows_paper_translation_and_note(window, paper_path):
+    app, w = window
+    assert w.open_file(paper_path)
+    pump(app, 0.3)
+    panel = w.side_panel
+    assert panel.mode == "reader" and panel.isVisible()
+    assert panel.detail._paper is not None and panel.detail._paper.id == w.paper.id
+    # 「AI 翻訳の詳細」には今のインスペクタが入り、「ノート」は論文ごとに保存される
+    panel.set_current_tab("translation")
+    pump(app, 0.1)
+    assert w.inspector.isVisible()
+    panel.set_current_tab("note")
+    panel.note_editor.edit.setPlainText("読書画面で書いたメモ")
+    w.show_library()  # 画面を離れるとき、入力中のノートを保存する
+    assert w.library.get(w.library.papers()[0].id).note == "読書画面で書いたメモ"
+    # ライブラリの右のパネルにも反映される
+    assert w.library_view.detail.note_editor.edit.toPlainText() == "読書画面で書いたメモ"
+    # 右のパネルを隠す・出すは、パネル全体で切り替える
+    assert w.open_paper(w.library.papers()[0].id)
+    pump(app, 0.2)
+    w.inspector_btn.setChecked(False)
+    assert w.side_panel.isHidden()
+    w.inspector_btn.setChecked(True)
+    assert not w.side_panel.isHidden()

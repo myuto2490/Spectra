@@ -245,6 +245,7 @@ class MainWindow(QMainWindow):
             view.pageChanged.connect(lambda _i, _n, v=view: v is self.preview.active_view() and self._refresh_page_indicator())
             view.zoomChanged.connect(self._on_zoom_changed)
         self.preview.linkRequested.connect(self._open_pdf_link)
+        self.preview.findRequested.connect(lambda text: self.show_find_bar(text))
         self.preview.searchChanged.connect(self.find_bar.set_count)
         self.find_bar.queryChanged.connect(self.preview.search)
         self.find_bar.nextRequested.connect(self.preview.find_next)
@@ -839,12 +840,15 @@ class MainWindow(QMainWindow):
         self.search.setFocus()
         self.search.selectAll()
 
-    def show_find_bar(self) -> None:
+    def show_find_bar(self, text: str = "") -> None:
+        """検索の帯を開く。text（選んでいた文字など）があれば検索欄に入れて、すぐ探す。"""
         if self.screen_mode != READER or self.original_doc is None:
             return
         self.find_bar.open()
         self.find_btn.setChecked(True)
-        if self.find_bar.query():
+        if text:
+            self.find_bar.set_query(text)
+        elif self.find_bar.query():
             self.preview.search(self.find_bar.query())
 
     def _toggle_find_bar(self) -> None:

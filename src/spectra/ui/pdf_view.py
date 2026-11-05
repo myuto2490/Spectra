@@ -6,11 +6,13 @@
 from __future__ import annotations
 
 from collections import OrderedDict
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import pymupdf
 from PySide6.QtCore import QEvent, QPointF, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import (
+    QAction,
     QColor,
     QCursor,
     QGuiApplication,
@@ -25,6 +27,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QListWidget,
     QListWidgetItem,
+    QMenu,
     QScrollArea,
     QSizePolicy,
     QStackedWidget,
@@ -116,6 +119,10 @@ class _PageWidget(QWidget):
         else:
             super().mouseReleaseEvent(event)
 
+    def contextMenuEvent(self, event) -> None:
+        self._view.show_context_menu(self.index, self.to_page(QPointF(event.pos())), event.globalPos())
+        event.accept()
+
 
 class PdfView(QScrollArea):
     """縦に並べたページのスクロール表示。"""
@@ -125,6 +132,7 @@ class PdfView(QScrollArea):
     searchChanged = Signal(int, int)  # (今の一致 1 始まり（なければ 0）, 一致の数)
     linkRequested = Signal(str)  # 外へのリンク（開く前に確認する）
     selectionChanged = Signal(bool)  # 選んだ文字があるか
+    findRequested = Signal(str)  # 右クリックの「PDF 内を検索」（選んでいる文字。なければ空）
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -143,6 +151,7 @@ class PdfView(QScrollArea):
         self._hits: list[tuple[int, pymupdf.Rect]] = []
         self._hit_index = -1
         self._query = ""
+        self._context_providers: list[Callable[[int, pymupdf.Point], list[QAction | None]]] = []
         self._pending_pos: tuple[int, float] | None = None  # 表示の大きさが決まったら戻す位置（ページ, 0〜1）
         self._anchor: tuple[int, int] | None = None  # 選択の起点（ページ, 単語の番号）
         self._cursor_word: tuple[int, int] | None = None
@@ -685,6 +694,56 @@ class PdfView(QScrollArea):
             w.update()
         self.selectionChanged.emit(self.has_selection())
 
+    # -- 右クリックのメニュー ------------------------------------------------------------
+
+    def add_context_provider(self, provider: Callable[[int, pymupdf.Point], list[QAction | None]]) -> None:
+        """右クリックのメニューに項目を足す関数を登録する。
+
+        provider(ページ, ページの中の位置（pt）) は QAction のリストを返す（None は区切り線）。標準の項目の後ろに、
+        登録した順に並ぶ（マーカーやコメントなど、位置に応じた項目を後から足すための入口）。
+        """
+        self._context_providers.append(provider)
+
+    def context_actions(self, index: int, pt: pymupdf.Point) -> list[QAction | None]:
+        """右クリックのメニューの項目（None は区切り線）。標準の項目＋登録された項目。"""
+        copy = QAction("コピー", self)
+        copy.setShortcut(QKeySequence.StandardKey.Copy)
+        copy.setEnabled(self.has_selection())
+        copy.triggered.connect(lambda: self.copy_selection())
+        select_all = QAction("すべてを選択", self)
+        select_all.setShortcut(QKeySequence.StandardKey.SelectAll)
+        select_all.setEnabled(self._doc is not None and bool(self._pages))
+        select_all.triggered.connect(lambda: self.select_all())
+        find = QAction("PDF 内を検索…", self)
+        find.setShortcut(QKeySequence.StandardKey.Find)
+        find.triggered.connect(lambda: self.findRequested.emit(self._selected_line()))
+        actions: list[QAction | None] = [copy, select_all, None, find]
+        for provider in self._context_providers:
+            extra = provider(index, pt)
+            if extra:
+                actions.append(None)
+                actions.extend(extra)
+        return actions
+
+    def build_context_menu(self, index: int, pt: pymupdf.Point) -> QMenu:
+        menu = QMenu(self)
+        for a in self.context_actions(index, pt):
+            if a is None:
+                menu.addSeparator()
+            else:
+                a.setParent(menu)
+                menu.addAction(a)
+        return menu
+
+    def show_context_menu(self, index: int, pt: pymupdf.Point, global_pos) -> None:
+        self.setFocus()
+        self.build_context_menu(index, pt).exec(global_pos)
+
+    def _selected_line(self) -> str:
+        """選んでいる文字を、検索欄に入れる 1 行にする（長すぎるものは入れない）。"""
+        text = " ".join(self.selected_text().split())
+        return text if 0 < len(text) <= 100 else ""
+
     def keyPressEvent(self, event) -> None:
         if event.matches(QKeySequence.StandardKey.Copy) and self.copy_selection():
             event.accept()
@@ -713,6 +772,7 @@ class PreviewPair(QWidget):
 
     searchChanged = Signal(int, int)
     linkRequested = Signal(str)
+    findRequested = Signal(str)  # 右クリックの「PDF 内を検索」
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -734,6 +794,7 @@ class PreviewPair(QWidget):
             a.zoomChanged.connect(lambda z, b=b: self._sync_zoom(b, z))
             a.searchChanged.connect(lambda cur, total, a=a: self._on_search(a, cur, total))
             a.linkRequested.connect(self.linkRequested)
+            a.findRequested.connect(self.findRequested)
         self.set_mode("original")
 
     def _sync_scroll(self, src: PdfView, dst: PdfView) -> None:
@@ -814,6 +875,11 @@ class PreviewPair(QWidget):
     def _on_search(self, view: PdfView, current: int, total: int) -> None:
         if view is self.active_view():
             self.searchChanged.emit(current, total)
+
+    def add_context_provider(self, provider) -> None:
+        """原文・訳文の両方の右クリックのメニューに、項目を足す関数を登録する（PdfView.add_context_provider）。"""
+        for v in (self.original, self.translated):
+            v.add_context_provider(provider)
 
     def copy_selection(self) -> bool:
         return any(v.isVisible() and v.copy_selection() for v in (self.active_view(), self.original, self.translated))
@@ -1019,6 +1085,12 @@ class FindBar(QWidget):
         self.show()
         self.edit.setFocus()
         self.edit.selectAll()
+
+    def set_query(self, text: str) -> None:
+        """検索欄に text を入れて、すぐ探す。"""
+        self.edit.setText(text)
+        self.edit.selectAll()
+        self._emit_query()
 
     def close_bar(self) -> None:
         self._timer.stop()

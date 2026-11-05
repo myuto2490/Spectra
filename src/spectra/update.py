@@ -77,7 +77,7 @@ def is_due(last_checked: float, now: float | None = None) -> bool:
 
 
 def should_check_on_startup(update_check: str, last_checked: float, now: float | None = None) -> bool:
-    """起動時に問い合わせるか。オンと答えていて、前回から 24 時間以上たっているときだけ。"""
+    """起動時に問い合わせるか。update_check が "on"（"ask" は未回答、"off" はオフ）で、前回から 24 時間以上たっているときだけ。"""
     return update_check == "on" and is_due(last_checked, now)
 
 

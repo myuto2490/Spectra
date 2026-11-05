@@ -303,12 +303,13 @@ state ファイル（`papers/<sha>/state.<端末>.json`）に、`fields` とは�
 
 ### 更新の通知（D。`spectra/update.py`・`ui/update_prompt.py`）
 
-- `update.Release(version: str, url: str, notes: str)`（`url` は `https://github.com/myuto2490/Spectra/releases/` で始まるものだけ）
-- `update.check_for_update(current: str = __version__, client: httpx.Client | None = None) -> Release | None`（新しい版がなければ `None`、失敗は `update.UpdateCheckError`）
-- `update.should_check(settings, now: float | None = None) -> bool`（`update_check == "on"` で、前回から 24 時間以上）
-- `ui.update_prompt.ask_update_check(parent, settings) -> None`（初回の問い合わせ。答えを `settings.update_check` に入れて保存）
-- `ui.update_prompt.UpdateChecker(QObject)`: `start(settings, force: bool = False)`、シグナル `available(Release)`・`failed(str)`（`force=False` のときは失敗を出さない）
-- F は起動時に、`update_check == "ask"` なら `ask_update_check`、その後 `UpdateChecker.start`。`available` で帯を出す。B は設定の「詳細」に、オン・オフと「今すぐ確認」（`start(force=True)`）を置く
+- `update.UpdateInfo(version: str, url: str)`（`url` は `https://github.com/myuto2490/Spectra/releases/` で始まるものだけ。違う応答のときはリリース一覧のページ）
+- `update.check_for_update(current: str = __version__, client: httpx.Client | None = None, skipped: str = "") -> UpdateInfo | None`（新しい版がなければ `None`、`skipped` と同じ版も `None`、失敗は `update.UpdateCheckError`）
+- `update.should_check_on_startup(update_check: str, last_checked: float, now: float | None = None) -> bool`（`update_check == "on"` で、前回から 24 時間以上。`"ask"`・`"off"` は `False`）
+- `ui.update_prompt.ask_enable_update_check(parent) -> bool`（初回の問い合わせ。「確認する」で `True`、「確認しない」・閉じたときは `False`。呼び出し側が `settings.update_check` を `"on"` / `"off"` にして保存する）
+- `ui.update_prompt.UpdateBanner(QFrame)`: `show_update(info, current=None)`、シグナル `downloadRequested(str)`・`dismissed()`・`skipRequested(str)`（呼び出し側が `settings.update_skipped_version` に保存）。`ui.update_prompt.open_release_page(url) -> bool`
+- `ui.update_prompt.start_check(on_found, on_error=None, on_none=None, skipped="", current=None, client=None) -> worker.Task`（バックグラウンドで確認。起動時は `on_error` を渡さない＝失敗は表示しない。「今すぐ確認」は渡して表示する）
+- F は起動時に、`update_check == "ask"` なら `ask_enable_update_check` の答えを保存し、`should_check_on_startup(settings.update_check, settings.update_last_checked)` が真なら `start_check(on_found=banner.show_update, skipped=settings.update_skipped_version)`。確認したら（失敗でも）`update_last_checked = time.time()` を保存する。B は設定の「詳細」に、オン・オフと「今すぐ確認」（`start_check` に `on_error` を渡す）を置く
 
 ### 右のパネル（E。`ui/side_panel.py`（新）・`paper_detail.py`・`inspector.py`・`note_editor.py`）
 

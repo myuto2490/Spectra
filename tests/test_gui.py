@@ -678,3 +678,161 @@ def test_update_notice_flow(window, monkeypatch):
     w.settings.update_check = "ask"
     w._startup_update_check()
     assert asked == [1] and w.settings.update_check == "ask"
+
+
+# ---- 右のパネルとノート -------------------------------------------------------
+
+
+class _FakePaper:
+    def __init__(self, id, note="", note_updated_at=None, note_merged=False):
+        self.id, self.note, self.note_updated_at, self.note_merged = id, note, note_updated_at, note_merged
+
+
+class _FakeNotes:
+    def __init__(self):
+        self.saved = []
+        self.fail = False
+
+    def set_note(self, paper_id, text):
+        if self.fail:
+            raise OSError("disk full")
+        self.saved.append((paper_id, text))
+
+
+def _note_editor(lib=None):
+    from spectra.ui.note_editor import NoteEditor
+
+    ed = NoteEditor(lib if lib is not None else _FakeNotes())
+    ed.show()
+    return ed
+
+
+def test_note_editor_autosaves_after_a_pause(window):
+    app, _w = window
+    lib = _FakeNotes()
+    ed = _note_editor(lib)
+    changed = []
+    ed.noteChanged.connect(lambda i, t: changed.append((i, t)))
+    ed.set_paper(_FakePaper(7, note="既存のメモ", note_updated_at=1_700_000_000))
+    assert ed.text() == "既存のメモ" and "最終更新" in ed.status.text() and not ed.dirty
+    ed.edit.setPlainText("既存のメモ\n追記")
+    assert ed.dirty and lib.saved == []  # 入力の直後は保存しない
+    ed._timer.setInterval(10)
+    ed._timer.start()
+    pump(app, 2, until=lambda: lib.saved)
+    assert lib.saved == [(7, "既存のメモ\n追記")] and changed == lib.saved and not ed.dirty
+
+
+def test_note_editor_saves_before_switching_papers(window):
+    lib = _FakeNotes()
+    ed = _note_editor(lib)
+    ed.set_paper(_FakePaper(1))
+    ed.edit.setPlainText("1 のメモ")
+    ed.set_paper(_FakePaper(2, note="2 のメモ"))  # 切り替えで、未保存の分を先に 1 に保存する
+    assert lib.saved == [(1, "1 のメモ")] and ed.text() == "2 のメモ" and ed.paper_id == 2
+    ed.edit.setPlainText("2 を編集")
+    ed.set_paper(None)  # 何も選ばない・閉じるときも保存する
+    assert lib.saved[-1] == (2, "2 を編集") and ed.text() == ""
+
+
+def test_note_editor_keeps_typing_when_the_same_paper_is_shown_again(window):
+    ed = _note_editor()
+    ed.set_paper(_FakePaper(1, note="古い"))
+    ed.edit.setPlainText("入力中")
+    ed.set_paper(_FakePaper(1, note="同期で届いた内容"))  # 入力の途中は上書きしない
+    assert ed.text() == "入力中" and ed.dirty
+    ed.flush()
+    ed.set_paper(_FakePaper(1, note="同期で届いた内容"))  # 保存したあとなら、届いた内容に更新する
+    assert ed.text() == "同期で届いた内容"
+
+
+def test_note_editor_merged_notice_and_save_error(window):
+    lib = _FakeNotes()
+    ed = _note_editor(lib)
+    ed.set_paper(_FakePaper(1, note="a", note_merged=True))
+    assert not ed.notice.isHidden() and "連結" in ed.notice.text()
+    ed.set_paper(_FakePaper(2, note="b"))
+    assert ed.notice.isHidden()
+    lib.fail = True
+    ed.edit.setPlainText("失敗する保存")
+    ed.flush()
+    assert ed.dirty and "保存できませんでした" in ed.status.text()  # 入力は残り、あとで再試行できる
+    lib.fail = False
+    ed.flush()
+    assert not ed.dirty and lib.saved == [(2, "失敗する保存")]
+
+
+def test_note_editor_limits_length(window):
+    from spectra.ui import note_editor
+
+    ed = _note_editor()
+    ed.set_paper(_FakePaper(1))
+    ed.edit.setPlainText("あ" * (note_editor.NOTE_MAX_CHARS + 50))
+    assert len(ed.text()) == note_editor.NOTE_MAX_CHARS and "超えた分" in ed.status.text()
+
+
+def test_side_panel_tabs_are_remembered(window, tmp_path):
+    app, w = window
+    from PySide6.QtWidgets import QLabel
+
+    from spectra.config.settings import Settings
+    from spectra.ui.side_panel import SidePanel
+
+    papers = _queue_papers(w, tmp_path, 1)
+    settings = Settings(side_panel_tab="note")
+    panel = SidePanel(w.library, settings, "reader")
+    panel.show()
+    seen = []
+    panel.tabChanged.connect(seen.append)
+    assert panel.current_tab() == "note"  # 覚えていたタブで開く
+
+    paper = w.library.get(papers[0].id)
+    panel.set_paper(paper)
+    assert panel.detail.pages.currentIndex() == panel.detail.pages.indexOf(panel.note_editor)
+    panel.detail.tab_buttons[0].click()
+    assert panel.current_tab() == "details" and settings.side_panel_tab == "details" and seen == ["details"]
+    panel.set_current_tab("translation")
+    assert settings.side_panel_tab == "translation" and seen[-1] == "translation"
+    panel.set_current_tab("nope")  # 知らないタブは無視する
+    assert panel.current_tab() == "translation"
+    assert Settings.load().side_panel_tab == "translation"  # 保存されている
+
+    # 読書画面では、翻訳の設定のパネルを「AI翻訳の詳細」に入れる。外すと元に戻る
+    extra = QLabel("インスペクタ")
+    panel.set_translation_widget(extra)
+    assert panel.detail.pages.currentWidget() is extra and extra.isVisible()
+    panel.set_current_tab("note")
+    panel.set_current_tab("translation")
+    assert panel.detail.pages.currentWidget() is extra
+    panel.set_translation_widget(None)
+    assert panel.detail.pages.currentWidget() is panel.detail._translation_page
+
+    # ノートの入力は、論文を選び直しても失われず、閉じるときに保存される
+    got = []
+    panel.noteChanged.connect(lambda i, t: got.append((i, t)))
+    panel.set_current_tab("note")
+    panel.note_editor.edit.setPlainText("メモ")
+    panel.flush_note()
+    assert got == [(paper.id, "メモ")]
+    with pytest.raises(ValueError):
+        SidePanel(w.library, settings, "other")
+
+
+def test_side_panel_forwards_detail_signals(window, tmp_path):
+    app, w = window
+    from spectra.config.settings import Settings
+    from spectra.ui.side_panel import SidePanel
+
+    papers = _queue_papers(w, tmp_path, 1)
+    panel = SidePanel(w.library, Settings(), "library")
+    panel.show()
+    panel.set_paper(w.library.get(papers[0].id))
+    read, translate = [], []
+    panel.readRequested.connect(read.append)
+    panel.translateRequested.connect(translate.append)
+    panel.detail.read_btn.click()
+    assert read == [papers[0].id]
+    panel.detail.translateRequested.emit([papers[0].id])
+    assert translate == [[papers[0].id]]
+    panel.set_paper(None)  # 何も選ばないときはノートの欄も空になる
+    assert panel.note_editor.paper_id is None

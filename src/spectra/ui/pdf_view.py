@@ -10,7 +10,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 import pymupdf
-from PySide6.QtCore import QEvent, QPointF, QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QPoint, QPointF, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QAction,
     QColor,
@@ -20,14 +20,17 @@ from PySide6.QtGui import (
     QKeySequence,
     QPainter,
     QPainterPath,
+    QPen,
     QPixmap,
 )
 from PySide6.QtWidgets import (
+    QFrame,
     QHBoxLayout,
     QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMenu,
+    QPushButton,
     QScrollArea,
     QSizePolicy,
     QStackedWidget,
@@ -47,6 +50,23 @@ _DRAG_SLOP = 4  # これ以下の動きはクリックとみなす（リンク�
 _HIT = QColor(255, 214, 10, 110)
 _HIT_CURRENT = QColor(255, 149, 0, 150)
 _SELECTION = QColor(10, 132, 255, 90)
+
+# 注釈の色（ページは白地なので、テーマに関わらず同じ色で描く）
+ANNOTATION_RGB = {
+    "yellow": (255, 214, 10),
+    "green": (52, 199, 89),
+    "blue": (10, 132, 255),
+    "pink": (255, 105, 180),
+    "purple": (175, 82, 222),
+}
+ANNOTATION_NAMES = {"yellow": "黄", "green": "緑", "blue": "青", "pink": "桃", "purple": "紫"}
+_NOTE_SIZE = 16  # 付箋の大きさ（画面の px）
+_BAND_WIDTH = 5  # 訳文の表示で、左の余白に描く帯の太さ（画面の px）
+
+
+def annotation_color(name: str, alpha: int = 255) -> QColor:
+    r, g, b = ANNOTATION_RGB.get(name, ANNOTATION_RGB["yellow"])
+    return QColor(r, g, b, alpha)
 
 
 @dataclass(frozen=True)
@@ -97,7 +117,66 @@ class _PageWidget(QWidget):
             p.fillRect(self.to_widget(rect), _HIT_CURRENT if current else _HIT)
         for rect in self._view.selection_on(self.index):
             p.fillRect(self.to_widget(rect), _SELECTION)
+        self._paint_annotations(p)
         p.end()
+
+    # -- 注釈 ------------------------------------------------------------
+
+    def annotation_rects(self, a) -> list[QRectF]:
+        """注釈 a を、このページの部品の座標で見たときの矩形（描画とクリックの判定に使う）。"""
+        mode = self._view.annotation_mode()
+        r, z = self._page_rect(), self._view.zoom()
+        if mode == "bands":  # 訳文の表示: 左の余白に、同じ高さの細い帯
+            x0, y0, _x1, y1 = a.rect
+            if a.kind == "note":
+                return [QRectF(r.x() + 2, r.y() + y0 * z, 11, 11)]
+            return [QRectF(r.x() + 3, r.y() + y0 * z, _BAND_WIDTH, max((y1 - y0) * z, 8.0))]
+        if a.kind == "note":
+            x0, y0 = a.quads[0][0], a.quads[0][1]
+            return [QRectF(r.x() + x0 * z, r.y() + y0 * z, _NOTE_SIZE, _NOTE_SIZE)]
+        rects = [QRectF(r.x() + q[0] * z, r.y() + q[1] * z, (q[2] - q[0]) * z, (q[3] - q[1]) * z) for q in a.quads]
+        if a.has_comment and rects:  # コメントのある印は、右端に小さな吹き出しの目印
+            last = rects[-1]
+            rects.append(QRectF(last.right() + 3, last.top(), 12, 12))
+        return rects
+
+    def annotation_at(self, pos: QPointF):
+        """pos（この部品の座標）にある注釈（重なっていれば後で付けたもの）。なければ None。"""
+        for a in reversed(self._view.annotations_on(self.index)):
+            if any(rc.adjusted(-1, -1, 1, 1).contains(pos) for rc in self.annotation_rects(a)):
+                return a
+        return None
+
+    def _paint_annotations(self, p: QPainter) -> None:
+        view = self._view
+        mode = view.annotation_mode()
+        for a in view.annotations_on(self.index):
+            rects = self.annotation_rects(a)
+            if not rects:
+                continue
+            if mode == "bands":
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(annotation_color(a.color, 230))
+                p.drawRoundedRect(rects[0], 2, 2)
+            elif a.kind == "note":
+                _paint_sticky(p, rects[0], a.color)
+            else:
+                body = rects[:-1] if a.has_comment else rects
+                for rc in body:
+                    if a.kind == "highlight":
+                        p.fillRect(rc, annotation_color(a.color, 110))
+                    else:  # underline
+                        p.setPen(QPen(annotation_color(a.color, 255), 2))
+                        p.drawLine(QPointF(rc.left(), rc.bottom() - 1), QPointF(rc.right(), rc.bottom() - 1))
+                if a.has_comment:
+                    _paint_comment_mark(p, rects[-1], a.color)
+            if a.id in (view.flashing_id(), view.selected_annotation()):
+                union = rects[0]
+                for rc in rects[1:]:
+                    union = union.united(rc)
+                p.setBrush(Qt.BrushStyle.NoBrush)
+                p.setPen(QPen(QColor(10, 132, 255), 2))
+                p.drawRoundedRect(union.adjusted(-2, -2, 2, 2), 3, 3)
 
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
@@ -111,17 +190,124 @@ class _PageWidget(QWidget):
         if event.buttons() & Qt.MouseButton.LeftButton:
             self._view.drag(self.index, pt, event.position())
         else:
-            self.setCursor(self._view.cursor_at(self.index, pt))
+            a = self.annotation_at(event.position())
+            if a is not None:
+                from .widgets import plain_tooltip
+
+                self.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+                self.setToolTip(plain_tooltip(_annotation_summary(a)))
+            else:
+                self.setCursor(self._view.cursor_at(self.index, pt))
+                self.setToolTip("")
 
     def mouseReleaseEvent(self, event) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
-            self._view.release(self.index, self.to_page(event.position()), event.position())
+            a = self.annotation_at(event.position())
+            self._view.release(
+                self.index,
+                self.to_page(event.position()),
+                event.position(),
+                event.globalPosition().toPoint(),
+                a.id if a is not None else "",
+            )
         else:
             super().mouseReleaseEvent(event)
 
     def contextMenuEvent(self, event) -> None:
         self._view.show_context_menu(self.index, self.to_page(QPointF(event.pos())), event.globalPos())
         event.accept()
+
+
+def _annotation_summary(a) -> str:
+    """印に重ねたときのツールチップ: 引用（80 文字まで）とコメント。"""
+    quote = " ".join(a.quote.split())
+    parts = []
+    if quote:
+        parts.append("「" + (quote if len(quote) <= 80 else quote[:79] + "…") + "」")
+    if a.comment.strip():
+        parts.append(a.comment.strip())
+    return "\n".join(parts) or "注釈"
+
+
+def _paint_sticky(p: QPainter, rc: QRectF, color: str) -> None:
+    p.setPen(QPen(QColor(0, 0, 0, 90), 1))
+    p.setBrush(annotation_color(color, 235))
+    p.drawRoundedRect(rc, 3, 3)
+    p.setPen(QPen(QColor(0, 0, 0, 120), 1.2))
+    y = rc.top() + rc.height() * 0.35
+    p.drawLine(QPointF(rc.left() + 3, y), QPointF(rc.right() - 3, y))
+    p.drawLine(QPointF(rc.left() + 3, y + 4), QPointF(rc.right() - 6, y + 4))
+
+
+def _paint_comment_mark(p: QPainter, rc: QRectF, color: str) -> None:
+    p.setPen(QPen(QColor(0, 0, 0, 90), 1))
+    p.setBrush(annotation_color(color, 235))
+    p.drawRoundedRect(rc, 4, 4)
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(QColor(0, 0, 0, 150))
+    for i in range(3):
+        p.drawEllipse(QPointF(rc.left() + 3.2 + i * 2.8, rc.center().y()), 0.9, 0.9)
+
+
+class SelectionBar(QFrame):
+    """文字を選ぶと、選んだ範囲の上に出す小さな帯。原文では色・下線・コメント・コピー、訳文では原文で付ける案内。"""
+
+    colorChosen = Signal(str)
+    underlineChosen = Signal()
+    commentChosen = Signal()
+    copyChosen = Signal()
+    originalChosen = Signal()
+
+    def __init__(self, parent: QWidget):
+        super().__init__(parent)
+        from .widgets import button, label, tool_button
+
+        self.setObjectName("SelectionBar")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self._lay = QHBoxLayout(self)
+        self._lay.setContentsMargins(8, 5, 8, 5)
+        self._lay.setSpacing(6)
+        self._annotate: list[QWidget] = []
+        self.color_buttons: dict[str, QPushButton] = {}
+        for name in ANNOTATION_RGB:
+            b = QPushButton()
+            b.setFixedSize(18, 18)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            r, g, bl = ANNOTATION_RGB[name]
+            b.setStyleSheet(f"QPushButton {{ background: rgb({r},{g},{bl}); border: 1px solid rgba(0,0,0,70); border-radius: 9px; }}")
+            b.setToolTip(f"{ANNOTATION_NAMES[name]}のマーカーを付ける")
+            b.setAccessibleName(b.toolTip())
+            b.clicked.connect(lambda _c=False, n=name: self.colorChosen.emit(n))
+            self._lay.addWidget(b)
+            self.color_buttons[name] = b
+            self._annotate.append(b)
+        self.underline_btn = tool_button("underline", "下線を付ける")
+        self.underline_btn.clicked.connect(self.underlineChosen)
+        self.comment_btn = tool_button("comment", "マーカーを付けてコメントを書く")
+        self.comment_btn.clicked.connect(self.commentChosen)
+        self.copy_btn = tool_button("copy", "コピー")
+        self.copy_btn.clicked.connect(self.copyChosen)
+        for b in (self.underline_btn, self.comment_btn, self.copy_btn):
+            b.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            self._lay.addWidget(b)
+            self._annotate.append(b)
+        self.hint = label("注釈は原文に付けます", "caption")
+        self.original_btn = button("原文で付ける")
+        self.original_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.original_btn.clicked.connect(self.originalChosen)
+        self._lay.addWidget(self.hint)
+        self._lay.addWidget(self.original_btn)
+        self.set_mode("annotate")
+        self.hide()
+
+    def set_mode(self, mode: str) -> None:
+        """annotate（原文: 付ける）/ original（訳文: 原文で付けるよう案内）。"""
+        for w in self._annotate:
+            w.setVisible(mode == "annotate")
+        self.hint.setVisible(mode == "original")
+        self.original_btn.setVisible(mode == "original")
+        self.adjustSize()
 
 
 class PdfView(QScrollArea):
@@ -133,6 +319,13 @@ class PdfView(QScrollArea):
     linkRequested = Signal(str)  # 外へのリンク（開く前に確認する）
     selectionChanged = Signal(bool)  # 選んだ文字があるか
     findRequested = Signal(str)  # 右クリックの「PDF 内を検索」（選んでいる文字。なければ空）
+    annotationRequested = Signal(str, str, bool)  # (種類 highlight/underline, 色, コメントを続けて書くか)。選んでいる文字に付ける
+    annotationClicked = Signal(str, QPoint)  # (注釈の id, 画面の位置)
+    annotationDeleteRequested = Signal(str)  # 選んでいる印で Delete が押された
+    notePlaced = Signal(int, float, float)  # 付箋の道具でページの位置をクリックした (ページ, x, y（pt）)
+    originalRequested = Signal(int)  # 訳文で選んだ文字に付けたいとき、原文を表示してほしい（ページ）
+    toolCancelled = Signal()  # Esc で、マーカーの道具を止めた
+    colorPicked = Signal(str)  # 選んだ帯で色を押した（以後の既定の色）
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -152,6 +345,14 @@ class PdfView(QScrollArea):
         self._hit_index = -1
         self._query = ""
         self._context_providers: list[Callable[[int, pymupdf.Point], list[QAction | None]]] = []
+        self._annotations: dict[int, list] = {}  # ページ → 注釈（原文の座標。重なりは後のものが上）
+        self._ann_mode = ""  # "marks"（原文: 文字に印）/ "bands"（訳文: 左の余白に帯）/ ""
+        self._ann_by_id: dict[str, object] = {}
+        self._flash_id = ""
+        self._selected_ann = ""
+        self._flash_timer = QTimer(self, singleShot=True, interval=1600, timeout=self._end_flash)
+        self._tool = ""  # マーカーの道具: "" / highlight / underline / note
+        self._color = "yellow"
         self._pending_pos: tuple[int, float] | None = None  # 表示の大きさが決まったら戻す位置（ページ, 0〜1）
         self._anchor: tuple[int, int] | None = None  # 選択の起点（ページ, 単語の番号）
         self._cursor_word: tuple[int, int] | None = None
@@ -168,6 +369,13 @@ class PdfView(QScrollArea):
         self.verticalScrollBar().valueChanged.connect(self._emit_page)
         self.verticalScrollBar().sliderMoved.connect(lambda _v: setattr(self, "_pending_pos", None))
         self._refit = QTimer(self, singleShot=True, interval=60, timeout=self._apply_fit)
+        self.bar = SelectionBar(self.viewport())
+        self.bar.colorChosen.connect(self._on_bar_color)
+        self.bar.underlineChosen.connect(lambda: self._annotate_selection("underline", False))
+        self.bar.commentChosen.connect(lambda: self._annotate_selection("highlight", True))
+        self.bar.copyChosen.connect(self._on_bar_copy)
+        self.bar.originalChosen.connect(self._on_bar_original)
+        self.verticalScrollBar().valueChanged.connect(lambda _v: self._place_bar())
 
     # -- 文書 ------------------------------------------------------------
 
@@ -574,6 +782,7 @@ class PdfView(QScrollArea):
         self._press_page, self._press_point, self._press_pos, self._dragged = index, pt, pos, False
         had = self.has_selection()
         self._clear_selection()
+        self.bar.hide()
         word = self._word_at(index, pt, 6.0)
         self._anchor = (index, word) if word >= 0 else None
         self._cursor_word = self._anchor
@@ -595,10 +804,28 @@ class PdfView(QScrollArea):
                 w.update()
             self.selectionChanged.emit(self.has_selection())
 
-    def release(self, index: int, pt: pymupdf.Point, pos: QPointF) -> None:
+    def release(
+        self, index: int, pt: pymupdf.Point, pos: QPointF, global_pos: QPoint | None = None, annotation_id: str = ""
+    ) -> None:
         moved = self._dragged
         self._press_pos = None
         if moved:
+            if self.has_selection():
+                if self._tool in ("highlight", "underline") and self._ann_mode == "marks":
+                    self._annotate_selection(self._tool, False)  # マーカーの道具: 選んだらすぐ付ける
+                else:
+                    self._place_bar()
+            return
+        if annotation_id:
+            self._selected_ann = annotation_id
+            self._update_pages()
+            self.annotationClicked.emit(annotation_id, global_pos or QPoint())
+            return
+        if self._selected_ann:
+            self._selected_ann = ""
+            self._update_pages()
+        if self._tool == "note" and self._ann_mode == "marks":
+            self.notePlaced.emit(index, float(pt.x), float(pt.y))
             return
         link = self.link_at(index, pt)
         if link is None:
@@ -623,6 +850,8 @@ class PdfView(QScrollArea):
 
     def _clear_selection(self) -> None:
         self._anchor = self._cursor_word = None
+        self._dragged = False
+        self.bar.hide()
         for w in self._pages:
             w.update()
 
@@ -694,6 +923,153 @@ class PdfView(QScrollArea):
             w.update()
         self.selectionChanged.emit(self.has_selection())
 
+    # -- 注釈（マーカー・下線・コメント・付箋） ----------------------------------------------
+
+    def set_annotation_mode(self, mode: str) -> None:
+        """"marks": 原文。文字そのものに印を描く / "bands": 訳文。左の余白に同じ高さの帯を描く / "": 描かない。"""
+        self._ann_mode = mode if mode in ("marks", "bands") else ""
+        self.bar.set_mode("annotate" if self._ann_mode == "marks" else "original")
+        self._update_pages()
+
+    def annotation_mode(self) -> str:
+        return self._ann_mode
+
+    def set_annotations(self, annotations: list) -> None:
+        """この論文の注釈（library.Annotation のリスト）を表示する。"""
+        self._annotations = {}
+        for a in annotations:
+            self._annotations.setdefault(a.page, []).append(a)
+        self._ann_by_id = {a.id: a for a in annotations}
+        if self._selected_ann and self._selected_ann not in self._ann_by_id:
+            self._selected_ann = ""
+        self._update_pages()
+
+    def annotations_on(self, index: int) -> list:
+        return self._annotations.get(index, []) if self._ann_mode else []
+
+    def annotation_by_id(self, annotation_id: str):
+        return self._ann_by_id.get(annotation_id)
+
+    def selected_annotation(self) -> str:
+        return self._selected_ann
+
+    def select_annotation(self, annotation_id: str) -> None:
+        self._selected_ann = annotation_id if annotation_id in self._ann_by_id else ""
+        self._update_pages()
+
+    def flashing_id(self) -> str:
+        return self._flash_id
+
+    def flash_annotation(self, annotation_id: str) -> None:
+        """印を、少しの間だけ枠で強調する。"""
+        if annotation_id in self._ann_by_id:
+            self._flash_id = annotation_id
+            self._flash_timer.start()
+            self._update_pages()
+
+    def _end_flash(self) -> None:
+        self._flash_id = ""
+        self._update_pages()
+
+    def go_to_annotation(self, annotation_id: str) -> bool:
+        """その注釈の場所へ移って、印を強調する。"""
+        a = self._ann_by_id.get(annotation_id)
+        if a is None or not 0 <= a.page < len(self._pages):
+            return False
+        self.scroll_to_rect(a.page, pymupdf.Rect(a.rect))
+        self.flash_annotation(annotation_id)
+        return True
+
+    def _update_pages(self) -> None:
+        for w in self._pages:
+            w.update()
+
+    # マーカーの道具（押している間は、文字を選ぶとすぐ付ける / 付箋はクリックした位置に置く）
+
+    def set_tool(self, tool: str) -> None:
+        self._tool = tool if tool in ("highlight", "underline", "note") else ""
+
+    def tool(self) -> str:
+        return self._tool
+
+    def set_current_color(self, color: str) -> None:
+        if color in ANNOTATION_RGB:
+            self._color = color
+
+    def current_color(self) -> str:
+        return self._color
+
+    def selection_parts(self) -> list[tuple[int, list[tuple[float, float, float, float]], str]]:
+        """選んでいる文字を、ページごとに (ページ, 行ごとの矩形（pt）, 選んだ文字) にする（注釈は 1 ページに 1 件ずつ付ける）。"""
+        span = self.selection_span()
+        if span is None or not self.has_selection():
+            return []
+        parts = []
+        for index in range(span[0][0], span[1][0] + 1):
+            words = self._selected_words(index)
+            if not words:
+                continue
+            quads = [tuple(float(v) for v in r) for r in self.selection_on(index)]
+            parts.append((index, quads, self._text_of(words)))
+        return parts
+
+    def selection_span(self):
+        return self._selection_span()
+
+    @staticmethod
+    def _text_of(words: list[tuple]) -> str:
+        out, last_line = [], None
+        for w in words:
+            line = (w[5], w[6])
+            out.append(("\n" if last_line is not None and line != last_line else " " if out else "") + w[4])
+            last_line = line
+        return "".join(out)
+
+    def _on_bar_color(self, color: str) -> None:
+        self._color = color
+        self.colorPicked.emit(color)
+        self._annotate_selection("highlight", False)
+
+    def _annotate_selection(self, kind: str, with_comment: bool) -> None:
+        if not self.has_selection():
+            return
+        self.annotationRequested.emit(kind, self._color, with_comment)
+        self.clear_selection()
+
+    def _on_bar_copy(self) -> None:
+        self.copy_selection()
+        self.clear_selection()
+
+    def _on_bar_original(self) -> None:
+        parts = self.selection_parts()
+        page = parts[0][0] if parts else self.current_page()
+        self.clear_selection()
+        self.originalRequested.emit(page)
+
+    def _place_bar(self) -> None:
+        """選んだ範囲の上（上に余裕がなければ下）に、小さな帯を出す。"""
+        if not self.has_selection() or not self._ann_mode:
+            self.bar.hide()
+            return
+        span = self._selection_span()
+        first_page, last_page = span[0][0], span[1][0]
+        rects = self.selection_on(first_page)
+        w = self._pages[first_page]
+        top_left = w.mapTo(self.viewport(), w.to_widget(rects[0]).topLeft().toPoint()) if rects else QPoint(8, 8)
+        self.bar.adjustSize()
+        x = max(4, min(top_left.x(), self.viewport().width() - self.bar.width() - 4))
+        y = top_left.y() - self.bar.height() - 6
+        if y < 4:  # 上に余裕がなければ、選んだ範囲の下に
+            last_rects = self.selection_on(last_page)
+            lw = self._pages[last_page]
+            if last_rects:
+                bottom = lw.mapTo(self.viewport(), lw.to_widget(last_rects[-1]).bottomLeft().toPoint())
+                y = bottom.y() + 6
+            y = max(4, min(y, self.viewport().height() - self.bar.height() - 4))
+        self.bar.move(x, y)
+        self.bar.show()
+        self.bar.raise_()
+
     # -- 右クリックのメニュー ------------------------------------------------------------
 
     def add_context_provider(self, provider: Callable[[int, pymupdf.Point], list[QAction | None]]) -> None:
@@ -750,6 +1126,21 @@ class PdfView(QScrollArea):
             return
         if event.matches(QKeySequence.StandardKey.SelectAll) and self._doc is not None:
             self.select_all()
+            event.accept()
+            return
+        if event.key() == Qt.Key.Key_Escape:
+            if self._tool:
+                self.toolCancelled.emit()
+                event.accept()
+                return
+            if self.has_selection() or self._selected_ann:
+                self._selected_ann = ""
+                self.clear_selection()
+                self._update_pages()
+                event.accept()
+                return
+        if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace) and self._selected_ann:
+            self.annotationDeleteRequested.emit(self._selected_ann)
             event.accept()
             return
         super().keyPressEvent(event)

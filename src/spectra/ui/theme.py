@@ -212,6 +212,7 @@ QLabel a {{ color: {t.accent}; }}
 #Canvas, #Canvas > QWidget > QWidget {{ background: {t.canvas}; }}
 #PaneHeader {{ background: {t.surface_alt}; border-bottom: 1px solid {t.separator}; }}
 #NavPane {{ background: {t.surface_alt}; border-right: 1px solid {t.separator}; }}
+#SelectionBar {{ background: {t.surface}; border: 1px solid {t.separator}; border-radius: 10px; }}
 #Thumbnails, #Outline {{ background: transparent; border: none; padding: 6px; outline: 0; color: {t.secondary}; }}
 #Thumbnails::item {{ padding: 6px; border-radius: 6px; }}
 #Thumbnails::item:hover, #Outline::item:hover {{ background: {t.fill}; }}

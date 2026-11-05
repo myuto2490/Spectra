@@ -275,7 +275,10 @@ class SelectionBar(QFrame):
             b.setCursor(Qt.CursorShape.PointingHandCursor)
             b.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             r, g, bl = ANNOTATION_RGB[name]
-            b.setStyleSheet(f"QPushButton {{ background: rgb({r},{g},{bl}); border: 1px solid rgba(0,0,0,70); border-radius: 9px; }}")
+            b.setStyleSheet(
+                f"QPushButton {{ background: rgb({r},{g},{bl}); border: 1px solid rgba(0,0,0,70); border-radius: 9px;"
+                " min-width: 0; min-height: 0; padding: 0; }"
+            )
             b.setToolTip(f"{ANNOTATION_NAMES[name]}のマーカーを付ける")
             b.setAccessibleName(b.toolTip())
             b.clicked.connect(lambda _c=False, n=name: self.colorChosen.emit(n))
@@ -984,6 +987,23 @@ class PdfView(QScrollArea):
         for w in self._pages:
             w.update()
 
+    def annotation_at_point(self, index: int, pt: pymupdf.Point):
+        """ページの座標 pt（原文）にある注釈（右クリックのメニュー用）。なければ None。"""
+        if self._ann_mode != "marks" or not 0 <= index < len(self._pages):
+            return None
+        w = self._pages[index]
+        pos = w.to_widget(pymupdf.Rect(pt.x, pt.y, pt.x, pt.y)).topLeft()
+        return w.annotation_at(pos)
+
+    def global_pos_of(self, annotation) -> QPoint:
+        """注釈の印の下あたりの、画面の位置（吹き出しを出す場所）。"""
+        if not 0 <= annotation.page < len(self._pages):
+            return QCursor.pos()
+        w = self._pages[annotation.page]
+        rects = w.annotation_rects(annotation)
+        anchor = rects[-1].bottomLeft() if rects else QPointF(0, 0)
+        return w.mapToGlobal(anchor.toPoint() + QPoint(0, 6))
+
     # マーカーの道具（押している間は、文字を選ぶとすぐ付ける / 付箋はクリックした位置に置く）
 
     def set_tool(self, tool: str) -> None:
@@ -1164,6 +1184,13 @@ class PreviewPair(QWidget):
     searchChanged = Signal(int, int)
     linkRequested = Signal(str)
     findRequested = Signal(str)  # 右クリックの「PDF 内を検索」
+    annotationRequested = Signal(str, str, bool)  # 選んでいる文字に付ける (種類, 色, コメントを続けて書くか)
+    annotationClicked = Signal(str, QPoint)
+    annotationDeleteRequested = Signal(str)
+    notePlaced = Signal(int, float, float)
+    originalRequested = Signal(int)  # 訳文で選んだ文字に付けたい → 原文を表示してほしい（ページ）
+    toolCancelled = Signal()
+    colorPicked = Signal(str)
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -1180,6 +1207,16 @@ class PreviewPair(QWidget):
         lay.addWidget(self._right, 1)
         self._syncing = False
         self._query = ""
+        self.original.set_annotation_mode("marks")  # 原文: 文字に印を描き、付ける
+        self.translated.set_annotation_mode("bands")  # 訳文: 左の余白に帯（付けるのは原文で）
+        for v in (self.original, self.translated):
+            v.annotationClicked.connect(self.annotationClicked)
+            v.annotationDeleteRequested.connect(self.annotationDeleteRequested)
+            v.originalRequested.connect(self.originalRequested)
+        self.original.annotationRequested.connect(self.annotationRequested)
+        self.original.notePlaced.connect(self.notePlaced)
+        self.original.toolCancelled.connect(self.toolCancelled)
+        self.original.colorPicked.connect(self.colorPicked)
         for a, b in ((self.original, self.translated), (self.translated, self.original)):
             a.verticalScrollBar().valueChanged.connect(lambda _v, a=a, b=b: self._sync_scroll(a, b))
             a.zoomChanged.connect(lambda z, b=b: self._sync_zoom(b, z))
@@ -1266,6 +1303,27 @@ class PreviewPair(QWidget):
     def _on_search(self, view: PdfView, current: int, total: int) -> None:
         if view is self.active_view():
             self.searchChanged.emit(current, total)
+
+    # -- 注釈（原文に付け、訳文には余白の帯で示す） ---------------------------------------------
+
+    def set_annotations(self, annotations: list) -> None:
+        for v in (self.original, self.translated):
+            v.set_annotations(annotations)
+
+    def set_tool(self, tool: str) -> None:
+        self.original.set_tool(tool)
+
+    def set_current_color(self, color: str) -> None:
+        self.original.set_current_color(color)
+
+    def go_to_annotation(self, annotation_id: str) -> bool:
+        """その注釈へ移って強調する（訳文だけを表示しているときは、訳文の帯の場所へ）。"""
+        view = self.translated if not self._left.isVisible() else self.original
+        ok = view.go_to_annotation(annotation_id)
+        other = self.translated if view is self.original else self.original
+        if ok and other.isVisible():
+            other.flash_annotation(annotation_id)
+        return ok
 
     def add_context_provider(self, provider) -> None:
         """原文・訳文の両方の右クリックのメニューに、項目を足す関数を登録する（PdfView.add_context_provider）。"""

@@ -158,6 +158,7 @@ class PaperDetail(QWidget):
         self._ids: list[int] = []
         self._paper: Paper | None = None
         self._job: str | None = None
+        self._reader_mode = False
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
@@ -416,6 +417,12 @@ class PaperDetail(QWidget):
         if changed or self.sender() is self._tab_group:  # 押されたとき（すでに選ばれていても）か、切り替わったとき
             self.tabChanged.emit(index)
 
+    def set_reader_mode(self, on: bool) -> None:
+        """読書画面の右のパネルとして使うとき True。すでに読んでいる論文なので「読む」のボタンは出さない。"""
+        self._reader_mode = on
+        self.read_btn.setVisible(not on)
+        self.tr_read_btn.setVisible(not on and self.tr_read_btn.isVisible())
+
     def set_translation_widget(self, widget: QWidget | None) -> None:
         """「AI翻訳の詳細」のタブの中身を差し替える（読書画面で、翻訳の設定のパネルを入れる）。None で元に戻す。"""
         if widget is self._translation_extra:
@@ -601,7 +608,7 @@ class PaperDetail(QWidget):
         else:
             self.translate_btn.setText("翻訳する")
             set_prop(self.translate_btn, "primary", True)
-        self.tr_read_btn.setVisible(t is not None or job in ("running", "queued"))
+        self.tr_read_btn.setVisible(not self._reader_mode and (t is not None or job in ("running", "queued")))
         set_prop(self.tr_read_btn, "primary", t is not None and job is None)
 
         for row in self.tr_rows:

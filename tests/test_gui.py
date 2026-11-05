@@ -970,3 +970,25 @@ def test_remote_note_change_updates_the_open_note_unless_typing(window, paper_pa
     w.library.set_note(pid, "さらに別の内容")
     w._on_remote_changes([RemoteChange("note", sha, pid)])
     assert w.side_panel.note_editor.edit.toPlainText() == "書きかけ"
+
+
+def test_reader_side_panel_hides_the_read_buttons(window, tmp_path):
+    """読書画面の右のパネルでは「読む」のボタンを出さない（押しても何も起きないため）。ライブラリ画面では出す。"""
+    app, w = window
+    from spectra.config.settings import Settings
+    from spectra.ui.side_panel import SidePanel
+
+    paper = w.library.get(_queue_papers(w, tmp_path, 1)[0].id)
+    reader = SidePanel(w.library, Settings(), "reader")
+    library = SidePanel(w.library, Settings(), "library")
+    for panel in (reader, library):
+        panel.show()
+        panel.detail.show_papers([paper], job="running")  # 翻訳中は翻訳のタブの「読む」も出る条件
+    assert not reader.detail.read_btn.isVisible() and not reader.detail.tr_read_btn.isVisible()
+    assert library.detail.read_btn.isVisible() and not library.detail.tr_read_btn.isHidden()
+    # 再表示しても出てこない
+    reader.detail.show_papers([paper], job=None)
+    reader.set_current_tab("translation")
+    assert not reader.detail.read_btn.isVisible() and not reader.detail.tr_read_btn.isVisible()
+    reader.set_current_tab("details")
+    assert not reader.detail.read_btn.isVisible()

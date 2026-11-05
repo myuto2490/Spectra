@@ -20,6 +20,7 @@ COLORS: dict[str, tuple[float, float, float]] = {
 }
 BAR_X = 6.0  # 訳文の余白の帯の左端（pt）
 BAR_WIDTH = 4.0
+MAC_OPACITY = 0.99  # 1.0 では macOS で色が出ない（見た目はほぼ変わらない）
 
 
 def apply_annotations(doc: pymupdf.Document, annotations: list, mode: OutputMode, pages: range | None = None) -> int:
@@ -51,6 +52,9 @@ def apply_annotations(doc: pymupdf.Document, annotations: list, mode: OutputMode
         else:
             annot = _mark(page, a)
         annot.set_colors(stroke=COLORS.get(a.color, COLORS["yellow"]))
+        if annot.type[0] in (pymupdf.PDF_ANNOT_SQUARE, pymupdf.PDF_ANNOT_TEXT):
+            # macOS のプレビュー・Quick Look（PDFKit）は、不透明度の指定がないと、帯と付箋の色を無視して灰色〜黒で描く
+            annot.set_opacity(MAC_OPACITY)
         annot.set_info(content=_content(a, mode))
         annot.update()
         written += 1

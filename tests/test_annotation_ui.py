@@ -75,10 +75,10 @@ def test_popover_shows_the_annotation(app):
 
     p = AnnotationPopover(Ann("a", color="green", quote="<b>text</b>", comment="memo", comment_merged=True))
     assert p.swatches["green"].isChecked() and p.kind_buttons["highlight"].isChecked()
-    assert p.quote.text() == "<b>text</b>" and p.quote.textFormat().name == "PlainText"  # HTML として解釈しない
+    assert p.quote.text() == "<b>text</b>"  # プレーンテキストで描く（HTML として解釈しない）
     assert p.comment.toPlainText() == "memo" and not p.merged.isHidden()
     note = AnnotationPopover(Ann("n", kind="note", quote=""))
-    assert all(b.isHidden() for b in note.kind_buttons.values()) and note.quote.isHidden()  # 付箋は種類を切り替えない
+    assert note.kind_row.isHidden() and note.quote.isHidden()  # 付箋は種類を切り替えない
 
 
 def test_popover_changes_color_and_kind_through_the_library(app):
@@ -235,9 +235,10 @@ def test_list_rows_are_plain_text_and_clipped(app):
     long = "line " * 400
     lst.set_annotations([Ann("a", quote="<i>x</i>" + long, comment=long, comment_merged=True)])
     row = lst.rows[0]
-    assert row.quote.textFormat().name == "PlainText" and row.comment.textFormat().name == "PlainText"
-    assert row.quote.maximumHeight() < 60 and row.comment.maximumHeight() < 80  # 引用は 2 行、コメントは 3 行まで
-    assert "連結" in row.accessibleName() or any("連結" in c.text() for c in row.findChildren(type(row.page)))
+    assert row.quote.text().startswith("<i>x</i>")  # プレーンテキスト
+    fm_h = row.quote.fontMetrics().lineSpacing()
+    assert row.quote.heightForWidth(250) <= fm_h * 2 + 2 and row.comment.heightForWidth(250) <= fm_h * 3 + 2  # 2 行・3 行まで
+    assert any("連結" in c.text() for c in row.findChildren(type(row.page)))
 
 
 def test_color_helper_follows_the_theme(app):
@@ -344,3 +345,115 @@ def test_export_dialog_annotation_switch(app):
     unknown = ExportDialog(OutputMode.TRANSLATED, 10)  # 数がわからなければ出す（既定でオン）
     unknown.show()
     assert unknown.include_annotations()
+
+
+# ---- 実画面で見つかった表示の不具合（欠け・重なり・古い欄の残り） ---------------------------
+
+
+def test_popover_kind_buttons_show_their_whole_text(app):
+    from spectra.ui.annotation_popover import AnnotationPopover
+
+    p = AnnotationPopover(Ann("a"))
+    p.show()
+    app.processEvents()
+    for b in p.kind_buttons.values():
+        assert b.width() >= b.sizeHint().width()  # 幅が足りず、文字が「ーカ」のように欠けない
+    # 色の丸・種類・削除ボタンは、同じ行に詰めずに、はみ出さずに収まる
+    for w in (*p.swatches.values(), p.delete_btn, *p.kind_buttons.values()):
+        assert p.rect().contains(w.mapTo(p, w.rect().topLeft())) and p.rect().contains(w.mapTo(p, w.rect().bottomRight()))
+    assert p.kind_row.geometry().top() > p.swatches["yellow"].geometry().bottom()
+
+
+def test_clamped_label_cuts_by_whole_lines(app):
+    from spectra.ui.annotation_popover import ClampedLabel
+
+    lb = ClampedLabel("word " * 200, 2)
+    lb.resize(200, 100)
+    lines = lb._lines(200)
+    assert len(lines) == 2 and lines[-1].endswith("…")  # 3 行目以降は、最後の行を省略して表す
+    fm_h = lb.fontMetrics().lineSpacing()
+    assert lb.heightForWidth(200) == fm_h * 2 + 2  # 行の途中で切れる高さにならない
+    short = ClampedLabel("short", 3)
+    assert short._lines(200) == ["short"] and short.heightForWidth(200) == fm_h + 2
+    assert ClampedLabel("a\nb", 3)._lines(200) == ["a", "b"]  # 改行は行として扱う
+    assert not lb.grab().isNull()
+
+
+def test_list_rebuild_leaves_no_stale_rows(app):
+    from spectra.ui.annotation_list import AnnotationList, AnnotationRow
+
+    lst = AnnotationList()
+    lst.resize(320, 600)
+    lst.show()
+    for _ in range(3):
+        lst.set_annotations(_items())
+    # 古い行は、削除が処理されるのを待たずに、子から外れている（描かれ続けて重ならない）
+    assert len(lst.findChildren(AnnotationRow)) == 4 == len(lst.rows)
+    lst.swatches["green"].click()
+    assert len(lst.findChildren(AnnotationRow)) == 2
+    app.processEvents()
+    assert sum(1 for r in lst.findChildren(AnnotationRow) if r.isVisible()) == 2
+    lst.set_annotations([])
+    assert lst.findChildren(AnnotationRow) == []
+
+
+def test_list_rows_are_not_clipped(app):
+    from spectra.ui.annotation_list import AnnotationList
+
+    lst = AnnotationList()
+    lst.resize(324, 700)
+    lst.show()
+    lst.set_annotations(
+        [
+            Ann("a", quote="short quote", comment="コメント"),
+            Ann("b", page=1, kind="underline", quote="word " * 60, comment="comment " * 60),
+        ]
+    )
+    app.processEvents()
+    for r in lst.rows:
+        need = r.layout().totalHeightForWidth(r.width()) if r.layout().hasHeightForWidth() else r.layout().sizeHint().height()
+        assert r.height() >= need - 1, "行の高さが中身より小さく、文字が欠ける"
+        assert r.geometry().bottom() <= lst.area.widget().height()
+    # 行どうしが重ならない
+    geos = [r.geometry() for r in lst.rows]
+    assert all(a.bottom() < b.top() for a, b in zip(geos, geos[1:]))
+
+
+def test_reader_translation_widget_does_not_overlay_other_tabs(app, lib_and_paper):
+    """読書画面で翻訳の設定のパネルを差し込んでも、「注釈」など別のタブの上には重ならない。"""
+    from PySide6.QtWidgets import QLabel
+
+    from spectra.config.settings import Settings
+    from spectra.ui.side_panel import SidePanel
+
+    lib, paper = lib_and_paper
+    panel = SidePanel(_LibWithAnnotations(lib, _items()), Settings(), "reader")
+    panel.resize(324, 700)
+    panel.show()
+    extra = QLabel("翻訳の設定のパネル")
+    panel.set_translation_widget(extra)
+    panel.set_paper(paper)
+    for tab in ("annotations", "note", "details"):
+        panel.set_current_tab(tab)
+        app.processEvents()
+        assert not extra.isVisible(), f"{tab} のタブに翻訳の設定のパネルが重なっている"
+    panel.set_current_tab("translation")
+    assert extra.isVisible()
+    panel.set_current_tab("annotations")
+    assert not extra.isVisible()
+    # 差し込んだままタブを切り替えても、見えている欄は現在のタブのものだけ
+    visible_pages = [panel.detail.pages.widget(i) for i in range(panel.detail.pages.count()) if panel.detail.pages.widget(i).isVisible()]
+    assert visible_pages == [panel.annotation_list]
+    panel.set_translation_widget(None)
+    assert not extra.isVisible() and panel.detail.pages.currentWidget() is panel.annotation_list
+    panel.set_current_tab("translation")
+    assert panel.detail._translation_page.isVisible()
+
+
+def test_popover_marks_the_selected_kind(app):
+    from spectra.ui.annotation_popover import AnnotationPopover
+
+    p = AnnotationPopover(Ann("a", kind="underline"))
+    assert p.kind_buttons["underline"].property("primary") is True and not p.kind_buttons["highlight"].property("primary")
+    p.kind_buttons["highlight"].click()
+    assert p.kind_buttons["highlight"].property("primary") is True and not p.kind_buttons["underline"].property("primary")

@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import logging
 
-from PySide6.QtCore import QPoint, Qt, QTimer, Signal
+from PySide6.QtCore import QPoint, QPointF, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QFontMetrics, QPainter, QTextLayout, QTextOption
 from PySide6.QtWidgets import (
     QAbstractButton,
     QButtonGroup,
@@ -17,12 +18,13 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QPlainTextEdit,
     QPushButton,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
 
 from . import icons, theme
-from .widgets import button, label, plain_tooltip, tool_button
+from .widgets import button, label, plain_tooltip, set_prop, tool_button
 
 log = logging.getLogger(__name__)
 
@@ -45,6 +47,80 @@ def annotation_rgb(color: str, dark: bool | None = None) -> str:
     """注釈の色の名前を、画面に出す色（#RRGGBB）にする。明るい・暗いテーマで変わる。知らない名前は黄。"""
     table = _DARK if (theme.is_dark() if dark is None else dark) else _LIGHT
     return table.get(color, table["yellow"])
+
+
+class ClampedLabel(QWidget):
+    """最大 max_lines 行まで折り返して表示し、入りきらない分は最後の行を「…」で省略するプレーンテキストの欄。
+
+    QLabel に最大の高さだけ与えると、途中の行が上下で欠けて見えるため、行単位で切る。
+    """
+
+    def __init__(self, text: str = "", max_lines: int = 2, role: str = "label", parent: QWidget | None = None):
+        super().__init__(parent)
+        self._text = text
+        self.max_lines = max_lines
+        self._role = role  # theme のトークン名（label / secondary など）
+        policy = QSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
+        policy.setHeightForWidth(True)
+        self.setSizePolicy(policy)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+
+    def text(self) -> str:
+        return self._text
+
+    def setText(self, text: str) -> None:
+        self._text = text
+        self.updateGeometry()
+        self.update()
+
+    def _lines(self, width: int) -> list[str]:
+        """width に収まる行に分け、max_lines を超えるときは最後の行を省略する。"""
+        width = max(20, width)
+        text = self._text.replace("\r\n", "\n").replace("\n", "\u2028")  # 改行は行の区切りとして扱う
+        layout = QTextLayout(text, self.font())
+        option = QTextOption()
+        option.setWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
+        layout.setTextOption(option)
+        spans = []
+        layout.beginLayout()
+        while True:
+            line = layout.createLine()
+            if not line.isValid():
+                break
+            line.setLineWidth(width)
+            spans.append((line.textStart(), line.textLength()))
+        layout.endLayout()
+        lines = [text[a : a + n].replace("\u2028", "") for a, n in spans]
+        if len(lines) > self.max_lines:
+            fm = QFontMetrics(self.font())
+            start = spans[self.max_lines - 1][0]
+            rest = text[start:].replace("\u2028", " ")
+            lines = lines[: self.max_lines - 1] + [fm.elidedText(rest, Qt.TextElideMode.ElideRight, width)]
+        return lines or [""]
+
+    def hasHeightForWidth(self) -> bool:  # noqa: N802 - Qt の名前
+        return True
+
+    def heightForWidth(self, width: int) -> int:  # noqa: N802
+        return len(self._lines(width)) * QFontMetrics(self.font()).lineSpacing() + 2
+
+    def sizeHint(self) -> QSize:  # noqa: N802
+        w = 240
+        return QSize(w, self.heightForWidth(w))
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802
+        return QSize(40, QFontMetrics(self.font()).lineSpacing() + 2)
+
+    def paintEvent(self, _event) -> None:  # noqa: N802
+        t = theme.current()
+        p = QPainter(self)
+        p.setFont(self.font())
+        p.setPen(QColor(getattr(t, self._role, t.label)))
+        fm = QFontMetrics(self.font())
+        y = fm.ascent() + 1
+        for line in self._lines(self.width()):
+            p.drawText(QPointF(0, y), line)
+            y += fm.lineSpacing()
 
 
 class ColorSwatch(QAbstractButton):
@@ -108,7 +184,17 @@ class AnnotationPopover(QFrame):
             self.swatches[c] = sw
             head.addWidget(sw)
             sw.clicked.connect(lambda _checked=False, c=c: self._set_color(c))
-        head.addSpacing(8)
+        head.addStretch(1)
+        self.delete_btn = tool_button("trash", "この注釈を削除")
+        self.delete_btn.clicked.connect(self.delete)
+        head.addWidget(self.delete_btn)
+        lay.addLayout(head)
+
+        # 種類の切り替えは別の行に置く（同じ行に並べると、幅が足りずにボタンの文字が欠ける）
+        self.kind_row = QWidget()
+        kinds = QHBoxLayout(self.kind_row)
+        kinds.setContentsMargins(0, 0, 0, 0)
+        kinds.setSpacing(6)
         self._kind_group = QButtonGroup(self)
         self._kind_group.setExclusive(True)
         self.kind_buttons: dict[str, QPushButton] = {}
@@ -116,19 +202,16 @@ class AnnotationPopover(QFrame):
             b = QPushButton(KIND_LABELS[k])
             b.setCheckable(True)
             b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.setMinimumWidth(b.sizeHint().width())  # 文字が欠けない幅を下限にする
+            b.toggled.connect(lambda on, b=b: set_prop(b, "primary", on))  # 選んでいる種類を目立たせる
             self._kind_group.addButton(b)
             self.kind_buttons[k] = b
-            head.addWidget(b)
+            kinds.addWidget(b)
             b.clicked.connect(lambda _checked=False, k=k: self._set_kind(k))
-        head.addStretch(1)
-        self.delete_btn = tool_button("trash", "この注釈を削除")
-        self.delete_btn.clicked.connect(self.delete)
-        head.addWidget(self.delete_btn)
-        lay.addLayout(head)
+        kinds.addStretch(1)
+        lay.addWidget(self.kind_row)
 
-        self.quote = label("", "caption", wrap=True)
-        self.quote.setTextFormat(Qt.TextFormat.PlainText)  # 論文の本文を含むので、HTML として解釈しない
-        self.quote.setMaximumHeight(self.quote.fontMetrics().lineSpacing() * 3 + 4)
+        self.quote = ClampedLabel("", 3, "secondary")  # 論文の本文を含むので、プレーンテキストで描く
         lay.addWidget(self.quote)
 
         self.merged = label("ほかのパソコンでの編集と連結しました。内容を確かめて整理してください。", "caption", tone="warning", wrap=True)
@@ -157,7 +240,7 @@ class AnnotationPopover(QFrame):
         is_note = a.kind == "note"
         for k, b in self.kind_buttons.items():
             b.setChecked(k == a.kind)
-            b.setVisible(not is_note)  # 付箋は、マーカー・下線とは切り替えない
+        self.kind_row.setVisible(not is_note)  # 付箋は、マーカー・下線とは切り替えない
         self.quote.setText(a.quote)
         self.quote.setVisible(bool(a.quote))
         self.merged.setVisible(bool(getattr(a, "comment_merged", False)))

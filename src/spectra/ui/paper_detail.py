@@ -5,7 +5,8 @@ from __future__ import annotations
 import html
 from dataclasses import replace
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QEvent, QSize, Qt, Signal
+from PySide6.QtGui import QFontMetrics
 from PySide6.QtWidgets import (
     QButtonGroup,
     QDialog,
@@ -131,6 +132,52 @@ class _InfoGrid(QWidget):
         value.setText(f'<a href="{html.escape(url)}">{html.escape(_breakable(text))}</a>' if text else "")
 
 
+class TabButton(QPushButton):
+    """タブの見出し。幅が足りないときは、はみ出さずに「…」で省略して表示する（全体はツールチップに出す）。
+
+    フォントの幅は OS や拡大率で変わる（Windows の Segoe UI は macOS より広い）ので、幅を決め打ちにしない。
+    """
+
+    PAD = 4  # スタイルシートの左右の余白（2px ずつ）
+
+    def __init__(self, text: str, parent: QWidget | None = None):
+        super().__init__(text, parent)
+        self._full = text
+
+    def full_text(self) -> str:
+        return self._full
+
+    def _metrics(self) -> QFontMetrics:
+        return QFontMetrics(self.font())  # スタイルシートの太字を含む、いま描かれる文字の幅
+
+    def sizeHint(self) -> QSize:  # noqa: N802 - Qt の名前
+        # 省略した文字でなく、全体の文字の幅を希望の幅にする（省略したままレイアウトが狭いままにならないように）
+        hint = super().sizeHint()
+        fm = self._metrics()
+        return QSize(hint.width() + fm.horizontalAdvance(self._full) - fm.horizontalAdvance(self.text()), hint.height())
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802
+        return QSize(28, super().minimumSizeHint().height())
+
+    def changeEvent(self, event) -> None:  # noqa: N802
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.FontChange:
+            self.updateGeometry()
+            self._elide()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._elide()
+
+    def _elide(self) -> None:
+        fm = self._metrics()
+        avail = max(8, self.width() - self.PAD)
+        shown = self._full if fm.horizontalAdvance(self._full) <= avail + 1 else fm.elidedText(self._full, Qt.TextElideMode.ElideRight, avail)
+        if shown != self.text():
+            self.setText(shown)
+        self.setToolTip(self._full if shown != self._full else "")
+
+
 class PaperDetail(QWidget):
     """選んだ論文の詳細。「論文の詳細」（書誌情報）・「AI翻訳の詳細」（翻訳とファイル）・「ノート」のタブに分ける。"""
 
@@ -170,13 +217,13 @@ class PaperDetail(QWidget):
         self.tabs.setObjectName("DetailTabs")
         self.tabs.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         tl = QHBoxLayout(self.tabs)
-        tl.setContentsMargins(18, 4, 18, 0)
-        tl.setSpacing(18)
+        tl.setContentsMargins(12, 4, 12, 0)  # タブが 4 つになったので、余白を詰める（フォントが広い Windows でも収める）
+        tl.setSpacing(10)
         self._tab_group = QButtonGroup(self)
         self._tab_group.setExclusive(True)
-        self.tab_buttons: list[QPushButton] = []
+        self.tab_buttons: list[TabButton] = []
         for i, text in enumerate(TAB_NAMES):
-            b = QPushButton(text)
+            b = TabButton(text)
             b.setCheckable(True)
             b.setCursor(Qt.CursorShape.PointingHandCursor)
             b.setAccessibleName(f"{text}のタブ")

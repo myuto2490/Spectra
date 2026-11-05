@@ -7,6 +7,8 @@
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-05
+
 ### 追加
 
 **読書画面**
@@ -153,7 +155,7 @@
 **コマンドラインツール**
 - `spectra translate` / `spectra estimate` / `spectra key`
 
-[Unreleased]: https://github.com/myuto2490/Spectra/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/myuto2490/Spectra/compare/v0.4.0...HEAD
 [0.1.0]: https://github.com/myuto2490/Spectra/releases/tag/v0.1.0
 [0.1.1]: https://github.com/myuto2490/Spectra/compare/v0.1.0...v0.1.1
 [0.1.2]: https://github.com/myuto2490/Spectra/compare/v0.1.1...v0.1.2
@@ -162,3 +164,4 @@
 [0.1.5]: https://github.com/myuto2490/Spectra/compare/v0.1.4...v0.1.5
 [0.2.0]: https://github.com/myuto2490/Spectra/compare/v0.1.5...v0.2.0
 [0.3.0]: https://github.com/myuto2490/Spectra/compare/v0.2.0...v0.3.0
+[0.4.0]: https://github.com/myuto2490/Spectra/compare/v0.3.0...v0.4.0

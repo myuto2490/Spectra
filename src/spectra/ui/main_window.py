@@ -309,6 +309,9 @@ class MainWindow(QMainWindow):
         self.nav_btn = tool_button("pages", f"ページの一覧と目次を表示/隠す（{_mod('Alt+T') if not theme.IS_MAC else '⌥⌘T'}）", checkable=True)
         self.nav_btn.toggled.connect(lambda on: self.nav_pane.setVisible(on and self.screen_mode == READER))
         h.addWidget(self.nav_btn)
+        self.find_btn = tool_button("search", f"PDF 内を検索（{_mod('F')}）", checkable=True)
+        self.find_btn.clicked.connect(self._toggle_find_bar)
+        h.addWidget(self.find_btn)
         titles = QVBoxLayout()
         titles.setSpacing(0)
         self.doc_title = label("", "headline")
@@ -344,7 +347,7 @@ class MainWindow(QMainWindow):
         self.inspector_btn.toggled.connect(lambda on: self.side_panel.setVisible(on))
         h.addWidget(self.inspector_btn)
         self._library_widgets = [self.sidebar_btn, self.search, self.add_btn]
-        self._reader_widgets = [self.back_btn, self.nav_btn, self.doc_title, self.doc_subtitle, self.view_mode, self.inspector_btn]
+        self._reader_widgets = [self.back_btn, self.nav_btn, self.find_btn, self.doc_title, self.doc_subtitle, self.view_mode, self.inspector_btn]
         return bar
 
     def _build_footer(self) -> QWidget:
@@ -840,10 +843,20 @@ class MainWindow(QMainWindow):
         if self.screen_mode != READER or self.original_doc is None:
             return
         self.find_bar.open()
+        self.find_btn.setChecked(True)
         if self.find_bar.query():
             self.preview.search(self.find_bar.query())
 
+    def _toggle_find_bar(self) -> None:
+        """ツールバーの検索ボタン: 検索の帯を開く・閉じる。"""
+        if self.find_bar.isHidden():
+            self.show_find_bar()
+        else:
+            self.find_bar.close_bar()
+        self.find_btn.setChecked(not self.find_bar.isHidden())
+
     def _on_find_closed(self) -> None:
+        self.find_btn.setChecked(False)
         self.preview.clear_search()
         self.preview.active_view().setFocus()
 
@@ -1839,6 +1852,7 @@ class MainWindow(QMainWindow):
             self.sidebar_btn,
             self.back_btn,
             self.nav_btn,
+            self.find_btn,
             self.settings_btn,
             self.inspector_btn,
             self.page_prev_btn,

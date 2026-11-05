@@ -101,7 +101,24 @@ def main() -> int:
         if arg.lower().endswith(".pdf") and Path(arg).is_file():
             window.open_file(Path(arg))
             break
-    return app.exec()
+    code = app.exec()
+    _shutdown(app, window)
+    return code
+
+
+def _shutdown(app, window) -> None:
+    """終わりの片付け。バックグラウンドの処理を待ち、ウィンドウと QApplication を決まった順番で破棄する。
+
+    Python の終了の後始末に任せると、破棄の順番によっては「QObject: shared QObject was deleted directly」が出て、
+    環境によっては落ちる。
+    """
+    from PySide6.QtCore import QCoreApplication, QEvent, QThreadPool
+
+    QThreadPool.globalInstance().waitForDone(3000)
+    window.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    if hasattr(app, "shutdown"):  # 古い PySide6 にはない
+        app.shutdown()
 
 
 if __name__ == "__main__":

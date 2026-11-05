@@ -139,7 +139,7 @@ def test_view_state_roundtrip(view, app):
     view.verticalScrollBar().setValue(view.verticalScrollBar().value() + 80)
     pump(app)
     state = view.view_state()
-    assert state["fit"] == "" and state["page"] == 2 and abs(state["zoom"] - 1.25) < 1e-3
+    assert state["fit"] == "none" and state["page"] == 2 and abs(state["zoom"] - 1.25) < 1e-3
 
     from spectra.ui.pdf_view import PdfView
 
@@ -152,7 +152,7 @@ def test_view_state_roundtrip(view, app):
     pump(app)
     assert other.current_page() == 2
     assert abs(other.zoom() - 1.25) < 1e-3
-    assert abs(other.view_state()["offset"] - state["offset"]) < 0.02
+    assert abs(other.view_state()["ratio"] - state["ratio"]) < 0.02
     other.close()
 
 
@@ -161,7 +161,7 @@ def test_restore_view_state_ignores_bad_values(view):
     for bad in (None, "x", {"zoom": "abc"}, {"page": None}, []):
         view.restore_view_state(bad)
     assert view.view_state()["page"] == before["page"]
-    view.restore_view_state({"zoom": 1.0, "fit": "bogus", "page": 999, "offset": 5})  # 範囲の外は寄せる
+    view.restore_view_state({"zoom": 1.0, "fit": "bogus", "page": 999, "ratio": 5})  # 範囲の外は寄せる
     assert 0 <= view.current_page() < view.page_count()
 
 
@@ -381,3 +381,98 @@ def test_make_paper_search_roundtrip(app):
     v.select_all()
     assert len(v.selected_text()) > 100
     v.close()
+
+
+# -- 見ていた場所の記憶（表示前・幅に合わせているとき） ------------------------------------------------
+
+
+def test_restore_before_the_view_is_shown(app):
+    from spectra.ui.pdf_view import PdfView
+
+    v = PdfView()  # まだ表示していない（読書画面を開く前）
+    v.set_document(plain_doc())
+    v.restore_view_state({"zoom": 1.5, "fit": "none", "page": 3, "ratio": 0.25})
+    v.resize(700, 600)
+    v.show()
+    pump(app, 0.3)
+    assert v.current_page() == 3 and abs(v.zoom() - 1.5) < 1e-3
+    assert v.view_state()["ratio"] == pytest.approx(0.25, abs=0.02)
+    v.close()
+
+
+def test_restore_keeps_the_position_when_fitting_to_width(view, app):
+    view.restore_view_state({"zoom": 1.0, "fit": "width", "page": 2, "ratio": 0.5})
+    pump(app, 0.3)
+    assert view.fit_mode() == "width" and view.current_page() in (2, 3)
+    state = view.view_state()
+    assert state["page"] == 2 and state["ratio"] == pytest.approx(0.5, abs=0.05)
+    # 一度戻したあと、ウィンドウの大きさを変えても、位置を勝手に戻し直さない
+    view.verticalScrollBar().setValue(0)
+    view.resize(650, 600)
+    pump(app, 0.3)
+    assert view.current_page() == 0
+
+
+def test_switching_view_mode_keeps_an_explicit_zoom(app):
+    from spectra.ui.pdf_view import PreviewPair
+
+    pair = PreviewPair()
+    pair.resize(1000, 600)
+    pair.show()
+    pair.original.set_document(plain_doc(3))
+    pair.translated.set_document(plain_doc(3))
+    pump(app)
+    pair.set_zoom(1.3)
+    pair.set_mode("both")
+    pump(app, 0.2)
+    assert abs(pair.original.zoom() - 1.3) < 1e-3  # 倍率を決めていれば、表示を切り替えても変えない
+    pair.original.fit_width()
+    pair.set_mode("original")
+    pump(app, 0.2)
+    assert pair.original.fit_mode() == "width"
+    pair.close()
+
+
+# -- 検索の帯 ----------------------------------------------------------------------
+
+
+def test_find_bar_flow(app):
+    from PySide6.QtGui import (
+        QGuiApplication,  # noqa: F401  (Shift の状態は実機では押している間だけなので使わない)
+    )
+
+    from spectra.ui.pdf_view import FindBar
+
+    bar = FindBar()
+    bar.show()
+    queries, steps = [], []
+    bar.queryChanged.connect(queries.append)
+    bar.nextRequested.connect(lambda: steps.append("next"))
+    bar.previousRequested.connect(lambda: steps.append("prev"))
+    closed = []
+    bar.closed.connect(lambda: closed.append(1))
+
+    bar.edit.setText("alpha")
+    pump(app, 0.4)  # 打つのをやめて少しすると探す
+    assert queries == ["alpha"]
+    bar.edit.returnPressed.emit()  # 同じ語で Enter なら次へ
+    assert steps == ["next"] and queries == ["alpha"]
+    bar.edit.setText("beta")
+    bar.edit.returnPressed.emit()  # 打った直後の Enter は、まず探す
+    assert queries == ["alpha", "beta"]
+    bar.prev_btn.click()
+    assert steps[-1] == "prev"
+
+    bar.set_count(2, 5)
+    assert bar.count.text() == "2 / 5 件"
+    bar.set_count(0, 0)
+    assert bar.count.text() == "見つかりません"
+    bar.edit.setText("")
+    bar.set_count(0, 0)
+    assert bar.count.text() == ""
+
+    bar.close_bar()
+    assert closed == [1] and bar.isHidden()
+    bar.open()
+    assert not bar.isHidden()
+    bar.close()

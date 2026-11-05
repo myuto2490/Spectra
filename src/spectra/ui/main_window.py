@@ -8,30 +8,31 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
 from collections.abc import Callable
 from pathlib import Path
 
 import pymupdf
 from PySide6.QtCore import QByteArray, QSize, Qt, QTimer, QUrl
-from PySide6.QtGui import QAction, QDesktopServices, QGuiApplication, QKeySequence
+from PySide6.QtGui import QAction, QDesktopServices, QGuiApplication, QIntValidator, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
     QFileDialog,
     QHBoxLayout,
-    QLabel,
     QLineEdit,
     QMainWindow,
     QMenu,
     QMessageBox,
     QProgressBar,
     QStackedWidget,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
-from .. import APP_NAME
+from .. import APP_NAME, update
 from ..config import paths
 from ..config.secrets import SecretStore
 from ..config.settings import Settings
@@ -58,10 +59,11 @@ from .jobs import LookupQueue, TranslationQueue, TranslationRequest
 from .library_model import TRASH_DAYS
 from .library_view import LibraryView
 from .paper_detail import MetadataDialog
-from .pdf_view import PreviewPair
+from .pdf_view import ZOOM_PRESETS, FindBar, NavPane, PreviewPair
 from .privacy import display_path
 from .settings_dialog import SettingsDialog
 from .sync_controller import ERROR, SYNCING, UNAVAILABLE, SyncController
+from .update_prompt import UpdateBanner, ask_enable_update_check, start_check
 from .widgets import (
     Banner,
     SegmentedControl,
@@ -91,6 +93,7 @@ class MainWindow(QMainWindow):
         secrets: SecretStore | None = None,
         library: Library | None = None,
         sync_engine_factory=None,
+        check_updates: bool | None = None,
     ):
         super().__init__()
         self.settings = settings or Settings.load()
@@ -120,6 +123,10 @@ class MainWindow(QMainWindow):
         self._banner_callback: Callable[[], None] | None = None
         self._job_ids: set[int] = set()
 
+        # 更新の確認（GitHub への問い合わせ）。テストでは環境変数で止める
+        self._check_updates = check_updates if check_updates is not None else not os.environ.get("SPECTRA_NO_UPDATE_CHECK")
+        self._update_info: update.UpdateInfo | None = None
+        self._startup_done = False
         self._build_ui()
         self._build_actions()
         self._restore_window()
@@ -170,6 +177,17 @@ class MainWindow(QMainWindow):
         self.library_view = LibraryView(self.library)
         v.addWidget(self._build_toolbar())
 
+        update_wrap = QWidget()
+        ul = QVBoxLayout(update_wrap)
+        ul.setContentsMargins(16, 12, 16, 0)
+        self.update_banner = UpdateBanner()
+        self.update_banner.dismissed.connect(self._on_update_later)
+        self.update_banner.skipRequested.connect(self._on_update_skip)
+        ul.addWidget(self.update_banner)
+        self.update_wrap = update_wrap
+        update_wrap.hide()
+        v.addWidget(update_wrap)
+
         banner_wrap = QWidget()
         bl = QVBoxLayout(banner_wrap)
         bl.setContentsMargins(16, 12, 16, 0)
@@ -210,12 +228,28 @@ class MainWindow(QMainWindow):
         rl = QHBoxLayout(reader)
         rl.setContentsMargins(0, 0, 0, 0)
         rl.setSpacing(0)
+        self.nav_pane = NavPane()
+        self.nav_pane.hide()
+        rl.addWidget(self.nav_pane)
+        center = QWidget()
+        cl = QVBoxLayout(center)
+        cl.setContentsMargins(0, 0, 0, 0)
+        cl.setSpacing(0)
+        self.find_bar = FindBar()
+        cl.addWidget(self.find_bar)
         self.preview = PreviewPair()
-        self.preview.original.pageChanged.connect(self._on_page_changed)
-        self.preview.translated.pageChanged.connect(self._on_page_changed)
-        self.preview.original.zoomChanged.connect(self._on_zoom_changed)
-        self.preview.translated.zoomChanged.connect(self._on_zoom_changed)
-        rl.addWidget(self.preview, 1)
+        for view in (self.preview.original, self.preview.translated):
+            view.pageChanged.connect(lambda _i, _n, v=view: v is self.preview.active_view() and self._refresh_page_indicator())
+            view.zoomChanged.connect(self._on_zoom_changed)
+        self.preview.linkRequested.connect(self._open_pdf_link)
+        self.preview.searchChanged.connect(self.find_bar.set_count)
+        self.find_bar.queryChanged.connect(self.preview.search)
+        self.find_bar.nextRequested.connect(self.preview.find_next)
+        self.find_bar.previousRequested.connect(self.preview.find_previous)
+        self.find_bar.closed.connect(self._on_find_closed)
+        self.nav_pane.pageActivated.connect(self.preview.go_to_page)
+        cl.addWidget(self.preview, 1)
+        rl.addWidget(center, 1)
         self.inspector = Inspector(self.settings)
         self.inspector.settingsChanged.connect(self._on_settings_changed)
         self.inspector.openSettings.connect(self.show_settings)
@@ -260,6 +294,9 @@ class MainWindow(QMainWindow):
         self.back_btn = tool_button("back", f"ライブラリに戻る（{_mod('[')}）")
         self.back_btn.clicked.connect(self.show_library)
         h.addWidget(self.back_btn)
+        self.nav_btn = tool_button("pages", f"ページの一覧と目次を表示/隠す（{_mod('Alt+T') if not theme.IS_MAC else '⌥⌘T'}）", checkable=True)
+        self.nav_btn.toggled.connect(lambda on: self.nav_pane.setVisible(on and self.screen_mode == READER))
+        h.addWidget(self.nav_btn)
         titles = QVBoxLayout()
         titles.setSpacing(0)
         self.doc_title = label("", "headline")
@@ -295,7 +332,7 @@ class MainWindow(QMainWindow):
         self.inspector_btn.toggled.connect(lambda on: self.inspector.setVisible(on))
         h.addWidget(self.inspector_btn)
         self._library_widgets = [self.sidebar_btn, self.search, self.add_btn]
-        self._reader_widgets = [self.back_btn, self.doc_title, self.doc_subtitle, self.view_mode, self.inspector_btn]
+        self._reader_widgets = [self.back_btn, self.nav_btn, self.doc_title, self.doc_subtitle, self.view_mode, self.inspector_btn]
         return bar
 
     def _build_footer(self) -> QWidget:
@@ -318,21 +355,58 @@ class MainWindow(QMainWindow):
         self.queue_cancel_btn.hide()
         h.addWidget(self.queue_cancel_btn)
         h.addStretch(1)
-        self.page_label = label("", "caption")
-        h.addWidget(self.page_label)
-        h.addSpacing(8)
+        # ページ n/N（番号を入れて Enter で移動）
+        self.page_prev_btn = tool_button("back", "前のページ")
+        self.page_prev_btn.clicked.connect(lambda: self.preview.previous_page())
+        self.page_edit = QLineEdit()
+        self.page_edit.setObjectName("PageEdit")
+        self.page_edit.setValidator(QIntValidator(1, 99999, self))
+        self.page_edit.setFixedWidth(48)
+        self.page_edit.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.page_edit.setAccessibleName("ページ番号（入力して Enter で移動）")
+        self.page_edit.setToolTip(f"ページ番号を入れて Enter（{_mod('J')}）")
+        self.page_edit.returnPressed.connect(self._go_to_typed_page)
+        self.page_total = label("", "caption")
+        self.page_next_btn = tool_button("forward", "次のページ")
+        self.page_next_btn.clicked.connect(lambda: self.preview.next_page())
+        # ズーム（倍率の一覧・幅に合わせる・ページ全体に合わせる）
         self.zoom_out_btn = tool_button("zoom_out", "縮小")
         self.zoom_out_btn.clicked.connect(lambda: self._zoom_by(1 / 1.2))
-        self.zoom_label = QLabel("100%")
-        self.zoom_label.setProperty("role", "caption")
-        self.zoom_label.setFixedWidth(44)
-        self.zoom_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.zoom_btn = QToolButton()
+        self.zoom_btn.setObjectName("ZoomButton")
+        self.zoom_btn.setText("100%")
+        self.zoom_btn.setToolTip("倍率を選ぶ")
+        self.zoom_btn.setAccessibleName("倍率")
+        self.zoom_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.zoom_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.zoom_btn.setFixedWidth(64)
+        self.zoom_menu = QMenu(self.zoom_btn)
+        self.zoom_menu.addAction("幅に合わせる", lambda: self.preview.fit_width())
+        self.zoom_menu.addAction("ページ全体に合わせる", lambda: self.preview.fit_page())
+        self.zoom_menu.addSeparator()
+        for z in ZOOM_PRESETS:
+            self.zoom_menu.addAction(f"{round(z * 100)}%", lambda z=z: self.preview.set_zoom(z))
+        self.zoom_btn.setMenu(self.zoom_menu)
         self.zoom_in_btn = tool_button("zoom_in", "拡大")
         self.zoom_in_btn.clicked.connect(lambda: self._zoom_by(1.2))
         self.fit_btn = tool_button("fit", "幅に合わせる")
         self.fit_btn.clicked.connect(self.preview.fit_width)
-        self._zoom_widgets = [self.page_label, self.zoom_out_btn, self.zoom_label, self.zoom_in_btn, self.fit_btn]
-        for w in self._zoom_widgets[1:]:
+        self.fit_page_btn = tool_button("fit_page", "ページ全体に合わせる")
+        self.fit_page_btn.clicked.connect(self.preview.fit_page)
+        self._zoom_widgets = [
+            self.page_prev_btn,
+            self.page_edit,
+            self.page_total,
+            self.page_next_btn,
+            self.zoom_out_btn,
+            self.zoom_btn,
+            self.zoom_in_btn,
+            self.fit_btn,
+            self.fit_page_btn,
+        ]
+        for i, w in enumerate(self._zoom_widgets):
+            if i == 4:
+                h.addSpacing(8)
             h.addWidget(w)
         return bar
 
@@ -404,8 +478,19 @@ class MainWindow(QMainWindow):
             act("拡大", lambda: self._zoom_by(1.2), QKeySequence.StandardKey.ZoomIn),
             act("縮小", lambda: self._zoom_by(1 / 1.2), QKeySequence.StandardKey.ZoomOut),
             act("幅に合わせる", self.preview.fit_width, f"{mod}+0"),
+            act("ページ全体に合わせる", self.preview.fit_page, f"{mod}+9"),
         ]
         view.addActions(self._zoom_actions)
+        view.addSeparator()
+        self._page_actions = [
+            act("次のページ", lambda: self.preview.next_page(), f"{mod}+Down"),
+            act("前のページ", lambda: self.preview.previous_page(), f"{mod}+Up"),
+            act("ページを指定…", self._focus_page_edit, f"{mod}+J"),
+            act("次の一致", lambda: self.preview.find_next(), f"{mod}+G"),
+            act("前の一致", lambda: self.preview.find_previous(), f"{mod}+Shift+G"),
+            act("ページの一覧と目次", self.nav_btn.toggle, f"{mod}+Alt+T"),
+        ]
+        view.addActions(self._page_actions)
         view.addSeparator()
         self.act_inspector = act("インスペクタ", self.inspector_btn.toggle, f"{mod}+Alt+I")
         view.addAction(self.act_inspector)
@@ -416,6 +501,7 @@ class MainWindow(QMainWindow):
         help_menu.addAction(act("問題を報告…", lambda: QDesktopServices.openUrl(QUrl(f"{REPO_URL}/issues/new/choose"))))
 
         self.view_mode.changed.connect(self.preview.set_mode)
+        self.view_mode.changed.connect(lambda _k: QTimer.singleShot(0, self._refresh_page_indicator))
 
     # ======================================================================
     # 状態の反映
@@ -438,6 +524,8 @@ class MainWindow(QMainWindow):
             w.setVisible(reader)
         self.primary_btn.setVisible(reader)
         self.inspector.setVisible(reader and self.inspector_btn.isChecked())
+        self.nav_pane.setVisible(reader and self.nav_btn.isChecked())
+        self.update_wrap.setVisible(not reader and self._update_info is not None)
 
         job = self._paper_job() if reader else None
         has_result = reader and self.translated_pdf is not None and not self.result_stale
@@ -451,13 +539,13 @@ class MainWindow(QMainWindow):
         self.act_translate.setEnabled((reader and job is None) or bool(selected))
         self.act_cancel.setEnabled(job is not None or (not reader and bool(self.search.text())))
         self.act_cancel_all.setEnabled(self._busy())
-        self.act_find.setEnabled(not reader)
+        self.act_find.setEnabled(True)  # ライブラリでは一覧の検索、読書画面では PDF 内の検索
         for a in (self.act_open_paper, self.act_favorite, self.act_edit, self.act_lookup, self.act_bibtex, self.act_remove):
             a.setEnabled(bool(selected))
         self.act_open_paper.setEnabled(len(selected) == 1)
         self.act_edit.setEnabled(len(selected) == 1)
         self.act_new_collection.setEnabled(not reader)
-        for a in (*self._view_actions, *self._zoom_actions, self.act_inspector):
+        for a in (*self._view_actions, *self._zoom_actions, *self._page_actions, self.act_inspector):
             a.setEnabled(reader)
         for w in self._zoom_widgets:
             w.setVisible(reader)
@@ -696,10 +784,23 @@ class MainWindow(QMainWindow):
         self.library_view.table.setFocus()
 
     def focus_search(self) -> None:
+        """ライブラリでは一覧の検索欄へ、読書画面では PDF 内の検索の帯を開く。"""
         if self.screen_mode == READER:
-            self.show_library()
+            self.show_find_bar()
+            return
         self.search.setFocus()
         self.search.selectAll()
+
+    def show_find_bar(self) -> None:
+        if self.screen_mode != READER or self.original_doc is None:
+            return
+        self.find_bar.open()
+        if self.find_bar.query():
+            self.preview.search(self.find_bar.query())
+
+    def _on_find_closed(self) -> None:
+        self.preview.clear_search()
+        self.preview.active_view().setFocus()
 
     def _refresh_detail(self) -> None:
         papers = self.library_view.selected_papers()
@@ -909,12 +1010,16 @@ class MainWindow(QMainWindow):
         self._release_document()
         self.paper, self.source_bytes, self.original_doc = paper, data, doc
         self.inspector.set_page_count(doc.page_count)
+        self.find_bar.close_bar()
         self.preview.original.set_document(doc)
+        self.nav_pane.set_document(doc, self.preview.original.outline())
         mode = "original"
         if self._load_saved_translation(paper):
             mode = "both"
+        self.preview.original.restore_view_state(self.settings.reading_state.get(paper.sha256))  # 前回の倍率と位置
         self.view_mode.set_current(mode)
         self.preview.set_mode(mode)
+        self._refresh_page_indicator()
         self.library.touch_opened(paper.id)
         self._show_screen(READER)
         self._start_estimate()
@@ -941,9 +1046,21 @@ class MainWindow(QMainWindow):
         self.result_stale = False
         self.preview.translated.set_document(doc)
 
+    def _remember_reading(self) -> None:
+        """今の論文の倍率と位置を覚える（次に開いたときに戻す）。"""
+        if self.paper is None or self.original_doc is None:
+            return
+        st = self.preview.active_view().view_state()
+        self.settings.remember_reading(self.paper.sha256, st["zoom"], st["fit"], st["page"], st["ratio"])
+
     def _release_document(self) -> None:
+        if self.paper is not None:
+            self._remember_reading()
+            self.settings.save()
+        self.find_bar.close_bar()
         self.preview.original.set_document(None)
         self.preview.translated.set_document(None)
+        self.nav_pane.set_document(None, [])
         self.original_doc = self.translated_doc = None
         self.paper = None
         self.source_bytes = None
@@ -1562,10 +1679,83 @@ class MainWindow(QMainWindow):
         view.set_zoom(view.zoom() * factor)
 
     def _on_zoom_changed(self, zoom: float) -> None:
-        self.zoom_label.setText(f"{round(zoom * 100)}%")
+        self.zoom_btn.setText(f"{round(zoom * 100)}%")
 
-    def _on_page_changed(self, index: int, total: int) -> None:
-        self.page_label.setText(f"{index + 1} / {total} ページ" if total else "")
+    def _refresh_page_indicator(self) -> None:
+        view = self.preview.active_view()
+        index, total = view.current_page(), view.page_count()
+        if not self.page_edit.hasFocus():  # 入力している間は書き換えない
+            self.page_edit.setText(str(index + 1) if total else "")
+        self.page_total.setText(f"/ {total}" if total else "")
+        self.page_edit.setEnabled(total > 0)
+        self.page_prev_btn.setEnabled(total > 0 and index > 0)
+        self.page_next_btn.setEnabled(total > 0 and index < total - 1)
+        self.nav_pane.set_current_page(index)
+
+    def _go_to_typed_page(self) -> None:
+        text = self.page_edit.text().strip()
+        if text.isdigit():
+            self.preview.go_to_page(int(text) - 1)
+        self.page_edit.clearFocus()
+        self.preview.active_view().setFocus()
+        self._refresh_page_indicator()
+
+    def _focus_page_edit(self) -> None:
+        if self.screen_mode == READER:
+            self.page_edit.setFocus()
+            self.page_edit.selectAll()
+
+    def _open_pdf_link(self, url: str) -> None:
+        """PDF の中の外へのリンク。http(s) と mailto だけ、確認してから開く。"""
+        if QUrl(url).scheme().lower() not in ("http", "https", "mailto"):
+            self._show_banner("warning", "このリンクは開けません", "安全のため、Web のページとメールのリンクだけを開きます。")
+            return
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setText("この PDF のリンクを、ブラウザで開きますか？")
+        box.setInformativeText(url if len(url) <= 200 else url[:200] + "…")
+        open_btn = box.addButton("開く", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("キャンセル", QMessageBox.ButtonRole.RejectRole)
+        plain_box(box).exec()
+        if box.clickedButton() is open_btn:
+            QDesktopServices.openUrl(QUrl(url))
+
+    # -- 更新の通知 ------------------------------------------------------------
+
+    def _startup_update_check(self) -> None:
+        """初回は確認するかを 1 回だけ尋ね、オンなら（前回から 24 時間以上たっていれば）新しい版を確かめる。"""
+        s = self.settings
+        if not self._check_updates:
+            return
+        if s.update_check == "ask":
+            s.update_check = "on" if ask_enable_update_check(self) else "off"
+            s.save()
+        if not update.should_check_on_startup(s.update_check, s.update_last_checked):
+            return
+        start_check(self._on_update_found, on_none=self._on_update_none, skipped=s.update_skipped_version)
+
+    def _record_update_check(self) -> None:
+        self.settings.update_last_checked = time.time()
+        self.settings.save()
+
+    def _on_update_none(self) -> None:
+        self._record_update_check()
+
+    def _on_update_found(self, info: update.UpdateInfo) -> None:
+        self._record_update_check()
+        self._update_info = info
+        self.update_banner.show_update(info)
+        self._update_state()
+
+    def _on_update_later(self) -> None:
+        self._update_info = None
+        self._update_state()
+
+    def _on_update_skip(self, version: str) -> None:
+        self.settings.update_skipped_version = version
+        self.settings.save()
+        self._update_info = None
+        self._update_state()
 
     def apply_appearance(self) -> None:
         theme.set_appearance(self.settings.appearance)
@@ -1576,11 +1766,18 @@ class MainWindow(QMainWindow):
         for b in (
             self.sidebar_btn,
             self.back_btn,
+            self.nav_btn,
             self.settings_btn,
             self.inspector_btn,
+            self.page_prev_btn,
+            self.page_next_btn,
             self.zoom_in_btn,
             self.zoom_out_btn,
             self.fit_btn,
+            self.fit_page_btn,
+            self.find_bar.prev_btn,
+            self.find_bar.next_btn,
+            self.find_bar.close_btn,
             self.banner._close,
         ):
             refresh_icon(b)
@@ -1631,9 +1828,13 @@ class MainWindow(QMainWindow):
             self.resize(1320, 860)
         self.inspector_btn.setChecked(self.settings.window.get("inspector", True))
         self.sidebar_btn.setChecked(self.settings.window.get("sidebar", True))
+        self.nav_btn.setChecked(self.settings.window.get("nav_pane", False))
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
+        if not self._startup_done:
+            self._startup_done = True
+            QTimer.singleShot(0, self._startup_update_check)
         if self.library_view.paper_count() == 0:
             self.library_view.empty_add_btn.setFocus()
         else:
@@ -1659,7 +1860,9 @@ class MainWindow(QMainWindow):
             "geometry": bytes(self.saveGeometry().toBase64()).decode(),
             "inspector": self.inspector_btn.isChecked(),
             "sidebar": self.sidebar_btn.isChecked(),
+            "nav_pane": self.nav_btn.isChecked(),
         }
+        self._remember_reading()
         self.settings.save()
         super().closeEvent(event)
 

@@ -22,6 +22,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QHBoxLayout,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QScrollArea,
@@ -142,6 +143,7 @@ class PdfView(QScrollArea):
         self._hits: list[tuple[int, pymupdf.Rect]] = []
         self._hit_index = -1
         self._query = ""
+        self._pending_pos: tuple[int, float] | None = None  # 表示の大きさが決まったら戻す位置（ページ, 0〜1）
         self._anchor: tuple[int, int] | None = None  # 選択の起点（ページ, 単語の番号）
         self._cursor_word: tuple[int, int] | None = None
         self._press_pos: QPointF | None = None
@@ -155,6 +157,7 @@ class PdfView(QScrollArea):
         self._layout.setAlignment(Qt.AlignmentFlag.AlignHCenter)
         self.setWidget(self._container)
         self.verticalScrollBar().valueChanged.connect(self._emit_page)
+        self.verticalScrollBar().sliderMoved.connect(lambda _v: setattr(self, "_pending_pos", None))
         self._refit = QTimer(self, singleShot=True, interval=60, timeout=self._apply_fit)
 
     # -- 文書 ------------------------------------------------------------
@@ -253,13 +256,35 @@ class PdfView(QScrollArea):
             height = self._doc[index].rect.height
             zoom = min(zoom, (self.viewport().height() - MARGIN * 2 - 8) / height)
         self._set_zoom(zoom, self._fit)
-        if self._fit == "page":
+        if self._pending_pos is not None:
+            self._apply_pending_pos()
+            self._pending_pos = None
+        elif self._fit == "page":
             self.scroll_to_page(self.current_page())
+
+    def refit(self) -> None:
+        """幅やページに合わせている間だけ、今の表示の大きさに合わせ直す（倍率を指定しているときは触らない）。"""
+        if self._fit:
+            self._apply_fit()
+
+    def _settle_pending_pos(self) -> None:
+        self._apply_pending_pos()
+        self._pending_pos = None
+
+    def _apply_pending_pos(self) -> None:
+        if self._pending_pos is None or not self._pages:
+            return
+        index, ratio = self._pending_pos
+        index = min(max(index, 0), len(self._pages) - 1)
+        w = self._pages[index]
+        self.verticalScrollBar().setValue(int(w.y() - MARGIN + min(max(ratio, 0.0), 1.0) * w.height()))
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         if self._fit:
             self._refit.start()
+        elif self._pending_pos is not None and self.isVisible():
+            QTimer.singleShot(0, self._settle_pending_pos)
 
     def wheelEvent(self, event) -> None:
         # ⌘（Windows・Linux では Ctrl）+ スクロールで、ポインタの位置を中心に拡大・縮小する
@@ -345,33 +370,43 @@ class PdfView(QScrollArea):
     # -- 見ていた場所の記憶 ---------------------------------------------------------
 
     def view_state(self) -> dict:
-        """倍率と位置（論文ごとに覚えて、次に開いたときに戻す）。"""
+        """倍率と位置（論文ごとに覚えて、次に開いたときに戻す）。settings.reading_state と同じ形。
+
+        fit は "none"（倍率を直接指定）/ "width" / "page"、ratio は今のページの中でどこまで読んだか（0〜1）。
+        """
         index = self.current_page()
-        fraction = 0.0
+        ratio = 0.0
         if self._pages:
             w = self._pages[index]
-            fraction = (self.verticalScrollBar().value() + MARGIN - w.y()) / max(w.height(), 1)
-        return {"zoom": round(self._zoom, 4), "fit": self._fit, "page": index, "offset": round(fraction, 4)}
+            ratio = (self.verticalScrollBar().value() + MARGIN - w.y()) / max(w.height(), 1)
+        return {
+            "zoom": round(self._zoom, 4),
+            "fit": self._fit or "none",
+            "page": index,
+            "ratio": round(min(max(ratio, 0.0), 1.0), 4),
+        }
 
     def restore_view_state(self, state: dict | None) -> None:
         if not isinstance(state, dict) or not self._pages:
             return
         try:
-            fit = state.get("fit", "")
-            fit = fit if fit in ("width", "page", "") else ""
+            fit = state.get("fit", "none")
+            fit = fit if fit in ("width", "page") else ""
             zoom = float(state.get("zoom", 1.0))
             index = int(state.get("page", 0))
-            offset = float(state.get("offset", 0.0))
+            ratio = float(state.get("ratio", 0.0))
         except (TypeError, ValueError):
             return
+        self._pending_pos = (index, ratio)
         if fit:
+            # 表示の大きさが決まってから（_apply_fit）、倍率を合わせて位置を戻す
             self._fit = fit
-            self._apply_fit()
+            self._refit.start()
         else:
             self._set_zoom(zoom, "")
-        index = min(max(index, 0), len(self._pages) - 1)
-        w = self._pages[index]
-        self.verticalScrollBar().setValue(int(w.y() - MARGIN + min(max(offset, 0.0), 1.0) * w.height()))
+            self._apply_pending_pos()
+            if self.isVisible():  # まだ表示されていなければ、表示の大きさが決まったとき（resizeEvent）にもう一度戻す
+                self._pending_pos = None
 
     # -- 描画 ------------------------------------------------------------
 
@@ -720,9 +755,9 @@ class PreviewPair(QWidget):
         self._left.setVisible(mode in ("original", "both"))
         self._right.setVisible(mode in ("translated", "both"))
         active = self.active_view()
-        QTimer.singleShot(0, active.fit_width)
+        QTimer.singleShot(0, active.refit)  # 幅やページに合わせているときだけ（倍率を指定していれば、そのまま）
         other = self.translated if active is self.original else self.original
-        QTimer.singleShot(0, lambda: other.isVisible() and other.fit_width())
+        QTimer.singleShot(0, lambda: other.isVisible() and other.refit())
         if self._query:  # 表示を切り替えたら、今見えている側で探し直す
             self.search(self._query)
 
@@ -884,12 +919,23 @@ class NavPane(QWidget):
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
+        from .widgets import SegmentedControl
+
         self.setObjectName("NavPane")
         self.setMinimumWidth(150)
         self.setMaximumWidth(220)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
+        self.tabs = SegmentedControl([("pages", "ページ"), ("outline", "目次")])
+        self.tabs.setAccessibleName("ページの一覧と目次")
+        header = QWidget()
+        header.setObjectName("PaneHeader")
+        hl = QHBoxLayout(header)
+        hl.setContentsMargins(8, 6, 8, 6)
+        hl.addWidget(self.tabs)
+        self._header = header
+        lay.addWidget(header)
         self.thumbnails = ThumbnailList()
         self.outline_tree = OutlineTree()
         self._stack = QStackedWidget()
@@ -898,28 +944,119 @@ class NavPane(QWidget):
         lay.addWidget(self._stack, 1)
         self.thumbnails.pageActivated.connect(self.pageActivated)
         self.outline_tree.pageActivated.connect(self.pageActivated)
+        self.tabs.changed.connect(lambda key: self.show_outline() if key == "outline" else self.show_thumbnails())
+        self.tabs.set_current("pages")
+        self._header.hide()
 
     def set_document(self, doc: pymupdf.Document | None, outline: list[tuple[int, str, int]]) -> None:
         self.thumbnails.set_document(doc)
         self.outline_tree.set_outline(outline)
-        if not outline:
-            self.show_thumbnails()
+        self._header.setVisible(bool(outline))  # しおりがない PDF では切り替えを出さない
+        self.show_thumbnails()
 
     def has_outline(self) -> bool:
         return self.outline_tree.topLevelItemCount() > 0
 
     def show_thumbnails(self) -> None:
         self._stack.setCurrentWidget(self.thumbnails)
+        self.tabs.set_current("pages")
 
     def show_outline(self) -> None:
         if self.has_outline():
             self._stack.setCurrentWidget(self.outline_tree)
+            self.tabs.set_current("outline")
 
     def showing_outline(self) -> bool:
         return self._stack.currentWidget() is self.outline_tree
 
     def set_current_page(self, index: int) -> None:
         self.thumbnails.set_current_page(index)
+
+
+class FindBar(QWidget):
+    """読書画面の「ページ内を検索」の帯。Enter で次、Shift+Enter で前、Esc で閉じる。"""
+
+    queryChanged = Signal(str)
+    nextRequested = Signal()
+    previousRequested = Signal()
+    closed = Signal()
+
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        from .widgets import label, tool_button
+
+        self.setObjectName("PaneHeader")
+        h = QHBoxLayout(self)
+        h.setContentsMargins(16, 6, 12, 6)
+        h.setSpacing(8)
+        self.edit = QLineEdit()
+        self.edit.setObjectName("Search")
+        self.edit.setPlaceholderText("ページ内を検索")
+        self.edit.setAccessibleName("PDF 内を検索")
+        self.edit.setClearButtonEnabled(True)
+        self.edit.setMaximumWidth(360)
+        h.addWidget(self.edit, 1)
+        self.count = label("", "caption")
+        self.count.setMinimumWidth(72)
+        self.count.setAccessibleName("検索の一致の数")
+        h.addWidget(self.count)
+        self.prev_btn = tool_button("chevron_up", "前の一致（Shift+Enter）")
+        self.next_btn = tool_button("chevron", "次の一致（Enter）")
+        self.close_btn = tool_button("close", "検索を閉じる（Esc）")
+        for b in (self.prev_btn, self.next_btn, self.close_btn):
+            h.addWidget(b)
+        h.addStretch(1)
+        self._sent = ""  # 最後に探した語
+        self._timer = QTimer(self, singleShot=True, interval=200, timeout=self._emit_query)
+        self.edit.textChanged.connect(lambda _t: self._timer.start())
+        self.edit.returnPressed.connect(self._on_return)
+        self.prev_btn.clicked.connect(self.previousRequested)
+        self.next_btn.clicked.connect(self.nextRequested)
+        self.close_btn.clicked.connect(self.close_bar)
+        self.hide()
+
+    def open(self) -> None:
+        self.show()
+        self.edit.setFocus()
+        self.edit.selectAll()
+
+    def close_bar(self) -> None:
+        self._timer.stop()
+        self._sent = ""
+        self.hide()
+        self.closed.emit()
+
+    def query(self) -> str:
+        return self.edit.text().strip()
+
+    def set_count(self, current: int, total: int) -> None:
+        if not self.query():
+            self.count.setText("")
+        elif total == 0:
+            self.count.setText("見つかりません")
+        else:
+            self.count.setText(f"{current} / {total} 件" + ("以上" if total >= MAX_HITS else ""))
+
+    def _emit_query(self) -> None:
+        self._timer.stop()
+        self._sent = self.edit.text()
+        self.queryChanged.emit(self._sent)
+
+    def _on_return(self) -> None:
+        if self.edit.text() != self._sent:  # 打った直後に Enter を押したときは、まず探す
+            self._emit_query()
+            return
+        if QGuiApplication.keyboardModifiers() & Qt.KeyboardModifier.ShiftModifier:
+            self.previousRequested.emit()
+        else:
+            self.nextRequested.emit()
+
+    def keyPressEvent(self, event) -> None:
+        if event.key() == Qt.Key.Key_Escape:
+            self.close_bar()
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
 
 def _pane(title: str, view: PdfView) -> QWidget:

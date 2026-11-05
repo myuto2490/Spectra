@@ -136,6 +136,10 @@ Intel 搭載の Mac では、[ソースから実行](#開発)してください�
 
 キーは macOS キーチェーン / Windows 資格情報マネージャー / Linux のキーリングに保存され、Gemini API への通信以外には使われません。
 
+### 複数のキーを使う
+
+⚙ →「翻訳エンジン」のキーの一覧で、キーを追加できます（名前を付け、↑↓で使う順番を変えられます）。「上限に達したら次のキーに切り替える」をオンにしておくと、1 日の無料枠の上限に達したときに、一覧の次のキーで翻訳を続けます（翻訳中に、切り替えたことをお知らせします）。すべてのキーが上限に達したときは、翌日（太平洋時間の 0 時）まで待つか、別のモデルに切り替わります。キーの中身は設定ファイルには書かず、OS の資格情報ストアにだけ保存します。
+
 ### モデル
 
 | モデル | 特長 |
@@ -242,6 +246,8 @@ Elsevier・A&A・AAS・AGU/Wiley・Springer・IEEE などの論文 20 本で、�
 pip install git+https://github.com/myuto2490/Spectra.git
 
 spectra key set gemini                      # API キーを保存（入力は表示されません）
+spectra key set gemini --label 研究室       # 名前を付けて、2 本目以降のキーを追加
+spectra key status                          # 登録したキーと、今日の上限の状況
 spectra estimate paper.pdf                  # 翻訳する文字数の見積もり（API は使いません）
 spectra translate paper.pdf                 # paper_ja.pdf を作成
 spectra translate paper.pdf --mode side-by-side --pages 1-8 --model gemini-3.6-flash

@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
 
 from ..core.options import OutputMode
 from . import theme
-from .widgets import button, label
+from .widgets import Switch, button, label
 
 FORMATS = [
     (OutputMode.TRANSLATED, "翻訳のみ", "元と同じページ構成の日本語版", "_ja"),
@@ -140,7 +140,10 @@ class FormatCard(QAbstractButton):
 class ExportDialog(QDialog):
     exportRequested = Signal(object)  # OutputMode
 
-    def __init__(self, current: OutputMode, pages: int, parent: QWidget | None = None):
+    def __init__(
+        self, current: OutputMode, pages: int, parent: QWidget | None = None, annotation_count: int | None = None
+    ):
+        """annotation_count: この論文の注釈の数（わかっていれば）。0 のときは「注釈を含める」を出さない。"""
         super().__init__(parent)
         self.setWindowTitle("PDF出力")
         self.pages = pages
@@ -165,6 +168,24 @@ class ExportDialog(QDialog):
         lay.addSpacing(12)
         self.summary = label("", "caption")
         lay.addWidget(self.summary)
+        # 注釈（マーカー・コメントなど）。標準の PDF 注釈で書くので、ほかの PDF ビューアでも表示・編集できる
+        self.annotations_row = QWidget()
+        ar = QHBoxLayout(self.annotations_row)
+        ar.setContentsMargins(0, 8, 0, 0)
+        ar.setSpacing(12)
+        texts = QVBoxLayout()
+        texts.setSpacing(1)
+        texts.addWidget(label("注釈を含める"))
+        count = f"（{annotation_count} 件）" if annotation_count else ""
+        self._annotations_hint = f"マーカー・下線・コメント・付箋を PDF の注釈として書き込みます{count}。"
+        self.annotations_hint = label(self._annotations_hint, "caption", wrap=True)
+        texts.addWidget(self.annotations_hint)
+        ar.addLayout(texts, 1)
+        self.annotations_switch = Switch(True)
+        self.annotations_switch.setAccessibleName("注釈を含める")
+        ar.addWidget(self.annotations_switch, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.annotations_row.setVisible(annotation_count != 0)
+        lay.addWidget(self.annotations_row)
         lay.addSpacing(10)
         buttons = QHBoxLayout()
         buttons.addStretch(1)
@@ -183,10 +204,17 @@ class ExportDialog(QDialog):
         b = self.group.checkedButton()
         return b.mode if isinstance(b, FormatCard) else OutputMode.TRANSLATED
 
+    def include_annotations(self) -> bool:
+        """注釈を PDF に含めるか（注釈がない論文では常に False）。"""
+        return not self.annotations_row.isHidden() and self.annotations_switch.isChecked()
+
     def _refresh(self) -> None:
         mode = self.selected()
         n = output_pages(mode, self.pages)
         extra = "（横長のページ）" if mode == OutputMode.SIDE_BY_SIDE else ""
         self.summary.setText(f"出力：{n} ページ{extra}")
+        if hasattr(self, "annotations_hint"):
+            note = "翻訳のみでは、注釈のある段落の位置を左の余白の帯で示します。" if mode == OutputMode.TRANSLATED else ""
+            self.annotations_hint.setText(self._annotations_hint + ("\n" + note if note else ""))
         for c in self.cards.values():
             c.update()

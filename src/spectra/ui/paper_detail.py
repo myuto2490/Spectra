@@ -1,4 +1,4 @@
-"""ライブラリの詳細パネル（「論文の詳細」「AI翻訳の詳細」「ノート」のタブ）と、書誌情報の編集ダイアログ。"""
+"""ライブラリの詳細パネル（「論文の詳細」「AI翻訳の詳細」「ノート」「注釈」のタブ）と、書誌情報の編集ダイアログ。"""
 
 from __future__ import annotations
 
@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..library import Author, Metadata, Paper
+from .annotation_list import AnnotationList
 from .library_model import days_left, format_date, local_short, local_state, translation_status
 from .note_editor import NoteEditor
 from .widgets import FormGroup, button, label, link_button, plain_tooltip, set_prop
@@ -76,8 +77,8 @@ META_SOURCES = {
 
 FORMALITY_NAMES = {"default": "である調", "prefer_less": "である調", "prefer_more": "です・ます調"}
 
-PAPER_TAB, TRANSLATION_TAB, NOTE_TAB, OTHER_PAGE, TRASH_PAGE = 0, 1, 2, 3, 4
-TAB_NAMES = ("論文の詳細", "AI翻訳の詳細", "ノート")
+PAPER_TAB, TRANSLATION_TAB, NOTE_TAB, ANNOTATION_TAB, OTHER_PAGE, TRASH_PAGE = 0, 1, 2, 3, 4, 5
+TAB_NAMES = ("論文の詳細", "AI翻訳の詳細", "ノート", "注釈")
 
 
 class _InfoGrid(QWidget):
@@ -159,6 +160,7 @@ class PaperDetail(QWidget):
         self._paper: Paper | None = None
         self._job: str | None = None
         self._reader_mode = False
+        self.library = library
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
@@ -194,6 +196,8 @@ class PaperDetail(QWidget):
         self._translation_extra: QWidget | None = None
         self.note_editor = NoteEditor(library)
         self.pages.addWidget(self.note_editor)
+        self.annotation_list = AnnotationList()
+        self.pages.addWidget(self.annotation_list)
         self.pages.addWidget(self._build_other_page())
         self.pages.addWidget(self._build_trash_page())
         self.show_papers([])
@@ -417,6 +421,20 @@ class PaperDetail(QWidget):
         if changed or self.sender() is self._tab_group:  # 押されたとき（すでに選ばれていても）か、切り替わったとき
             self.tabChanged.emit(index)
 
+    def _show_annotations(self, paper: Paper | None) -> None:
+        load = getattr(self.library, "annotations", None)
+        items = []
+        if paper is not None and load is not None:
+            try:
+                items = load(paper.id)
+            except Exception:  # noqa: BLE001 - 一覧が読めなくても、詳細パネルは使えるようにする
+                items = []
+        self.annotation_list.set_annotations(items)
+
+    def refresh_annotations(self) -> None:
+        """注釈が変わったとき（LibraryEvent の "annotations"）に、一覧を読み直す。"""
+        self._show_annotations(self._paper if self._paper is not None and self._paper.trashed_at is None else None)
+
     def set_reader_mode(self, on: bool) -> None:
         """読書画面の右のパネルとして使うとき True。すでに読んでいる論文なので「読む」のボタンは出さない。"""
         self._reader_mode = on
@@ -459,6 +477,7 @@ class PaperDetail(QWidget):
         self._sync_available = sync_available
         trashed = bool(papers) and all(p.trashed_at is not None for p in papers)
         self.note_editor.set_paper(self._paper if not trashed else None)
+        self._show_annotations(self._paper if not trashed else None)
         self.tabs.setVisible(self._paper is not None and not trashed)
         if self._paper is not None and trashed:
             self.pages.setCurrentIndex(TRASH_PAGE)

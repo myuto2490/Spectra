@@ -216,3 +216,7 @@ def test_reading_state_is_validated_and_bounded():
     assert f"{0:064x}" not in s.reading_state  # 古いものから捨てる
     s.save()
     assert Settings.load().reading_state == s.reading_state
+
+
+def test_annotations_tab_is_remembered():
+    assert Settings.from_dict({"side_panel_tab": "annotations"}).side_panel_tab == "annotations"

@@ -23,7 +23,7 @@ MAX_KEYS = 20
 MAX_KEY_LABEL = 40
 _KEY_ID = re.compile(r"^(default|[0-9a-f]{32})$")
 UPDATE_CHECK = ("ask", "on", "off")
-SIDE_PANEL_TABS = ("details", "translation", "note")
+SIDE_PANEL_TABS = ("details", "translation", "note", "annotations")
 FIT_MODES = ("none", "width", "page")
 MAX_READING_STATES = 200
 
@@ -54,7 +54,7 @@ class Settings:
     update_check: str = "ask"  # 新しいバージョンを GitHub に確認するか（ask: まだ尋ねていない / on / off）
     update_last_checked: float = 0.0  # 最後に確認した時刻（秒）
     update_skipped_version: str = ""  # 「この版を通知しない」を選んだ版
-    side_panel_tab: str = "details"  # 右のパネルで選んでいたタブ（details / translation / note）
+    side_panel_tab: str = "details"  # 右のパネルで選んでいたタブ（details / translation / note / annotations）
     # 論文ごとの読書の位置（sha256 → {"zoom": 倍率, "fit": none/width/page, "page": 0 始まり, "ratio": 0〜1}）。新しい順に 200 件まで
     reading_state: dict = field(default_factory=dict)
     last_open_dir: str = ""

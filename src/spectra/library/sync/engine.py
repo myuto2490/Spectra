@@ -30,6 +30,7 @@ from ...translate.errors import CancelledError
 from ..errors import HashMismatch, LocalDiskFull, PaperNotFound, RemoteMissing, SyncUnavailable
 from ..models import Author, Metadata, Paper, Translation
 from ..store import Library
+from . import annotations as AN
 from . import files as F
 from . import notes as N
 from .device import DeviceInfo, clean_device_name, default_name
@@ -46,14 +47,14 @@ FORMAT = 1  # 同期フォルダの形式の版（library.sqlite3 の版とは�
 # FAT は 2 秒）、同じ大きさで書き直されたファイルが (サイズ, mtime) では変わっていないように見えるため
 RECENT_SECONDS = 2.0
 
-KINDS = ("added", "metadata", "translation", "removed", "collections", "file", "note")
+KINDS = ("added", "metadata", "translation", "removed", "collections", "file", "note", "annotations")
 
 
 @dataclass(frozen=True)
 class RemoteChange:
     """他の端末の変更を反映した結果（UI に知らせる）。
 
-    kind: added / metadata / translation / removed / collections / file / note
+    kind: added / metadata / translation / removed / collections / file / note / annotations
     removed のときの paper_id は削除する前の id、fields は metadata のとき変わった項目。
     """
 
@@ -283,8 +284,8 @@ class SyncEngine:
             with self.state.tx() as db:
                 db.executemany("DELETE FROM remote_files WHERE path = ?", [(p,) for p in gone])
 
-        remote: dict = {"papers": {}, "translations": {}, "collections": {}, "devices": []}
-        areas = {"paper": "papers", "translation": "translations", "collection": "collections"}
+        remote: dict = {"papers": {}, "translations": {}, "collections": {}, "annotations": {}, "devices": []}
+        areas = {"paper": "papers", "translation": "translations", "collection": "collections", "annotations": "annotations"}
         for r in self.state.query("SELECT data FROM remote_files WHERE data IS NOT NULL"):
             data = loads(r["data"])
             if not isinstance(data, dict):
@@ -320,6 +321,8 @@ class SyncEngine:
                 data, kind = F.parse_paper_state(obj, k), "paper"
             elif obj.get("kind") == "translation":
                 data, kind = F.parse_translation(obj, k), "translation"
+            elif obj.get("kind") == "annotations":
+                data, kind = AN.parse_file(obj, k), "annotations"
             else:
                 return None
         elif area == "collections":
@@ -346,6 +349,8 @@ class SyncEngine:
             if data.get(key):
                 stamps.append(data[key][1])
         stamps += [e[1] for e in data.get("collections", {}).values()]
+        for reg in data.get("items", {}).values():
+            stamps += AN.stamps(reg)
         if data.get("hlc"):
             stamps.append(data["hlc"])
         for s in stamps:
@@ -518,6 +523,37 @@ class SyncEngine:
                     "UPDATE papers SET baseline = ?, own = ?, exported = 0 WHERE sha = ?",
                     (dumps({"gone": True}), dumps(own), sha),
                 )
+        self._scan_annotations(papers)
+
+    def _scan_annotations(self, papers: list[Paper]) -> None:
+        """ライブラリの注釈と基準を比べ、変わった注釈の記録に HLC を付ける。消えた注釈は削除の記録にする。"""
+        rows = {r["id"]: r for r in self.state.query("SELECT id, sha, baseline, own FROM annotations")}
+        shas = {p.sha256 for p in papers}
+        present: set[str] = set()
+        with self.state.tx() as db:
+            for p in papers:
+                for a in self.library.annotations(p.id):
+                    present.add(a.id)
+                    row = rows.get(a.id)
+                    base = loads(row["baseline"]) if row else None
+                    now = AN.body(a)
+                    if base == now:
+                        continue
+                    own = loads(row["own"], {}) if row else {}
+                    reg = AN.local_register(a, base, own, str(self.clock.tick(a.updated_at)), self.device.id)
+                    db.execute(
+                        "INSERT OR REPLACE INTO annotations (id, sha, baseline, own, exported) VALUES (?, ?, ?, ?, 0)",
+                        (a.id, p.sha256, dumps(now), dumps(reg)),
+                    )
+            for annotation_id, row in rows.items():
+                # 論文ごと完全に消えたときは、注釈の削除の記録は書かない（ほかの端末で論文が戻ったときに注釈も残す）
+                base = loads(row["baseline"])
+                if annotation_id in present or row["sha"] not in shas or base is None:
+                    continue
+                reg = AN.deleted_register(loads(row["own"], {}), base, str(self.clock.tick()))
+                db.execute(
+                    "UPDATE annotations SET baseline = NULL, own = ?, exported = 0 WHERE id = ?", (dumps(reg), annotation_id)
+                )
 
     def _note_version(self, p: Paper, own: dict) -> dict:
         """この端末で書いたノートの版。もとにした版は、手元のライブラリにある版（自分の記録の note）。"""
@@ -663,6 +699,36 @@ class SyncEngine:
                 report.exported += 1
             with self.state.tx() as db:
                 db.execute("UPDATE collections SET exported = 1 WHERE uid = ?", (r["uid"],))
+        self._export_annotations(names, report)
+
+    def _export_annotations(self, names: set[str], report: SyncReport) -> None:
+        """注釈の記録が変わった論文ごとに、自分の注釈のファイルを書き直す。古い削除の記録は外す。"""
+        now = time.time()
+        for r in self.state.query("SELECT DISTINCT sha FROM annotations WHERE exported = 0"):
+            sha = r["sha"]
+            items, expired = {}, []
+            for row in self.state.query("SELECT id, own FROM annotations WHERE sha = ?", (sha,)):
+                reg = loads(row["own"], {})
+                if not AN.complete(reg):
+                    continue
+                if AN.expired(reg, now):
+                    expired.append(row["id"])
+                else:
+                    items[row["id"]] = reg
+            path = AN.path(sha, self.device.id)
+            try:
+                if items:
+                    body = {"kind": "annotations", "v": F.FILE_VERSION, "device": self.device.id, "sha": sha, "items": items}
+                    self.storage.write_atomic(path, F.encode(body))
+                    report.exported += 1
+                elif path in names:
+                    self.storage.delete(path)
+            except LocalDiskFull:
+                report.disk_full += 1
+                continue
+            with self.state.tx() as db:
+                db.execute("UPDATE annotations SET exported = 1 WHERE sha = ?", (sha,))
+                db.executemany("DELETE FROM annotations WHERE id = ? AND baseline IS NULL", [(x,) for x in expired])
 
     # -- マージと反映 --------------------------------------------------------------
 
@@ -685,7 +751,53 @@ class SyncEngine:
                 if "full" not in str(e).lower():
                     raise
                 report.disk_full += 1  # 「database or disk is full」: 次の同期で取り込み直す
+        changes += self._merge_annotations(remote)
         changes += self._merge_translations(remote)
+        return changes
+
+    def _merge_annotations(self, remote: dict) -> list[RemoteChange]:
+        changes: list[RemoteChange] = []
+        for sha, files in sorted(remote["annotations"].items()):
+            paper = self.library.find_by_sha(sha)
+            if paper is None:
+                continue  # 論文が届いてから反映する（次の同期でもう一度まとめる）
+            rows = {r["id"]: r for r in self.state.query("SELECT id, baseline, own FROM annotations WHERE sha = ?", (sha,))}
+            ids = sorted({i for f in files for i in f["items"]})
+            changed = False
+            for annotation_id in ids:
+                row = rows.get(annotation_id)
+                own = loads(row["own"], {}) if row else {}
+                target, comment, merged = AN.merge([own if AN.complete(own) else {}] + [f["items"].get(annotation_id) for f in files])
+                if comment is not None and comment != own.get("comment"):
+                    # 先に記録する（反映の途中で落ちても、手元のコメントを、まとめた版から書いたものとして扱う）
+                    own = {**own, "comment": comment}
+                    export = merged and AN.complete(own)
+                    with self.state.tx() as db:
+                        db.execute(
+                            "INSERT INTO annotations (id, sha, baseline, own, exported) VALUES (?, ?, ?, ?, ?)"
+                            " ON CONFLICT (id) DO UPDATE SET own = excluded.own"
+                            + (", exported = 0" if export else ""),
+                            (annotation_id, sha, row["baseline"] if row else None, dumps(own), int(not export)),
+                        )
+                    row = row or {"baseline": None}
+                current = self.library.get_annotation(annotation_id)
+                now = AN.body(current) if current is not None else None
+                if target != now or (target is not None and merged and not current.comment_merged):
+                    with self.library.quiet():
+                        if target is None:
+                            self.library.sync_delete_annotation(annotation_id)
+                        else:
+                            keep = current is not None and current.comment == target["comment"] and current.comment_merged
+                            self.library.sync_put_annotation(AN.to_annotation(annotation_id, paper.id, target, merged or keep))
+                    changed = True
+                with self.state.tx() as db:
+                    db.execute(
+                        "INSERT INTO annotations (id, sha, baseline, own, exported) VALUES (?, ?, ?, '{}', 1)"
+                        " ON CONFLICT (id) DO UPDATE SET baseline = excluded.baseline",
+                        (annotation_id, sha, dumps(target) if target else None),
+                    )
+            if changed:
+                changes.append(RemoteChange("annotations", sha, paper.id))
         return changes
 
     def _merge_paper(self, sha: str, own: dict, entries: list[dict], own_members: dict, report: SyncReport) -> list[RemoteChange]:

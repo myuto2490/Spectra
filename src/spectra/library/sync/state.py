@@ -61,6 +61,18 @@ MIGRATIONS: list[str] = [
 ]
 
 
+# 注釈（v0.4）。表を足すだけで版は上げない（上げると、古い版で同期の記録を開けなくなる）
+ANNOTATIONS_TABLE = """
+CREATE TABLE IF NOT EXISTS annotations (
+    id TEXT PRIMARY KEY,
+    sha TEXT NOT NULL,
+    baseline TEXT,                 -- 最後に書き出した・反映した時点のライブラリの値（null ならライブラリにない）
+    own TEXT NOT NULL,             -- この端末の記録（sync/annotations.py の形。空なら書き出すものなし）
+    exported INTEGER NOT NULL DEFAULT 0
+)
+"""
+
+
 class SyncState:
     def __init__(self, path: Path):
         self.path = Path(path)
@@ -82,6 +94,8 @@ class SyncState:
                     if self._db.in_transaction:
                         self._db.execute("ROLLBACK")
                     raise
+            self._db.execute(ANNOTATIONS_TABLE)
+            self._db.execute("CREATE INDEX IF NOT EXISTS annotations_sha ON annotations (sha)")
 
     @contextmanager
     def tx(self) -> Iterator[sqlite3.Connection]:

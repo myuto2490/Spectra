@@ -1097,3 +1097,28 @@ def test_missing_key_asks_to_set_one(window, paper_path, monkeypatch):
     pump(app, 0.2)
     w.start_translation()
     assert asked and "API キー" in asked[0] and not w._busy()  # キーがなければ案内を出し、翻訳は始めない
+
+
+def test_find_button_in_the_reader_toolbar(window, paper_path):
+    app, w = window
+    # ライブラリ画面には出さない（一覧の検索があるため）
+    assert not w.find_btn.isVisibleTo(w)
+    assert w.open_file(paper_path)
+    pump(app, 0.3)
+    assert w.find_btn.isVisible() and "PDF 内を検索" in w.find_btn.toolTip()
+    assert w.find_btn.toolTip().endswith("F）") and w.find_btn.accessibleName() == w.find_btn.toolTip()
+    assert w.find_bar.isHidden() and not w.find_btn.isChecked()
+    w.find_btn.click()  # 押すと検索の帯が開き、検索欄に入る
+    assert not w.find_bar.isHidden() and w.find_btn.isChecked()
+    w.find_bar.edit.setText("neural")
+    w.find_bar.edit.returnPressed.emit()
+    pump(app, 0.2)
+    assert w.preview.original.hit_count() >= 1
+    w.find_btn.click()  # もう一度押すと閉じて、一致の色も消える
+    assert w.find_bar.isHidden() and not w.find_btn.isChecked() and w.preview.original.hit_count() == 0
+    w.focus_search()  # ⌘F で開いたときも、ボタンの状態が合う
+    assert w.find_btn.isChecked()
+    w.find_bar.close_bar()  # 帯の ✕・Esc で閉じたときも
+    assert not w.find_btn.isChecked()
+    w.show_library()
+    assert not w.find_btn.isVisibleTo(w)

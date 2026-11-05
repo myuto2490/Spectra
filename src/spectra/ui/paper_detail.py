@@ -453,7 +453,8 @@ class PaperDetail(QWidget):
         new = widget or self._translation_page
         self._translation_extra = widget
         self.pages.insertWidget(TRANSLATION_TAB, new)
-        new.show()
+        # 表示するのは、いま見えているタブのときだけ（show() すると、ほかのタブの上に重なって描かれる）
+        new.setVisible(self.pages.currentWidget() is new)
         if shown:
             self.pages.setCurrentIndex(TRANSLATION_TAB)
 

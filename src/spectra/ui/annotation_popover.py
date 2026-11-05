@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import logging
 
-from PySide6.QtCore import QPoint, QPointF, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFontMetrics, QPainter, QTextLayout, QTextOption
+from PySide6.QtCore import QEvent, QPoint, QPointF, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QFontMetrics, QGuiApplication, QPainter, QTextLayout, QTextOption
 from PySide6.QtWidgets import (
     QAbstractButton,
     QButtonGroup,
@@ -150,6 +150,23 @@ class ColorSwatch(QAbstractButton):
             p.drawEllipse(self.rect().adjusted(1, 1, -1, -1))
 
 
+class CommentEdit(QPlainTextEdit):
+    """コメントの入力欄。日本語入力（IME）で変換中の文字があるかを覚える。"""
+
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_InputMethodEnabled, True)
+        self.composing = False
+
+    def inputMethodEvent(self, event) -> None:  # noqa: N802 - Qt の名前
+        super().inputMethodEvent(event)
+        self.composing = bool(event.preeditString())
+
+    def focusOutEvent(self, event) -> None:  # noqa: N802
+        self.composing = False
+        super().focusOutEvent(event)
+
+
 class AnnotationPopover(QFrame):
     """印をクリックしたときの小さな吹き出し。色・種類の切り替え、コメントの編集（入力をやめて 1 秒後に保存）、削除。"""
 
@@ -157,9 +174,12 @@ class AnnotationPopover(QFrame):
     deleted = Signal(object)  # 削除した注釈（「元に戻す」に使う）
 
     def __init__(self, annotation, library=None, parent: QWidget | None = None):
-        super().__init__(parent, Qt.WindowType.Popup)
+        # Qt.Popup にしない: Popup は、日本語入力（IME）の変換候補の窓が開くと閉じたり、入力が届かなかったりする
+        # （とくに macOS）。キーボードの入力を受け取れる通常の小窓にして、外のクリックと Esc は自分で閉じる
+        super().__init__(parent, Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint)
         self.setObjectName("AnnotationPopover")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)  # 角を丸く描く（窓の四角が見えないように）
         self.setFixedWidth(300)
         t = theme.current()
         self.setStyleSheet(
@@ -216,7 +236,7 @@ class AnnotationPopover(QFrame):
 
         self.merged = label("ほかのパソコンでの編集と連結しました。内容を確かめて整理してください。", "caption", tone="warning", wrap=True)
         lay.addWidget(self.merged)
-        self.comment = QPlainTextEdit()
+        self.comment = CommentEdit()
         self.comment.setPlaceholderText("コメント")
         self.comment.setAccessibleName("コメント")
         self.comment.setFixedHeight(96)
@@ -255,7 +275,33 @@ class AnnotationPopover(QFrame):
         self.adjustSize()
         self.move(global_pos)
         self.show()
+        self.raise_()
+        self.activateWindow()
         self.comment.setFocus()
+
+    # -- 閉じ方（Popup ではないので、外のクリックと Esc は自分で扱う） ---------------------
+
+    @property
+    def composing(self) -> bool:
+        """日本語入力の変換中か（変換中は、外のクリックや Esc でも閉じない）。"""
+        return self.comment.composing
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        QGuiApplication.instance().installEventFilter(self)
+        super().showEvent(event)
+
+    def eventFilter(self, obj, event) -> bool:  # noqa: N802
+        if event.type() == QEvent.Type.MouseButtonPress and self.isVisible() and not self.composing:
+            gp = event.globalPosition().toPoint() if hasattr(event, "globalPosition") else None
+            if gp is not None and not self.frameGeometry().contains(gp):
+                self.close()  # 外のクリック。クリックそのものは、下の欄にそのまま届ける
+        return False
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802
+        if event.key() == Qt.Key.Key_Escape and not self.composing:
+            self.close()
+            return
+        super().keyPressEvent(event)
 
     # -- 変更 ------------------------------------------------------------
 
@@ -335,6 +381,7 @@ class AnnotationPopover(QFrame):
         self.close()
 
     def hideEvent(self, event):  # noqa: N802 - Qt の名前
+        QGuiApplication.instance().removeEventFilter(self)
         self.flush()
         super().hideEvent(event)
 

@@ -6,7 +6,7 @@ import pymupdf
 import pytest
 from pdf_factory import make_paper
 
-from spectra.core.annotate import BAR_X, COLORS, apply_annotations
+from spectra.core.annotate import BAR_X, COLORS, MAC_OPACITY, apply_annotations
 from spectra.core.export import build_output, finalize
 from spectra.core.options import OutputMode
 from spectra.library.models import Annotation
@@ -69,6 +69,8 @@ def test_translated_only_draws_a_margin_bar_with_the_quote(docs):
     bar = got[0]
     assert abs(bar.rect.x0 - BAR_X) < 2 and abs(bar.rect.y0 - 100) < 2 and abs(bar.rect.y1 - 126) < 2
     assert bar.info["content"] == "「the text」\n大事"
+    # macOS のプレビューで色が出るよう、帯と付箋には不透明度を書く（マーカー・下線は不要）
+    assert all(abs(a.opacity - MAC_OPACITY) < 0.005 for a in got)
 
 
 def test_page_range_and_out_of_range_annotations(docs):

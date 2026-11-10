@@ -7,6 +7,8 @@
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-11-10
+
 ### 追加
 
 - API キーを設定していないときの案内を改善：翻訳を押したときのダイアログと、設定の「API キー」に、キーの取り方（無料）の 3 手順を表示します。ダイアログから設定を開いてキーを保存して閉じると、もう一度押さなくても翻訳が始まります。空のライブラリの画面にも、キーが必要なことを表示します
@@ -179,7 +181,7 @@
 **コマンドラインツール**
 - `spectra translate` / `spectra estimate` / `spectra key`
 
-[Unreleased]: https://github.com/myuto2490/Spectra/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/myuto2490/Spectra/compare/v0.4.1...HEAD
 [0.1.0]: https://github.com/myuto2490/Spectra/releases/tag/v0.1.0
 [0.1.1]: https://github.com/myuto2490/Spectra/compare/v0.1.0...v0.1.1
 [0.1.2]: https://github.com/myuto2490/Spectra/compare/v0.1.1...v0.1.2
@@ -189,3 +191,4 @@
 [0.2.0]: https://github.com/myuto2490/Spectra/compare/v0.1.5...v0.2.0
 [0.3.0]: https://github.com/myuto2490/Spectra/compare/v0.2.0...v0.3.0
 [0.4.0]: https://github.com/myuto2490/Spectra/compare/v0.3.0...v0.4.0
+[0.4.1]: https://github.com/myuto2490/Spectra/compare/v0.4.0...v0.4.1

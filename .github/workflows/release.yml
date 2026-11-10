@@ -35,7 +35,8 @@ jobs:
       matrix:
         include:
           # Intel Mac 向けの実行環境（macos-13）は GitHub で提供終了のため、Apple シリコン向けのみ
-          - { os: macos-14, name: macOS-arm64 }
+          # macos-14 は GitHub で提供終了（構成が未対応になった）ため、Apple シリコンの macos-15 を使う
+          - { os: macos-15, name: macOS-arm64 }
           - { os: windows-latest, name: Windows-x64 }
           - { os: ubuntu-22.04, name: Linux-x86_64 }
     env:

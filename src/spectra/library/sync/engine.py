@@ -1081,20 +1081,32 @@ class SyncEngine:
         return dest
 
     def evict(self, paper_id: int) -> None:
-        """このパソコンのコピーを削除する（クラウドには残す）。同期先にあるファイルだけを消す（唯一のコピーは消さない）。"""
+        """このパソコンのコピーを削除する（クラウドには残す）。同期先にあるファイルだけを消す（唯一のコピーは消さない）。
+
+        同期先のファイルは、あるかどうかだけでなく中身（sha256）も確かめる。途中までしか届いていない・壊れたファイルを
+        当てにして手元を消すと、正しいコピーがどこにも残らないため。
+        """
         paper = self.library.get(paper_id)
         if paper is None:
             raise PaperNotFound(f"論文が見つかりません（id={paper_id}）")
         if not self.storage.available():
             raise SyncUnavailable()
         if paper.has_original:
-            if not self.storage.exists(F.original_path(paper.sha256)):
+            src = F.original_path(paper.sha256)
+            if not self.storage.exists(src):
                 raise RemoteMissing("同期先に原文がまだないため、このパソコンのコピーを削除できません。")
+            if self.storage.sha256(src) != paper.sha256:
+                raise HashMismatch(
+                    "同期先の原文が、このパソコンのものと一致しません。",
+                    hint="同期先のファイルがまだ届いている途中か、壊れている可能性があります。このパソコンのコピーは残しました。",
+                )
             paper.pdf_path.unlink(missing_ok=True)
         if paper.has_translation_file:
             applied = self._applied_translation(paper.sha256)
-            if applied.get("device") and self.storage.exists(F.translation_pdf_path(paper.sha256, applied["device"])):
-                paper.translated_path.unlink(missing_ok=True)
+            if applied.get("device") and applied.get("pdf_sha"):
+                src = F.translation_pdf_path(paper.sha256, applied["device"])
+                if self.storage.exists(src) and self.storage.sha256(src) == applied["pdf_sha"]:
+                    paper.translated_path.unlink(missing_ok=True)
         self._notify([RemoteChange("file", paper.sha256, paper.id)])
 
     def close(self) -> None:

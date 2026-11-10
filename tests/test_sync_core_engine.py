@@ -373,7 +373,7 @@ def _enospc_on_write(monkeypatch):
     real_open = builtins.open
 
     def fake_open(file, mode="r", *args, **kw):
-        if "w" in mode:
+        if "w" in mode or "x" in mode:  # 同期フォルダへの書き込みは、一時ファイルを新しく作る（"xb"）
             raise OSError(errno.ENOSPC, "No space left on device")
         return real_open(file, mode, *args, **kw)
 

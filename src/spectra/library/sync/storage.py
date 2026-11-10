@@ -54,6 +54,8 @@ class SyncStorage(Protocol):
 
     def exists(self, path: str) -> bool: ...
 
+    def sha256(self, path: str) -> str: ...
+
     def delete(self, path: str) -> None: ...
 
     def request_download(self, path: str) -> bool: ...
@@ -164,6 +166,21 @@ class FolderStorage:
         self._require_root()
         return self._resolve(path).is_file()
 
+    def sha256(self, path: str) -> str:
+        """path の中身の sha256（手元のコピーを消してよいか確かめるときに使う）。"""
+        self._require_root()
+        full = self._resolve(path)
+        digest = hashlib.sha256()
+        try:
+            with self._open_read(full) as fh:
+                while chunk := fh.read(CHUNK):
+                    digest.update(chunk)
+        except FileNotFoundError as e:
+            raise RemoteMissing(path) from e
+        except OSError as e:
+            raise SyncUnavailable(_describe(e)) from e
+        return digest.hexdigest()
+
     def read_bytes(self, path: str, limit: int | None = None) -> bytes:
         """limit を超えるファイルは ValueError（巨大なファイルでメモリを使い切らない）。"""
         self._require_root()
@@ -215,13 +232,21 @@ class FolderStorage:
 
     # -- 書き込み ------------------------------------------------------------
 
+    @staticmethod
+    def _open_tmp(tmp: Path):
+        """一時ファイルを新しく作って開く。同じ名前のもの（前回の残りや、置かれたシンボリックリンク）は先に消し、
+        リンクをたどって同期フォルダの外のファイルを書き換えない。"""
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(tmp)  # リンクなら、リンクそのものを消す
+        return open(tmp, "xb")  # "x": 既にあれば（消した直後に置かれたリンクでも）開かずに失敗する
+
     def write_atomic(self, path: str, data: bytes) -> None:
         self._require_root()
         full = self._resolve(path)
         tmp = full.with_name(f".{full.name}{TMP_SUFFIX}")
         try:
             full.parent.mkdir(parents=True, exist_ok=True)
-            with open(tmp, "wb") as fh:
+            with self._open_tmp(tmp) as fh:
                 fh.write(data)
             os.replace(tmp, full)
         except OSError as e:
@@ -235,7 +260,7 @@ class FolderStorage:
         tmp = full.with_name(f".{full.name}{TMP_SUFFIX}")
         try:
             full.parent.mkdir(parents=True, exist_ok=True)
-            with open(src, "rb") as fin, open(tmp, "wb") as fout:
+            with open(src, "rb") as fin, self._open_tmp(tmp) as fout:
                 while chunk := fin.read(CHUNK):
                     fout.write(chunk)
             os.replace(tmp, full)

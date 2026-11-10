@@ -11,13 +11,16 @@ import re
 import unicodedata
 
 from ..models import NOTE_MAX_CHARS, Metadata
-from .hlc import HLC
 
 FILE_VERSION = 1
 MAX_JSON_BYTES = 2 * 1024 * 1024
 
-SHA_RE = re.compile(r"^[0-9a-f]{64}$")
-HEX32_RE = re.compile(r"^[0-9a-f]{32}$")
+# 末尾は \Z で止める（$ は最後の改行の手前にも一致するので、"<32 桁>\n" を通してしまう）
+SHA_RE = re.compile(r"^[0-9a-f]{64}\Z")
+HEX32_RE = re.compile(r"^[0-9a-f]{32}\Z")
+# HLC は Spectra が書く形だけを受け付ける（hlc.py の __str__）: 13 桁のミリ秒.6 桁のカウンター.端末 ID。
+# HLC は文字列のまま比べるので、桁数の違う値（"9.0.x" など）を通すと、どの変更よりも新しい扱いになってしまう
+HLC_RE = re.compile(r"^[0-9]{13}\.[0-9]{6}\.[0-9a-f]{32}\Z")
 
 # 同期する項目（HLC で比べる）。last_opened_at は最大値で比べるので別に扱う
 SYNC_FIELDS: tuple[str, ...] = (*Metadata.FIELDS, "source", "favorite")
@@ -112,11 +115,7 @@ def clean_file_name(value) -> str:
 
 
 def _hlc(value) -> str | None:
-    try:
-        HLC.parse(value)
-    except (ValueError, TypeError, AttributeError):
-        return None
-    return str(value)
+    return value if isinstance(value, str) and HLC_RE.match(value) else None
 
 
 def clean_field(name: str, value):

@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import time
 from dataclasses import dataclass
@@ -26,6 +27,7 @@ MAX_BODY = 1_000_000  # 応答がこれより大きければ読まない（想�
 
 _VERSION = re.compile(r"^v?(\d+(?:\.\d+){0,3})$")
 _LEADING = re.compile(r"^v?(\d+(?:\.\d+){0,3})")
+_RELEASE_PATH = re.compile(r"[A-Za-z0-9._/+-]*")
 
 
 class UpdateCheckError(SpectraError):
@@ -67,7 +69,11 @@ def is_newer(latest: str, current: str) -> bool:
 
 def is_release_url(url: object) -> bool:
     """開いてよい URL か。応答の URL をそのまま信じず、Spectra のリリースのページだけを許す。"""
-    return isinstance(url, str) and url.startswith(RELEASES_URL) and not any(c.isspace() for c in url)
+    if not isinstance(url, str) or not url.startswith(RELEASES_URL):
+        return False
+    # 続きは、リリースのページの URL に出てくる文字だけ（"../" で別のページへ出る形や、問い合わせ・空白は通さない）
+    rest = url[len(RELEASES_URL):]
+    return _RELEASE_PATH.fullmatch(rest) is not None and ".." not in rest
 
 
 def is_due(last_checked: float, now: float | None = None) -> bool:
@@ -105,16 +111,20 @@ def fetch_latest(client: httpx.Client | None = None) -> object:
     owns = client is None
     c = client or httpx.Client(timeout=TIMEOUT, follow_redirects=False)
     try:
-        r = c.get(LATEST_URL, headers={"User-Agent": USER_AGENT, "Accept": "application/vnd.github+json"})
-        if r.status_code == 404:
-            return {}  # リリースがまだ無い
-        if r.status_code in (403, 429):
-            raise UpdateCheckError("GitHub への問い合わせが多すぎます。", hint="しばらくしてからお試しください。")
-        if r.status_code != 200:
-            raise UpdateCheckError(f"GitHub から想定外の応答がありました（HTTP {r.status_code}）。")
-        if len(r.content) > MAX_BODY:
-            raise UpdateCheckError("応答が大きすぎます。")
-        return r.json()
+        headers = {"User-Agent": USER_AGENT, "Accept": "application/vnd.github+json"}
+        with c.stream("GET", LATEST_URL, headers=headers) as r:
+            if r.status_code == 404:
+                return {}  # リリースがまだ無い
+            if r.status_code in (403, 429):
+                raise UpdateCheckError("GitHub への問い合わせが多すぎます。", hint="しばらくしてからお試しください。")
+            if r.status_code != 200:
+                raise UpdateCheckError(f"GitHub から想定外の応答がありました（HTTP {r.status_code}）。")
+            body = bytearray()
+            for chunk in r.iter_bytes():  # 上限を超えたところで読むのをやめる
+                body += chunk
+                if len(body) > MAX_BODY:
+                    raise UpdateCheckError("応答が大きすぎます。")
+        return json.loads(bytes(body))
     except httpx.TimeoutException as e:
         raise UpdateCheckError("接続がタイムアウトしました。") from e
     except httpx.HTTPError as e:

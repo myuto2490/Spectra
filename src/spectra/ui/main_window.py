@@ -7,8 +7,10 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
+import tempfile
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -52,7 +54,7 @@ from ..core.annotate import apply_annotations
 from ..core.export import build_output, finalize
 from ..core.options import OutputMode
 from ..core.pipeline import JobResult, Progress, TranslationJob, open_document
-from ..errors import SpectraError
+from ..errors import DocumentError, EncryptedDocumentError, SpectraError
 from ..library import Library, Paper, Translation
 from ..library.errors import PaperNotFound, RemoteMissing
 from ..translate import registry
@@ -62,6 +64,7 @@ from ..translate.errors import (
     CancelledError,
     MissingKeyError,
     QuotaExceededError,
+    reset_time_text,
 )
 from ..translate.service import PartialTranslationError
 from . import icons, theme, worker
@@ -775,7 +778,7 @@ class MainWindow(QMainWindow):
         if info and info.needs_key:
             has_key = self.secrets.has(engine)
         self.inspector.set_engine_status(has_key)
-        self.library_view.set_engine_notice("" if has_key else f"{info.name if info else engine} の API キーが設定されていません")
+        self.library_view.set_engine_notice("" if has_key else f"翻訳には {info.name if info else engine} の API キー（無料）が必要です")
 
     def _set_status(self, text: str) -> None:
         self._status_message = text
@@ -804,7 +807,7 @@ class MainWindow(QMainWindow):
             return []
         added: list[Paper] = []
         existing: list[Paper] = []
-        errors: list[str] = []
+        errors: list[tuple[str, str]] = []  # (ファイル名, 追加できなかった理由)
         QGuiApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
             for i, path in enumerate(pdfs):
@@ -819,14 +822,22 @@ class MainWindow(QMainWindow):
                         title, _, rest = e.user_message().partition("\n")
                         self._alert(title, rest)
                         QGuiApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
-                    errors.append(path.name)
+                    errors.append((path.name, _add_failure_reason(e)))
                     continue
                 except OSError as e:
                     if len(pdfs) == 1:
                         QGuiApplication.restoreOverrideCursor()
                         self._alert("ファイルを読み込めませんでした", str(e))
                         QGuiApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
-                    errors.append(path.name)
+                    errors.append((path.name, _add_failure_reason(e)))
+                    continue
+                except Exception as e:  # noqa: BLE001 - 1 つのファイルの想定外の失敗で、残りの追加を止めない
+                    log.exception("could not add a PDF")
+                    if len(pdfs) == 1:
+                        QGuiApplication.restoreOverrideCursor()
+                        self._alert("PDF を追加できませんでした", f"{type(e).__name__}: {e}\n\n詳しい内容をログに記録しました。", log_button=True)
+                        QGuiApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+                    errors.append((path.name, _add_failure_reason(e)))
                     continue
                 (existing if existed else added).append(paper)
         finally:
@@ -861,7 +872,7 @@ class MainWindow(QMainWindow):
         if existing:
             notes.append(f"{len(existing)} 件は既にライブラリにありました。")
         if errors:
-            notes.append(f"{len(errors)} 件は開けませんでした（{', '.join(errors[:3])}{' など' if len(errors) > 3 else ''}）。")
+            notes.append(f"{len(errors)} 件は追加できませんでした（{_failure_summary(errors)}）。")
         if added:
             self._show_banner("success" if not errors else "warning", f"{len(added)} 件の論文を追加しました", " ".join(notes))
         elif notes:
@@ -1459,7 +1470,8 @@ class MainWindow(QMainWindow):
 
     def _api_key(self) -> list | None:
         """翻訳に使うキー（config.secrets.KeyRef のリスト、使う順）。要らないエンジンは空のリスト。
-        必要なのに 1 本もなければ、案内を出して None を返す。"""
+        必要なのに 1 本もなければ、キーの取り方を案内して設定を開く。そこでキーを入れたら、そのまま続ける
+        （もう一度「翻訳」を押さなくてよい）。入れなかったら None を返す。"""
         engine = self.settings.engine
         info = registry.ENGINES.get(engine)
         if not (info and info.needs_key):
@@ -1469,14 +1481,15 @@ class MainWindow(QMainWindow):
             return keys
         box = QMessageBox(self)
         box.setIcon(QMessageBox.Icon.Information)
-        box.setText(f"{info.name} の API キーを設定してください")
-        box.setInformativeText(f"{info.free_quota}で使えます。キーは設定画面から入力できます。")
+        box.setText(f"翻訳には {info.name} の API キーが必要です")
+        box.setInformativeText(info.key_steps or "キーは設定画面から入力できます。")
         open_btn = box.addButton("設定を開く", QMessageBox.ButtonRole.AcceptRole)
         box.addButton("キャンセル", QMessageBox.ButtonRole.RejectRole)
         plain_box(box).exec()
-        if box.clickedButton() is open_btn:
-            self.show_settings("engines")
-        return None
+        if box.clickedButton() is not open_btn:
+            return None
+        self.show_settings("engines")
+        return key_chain(self.settings, self.secrets, engine) or None
 
     def _request(self, paper: Paper, keys: list, first: int = 0, last: int | None = None, allow_partial: bool = False) -> TranslationRequest:
         s = self.settings
@@ -1703,7 +1716,7 @@ class MainWindow(QMainWindow):
             box.setInformativeText(
                 f"「{_elide(req.title, 48)}」は {len(err.results)} 個の段落を翻訳できました。翻訳できた段落だけで PDF を作成しますか？\n"
                 + (
-                    "残りの段落は原文のまま残り、上限が戻った後（明日以降）にキャッシュから続きを翻訳できます。"
+                    f"残りの段落は原文のまま残ります。{reset_time_text()}その後に翻訳し直すと、キャッシュから続きを翻訳できます。"
                     if quota
                     else "残りの段落は原文のまま残り、あとで翻訳し直すとキャッシュから続きを翻訳できます。"
                 )
@@ -1740,7 +1753,7 @@ class MainWindow(QMainWindow):
         model.set_job(req.paper_id, "failed")
         log.exception("unexpected error", exc_info=err)
         self._set_status("予期しないエラーが発生しました")
-        self._alert("予期しないエラーが発生しました", f"{type(err).__name__}: {err}\n\n詳細はログフォルダを確認してください。")
+        self._alert("予期しないエラーが発生しました", f"{type(err).__name__}: {err}\n\n詳しい内容をログに記録しました。", log_button=True)
         self._update_state()
 
     # -- 保存 --------------------------------------------------------------
@@ -1766,8 +1779,11 @@ class MainWindow(QMainWindow):
         target = Path(path)
         if target.suffix.lower() != ".pdf":
             target = target.with_suffix(".pdf")
+            # 保存のダイアログが上書きを確かめたのは、拡張子を補う前の名前。補った後の名前のファイルがあれば、ここで確かめる
+            if target.exists() and not self._confirm_overwrite(target):
+                return
         try:
-            target.write_bytes(self._output_bytes(mode, annotations=dlg.include_annotations()))
+            write_file_atomic(target, self._output_bytes(mode, annotations=dlg.include_annotations()))
         except OSError as e:
             self._alert("PDF を出力できませんでした", str(e))
             return
@@ -1777,6 +1793,17 @@ class MainWindow(QMainWindow):
         self._show_banner(
             "success", "PDF を出力しました", str(target), folder, lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(target.parent)))
         )
+
+    def _confirm_overwrite(self, target: Path) -> bool:
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setText(f"「{_elide(target.name, 60)}」は既にあります。置き換えますか？")
+        box.setInformativeText("同じ名前のファイルが、このフォルダにあります。置き換えると、今の内容は失われます。")
+        replace_btn = box.addButton("置き換える", QMessageBox.ButtonRole.DestructiveRole)
+        cancel_btn = box.addButton("キャンセル", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(cancel_btn)
+        plain_box(box).exec()
+        return box.clickedButton() is replace_btn
 
     def _output_pages(self) -> range:
         first, last = self.translated_range
@@ -2024,13 +2051,22 @@ class MainWindow(QMainWindow):
             self.banner_wrap.hide()
             cb()
 
-    def _alert(self, title: str, body: str = "") -> None:
+    def _alert(self, title: str, body: str = "", log_button: bool = False) -> None:
+        """log_button: 「ログフォルダを開く」を付ける（原因のわからない失敗で、問い合わせに添えるログの場所を示す）。"""
         # エラー文に含まれるパスも、ホームは「~」に（スクリーンショットや問い合わせにユーザー名が写らないように）
         box = QMessageBox(self)
         box.setIcon(QMessageBox.Icon.Warning)
         box.setText(display_path(title))
         box.setInformativeText(display_path(body))
+        open_btn = None
+        if log_button:
+            open_btn = box.addButton("ログフォルダを開く", QMessageBox.ButtonRole.ActionRole)
+            box.setDefaultButton(box.addButton("閉じる", QMessageBox.ButtonRole.RejectRole))
         plain_box(box).exec()
+        if open_btn is not None and box.clickedButton() is open_btn:
+            folder = paths.log_dir()
+            folder.mkdir(parents=True, exist_ok=True)
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
 
     def _zoom_by(self, factor: float) -> None:
         view = self.preview.active_view()
@@ -2235,6 +2271,19 @@ def _elide(text: str, n: int) -> str:
     return text if len(text) <= n else text[: n - 1] + "…"
 
 
+def write_file_atomic(target: Path, data: bytes) -> None:
+    """同じフォルダの一時ファイルに書いてから置き換える（書いている途中で失敗しても、元のファイルを壊さない）。"""
+    fd, tmp = tempfile.mkstemp(dir=target.parent, prefix=f".{target.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+        os.replace(tmp, target)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
+
+
 def _collect_pdfs(paths: list[Path]) -> list[Path]:
     """ファイルはそのまま、フォルダは中の PDF をすべて（下のフォルダも含めて）集める。"""
     out: list[Path] = []
@@ -2252,3 +2301,23 @@ def _collect_pdfs(paths: list[Path]) -> list[Path]:
                 seen.add(r)
                 out.append(q)
     return out
+
+
+def _add_failure_reason(err: BaseException) -> str:
+    """論文を追加できなかった理由の短い言い方（複数のファイルをまとめて追加したときの一覧に使う）。"""
+    if isinstance(err, EncryptedDocumentError):
+        return "パスワードで保護されています"
+    if isinstance(err, DocumentError):
+        return "壊れているか、PDF ではありません"
+    return "読み込めませんでした"
+
+
+def _failure_summary(errors: list[tuple[str, str]], names: int = 2) -> str:
+    """「理由: ファイル名、ファイル名 など」を理由ごとにまとめる。"""
+    groups: dict[str, list[str]] = {}
+    for name, reason in errors:
+        groups.setdefault(reason, []).append(name)
+    return "／".join(
+        f"{reason}: {'、'.join(_elide(n, 40) for n in found[:names])}{' など' if len(found) > names else ''}"
+        for reason, found in groups.items()
+    )

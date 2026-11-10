@@ -33,6 +33,7 @@ from ..config import paths
 from ..config.quota import QuotaBook
 from ..config.secrets import SecretStore, default_label, slot
 from ..config.settings import MAX_KEYS, Settings
+from ..errors import SpectraError
 from ..translate import registry
 from ..translate.cache import TranslationCache
 from ..translate.errors import TranslatorError
@@ -398,6 +399,9 @@ class SettingsDialog(QDialog):
         head_box = QWidget()
         head_box.setLayout(head)
         group.add_widget(head_box)
+        self.key_steps = label(info.key_steps, "caption", wrap=True)
+        self.key_steps.setAccessibleName("API キーの取り方")
+        group.add_widget(self.key_steps)
         self.key_list = QWidget()
         self.key_rows = QVBoxLayout(self.key_list)
         self.key_rows.setContentsMargins(0, 0, 0, 0)
@@ -474,6 +478,7 @@ class SettingsDialog(QDialog):
         for i, e in enumerate(entries):
             field = KeyField("gemini", self.secrets, self.settings, key_id=e["id"], name=e["label"], index=i, count=len(entries))
             field.changed.connect(lambda _e: self.keysChanged.emit())
+            field.changed.connect(lambda _e: self._refresh_key_steps())
             field.renamed.connect(self._rename_key)
             field.moveRequested.connect(self._move_key)
             field.removeRequested.connect(self._remove_key)
@@ -483,6 +488,11 @@ class SettingsDialog(QDialog):
             self.key_rows.addWidget(field)
             self.key_fields[field.slot] = field
         self.add_key_btn.setEnabled(len(entries) < MAX_KEYS)
+        self._refresh_key_steps()
+
+    def _refresh_key_steps(self) -> None:
+        """キーの取り方の手順は、キーがまだ 1 本もないときだけ出す（設定済みの人には要らない）。"""
+        self.key_steps.setVisible(bool(self.key_steps.text()) and not self.secrets.has("gemini"))
 
     def _save_key_entries(self, entries: list[dict]) -> None:
         self.settings.api_keys = entries
@@ -597,7 +607,9 @@ class SettingsDialog(QDialog):
         def failed(err):
             opt.progress.hide()
             opt.action.setEnabled(True)
-            opt.sample.setText(f"ダウンロードに失敗しました: {err}")
+            # 接続できない・ファイルが想定と違う、は日本語の案内を出す（それ以外は、例外の内容をそのまま添える）
+            known = isinstance(err, SpectraError)
+            opt.sample.setText(err.user_message().replace("\n", " ") if known else f"ダウンロードに失敗しました: {err}")
 
         worker.start(job, done, failed, progress)
 

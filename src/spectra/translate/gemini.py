@@ -12,6 +12,7 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import math
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -269,7 +270,7 @@ class GeminiTranslator(Translator):
 
     def _quota_error(self) -> QuotaExceededError:
         if len(self.keys) > 1 and self.key_auto_switch:
-            return QuotaExceededError(hint=QuotaExceededError.all_keys_hint)
+            return QuotaExceededError(all_keys=True)
         return QuotaExceededError()
 
     def _notice(self, note: str) -> None:
@@ -324,7 +325,13 @@ class GeminiTranslator(Translator):
             self._thinking_index[self.model] = idx + 1
             return self._request(items)
         self._raise_for_status(r)
-        return self._parse(r.json(), len(items))
+        try:
+            data = r.json()
+        except ValueError as e:
+            raise ServiceError("Gemini の応答を解釈できませんでした") from e
+        if not isinstance(data, dict):
+            raise ServiceError("Gemini の応答を解釈できませんでした")
+        return self._parse(data, len(items))
 
     @staticmethod
     def _parse(data: dict, expected: int) -> list[str | None] | None:
@@ -372,7 +379,8 @@ class GeminiTranslator(Translator):
                 if d.get("reason"):
                     reasons.add(d["reason"])
                 if d.get("retryDelay"):
-                    retry_after = float(str(d["retryDelay"]).rstrip("s") or 0)
+                    delay = float(str(d["retryDelay"]).rstrip("s") or 0)
+                    retry_after = delay if math.isfinite(delay) and delay > 0 else None
                 for v in d.get("violations", []) or []:
                     if "perday" in (v.get("quotaId", "") + v.get("quotaMetric", "")).lower():
                         per_day = True

@@ -302,7 +302,15 @@ class Library:
         doc = open_document(data)
         try:
             page_count = doc.page_count
-            md = metadata if metadata is not None else extract_local(doc, path.name)
+            if metadata is not None:
+                md = metadata
+            else:
+                try:
+                    md = extract_local(doc, path.name)
+                except Exception:
+                    # 一部のページが壊れた PDF でも、追加はできるようにする（書誌情報は後から編集・照会できる）
+                    log.warning("could not read metadata from the PDF", exc_info=True)
+                    md = Metadata()
         finally:
             doc.close()
         now = time.time()

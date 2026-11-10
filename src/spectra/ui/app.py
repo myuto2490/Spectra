@@ -34,6 +34,29 @@ def _setup_logging() -> None:
     logging.getLogger(__name__).info("%s %s starting", APP_NAME, __version__)
 
 
+def _install_excepthook() -> None:
+    """どこでも捕まえられなかった例外を、ログに残す。
+
+    配布版には標準エラー出力の行き先がなく、ボタンの処理やワーカーのスレッドで起きた想定外の例外は、
+    何も残さずに消えてしまう（「何も起きない」という報告の原因を調べられない）。ログは個人の情報を伏せて書かれる。
+    """
+    import threading
+
+    log = logging.getLogger("spectra.unhandled")
+
+    def hook(exc_type, exc, tb) -> None:
+        if not issubclass(exc_type, KeyboardInterrupt):
+            log.critical("unhandled exception", exc_info=(exc_type, exc, tb))
+        sys.__excepthook__(exc_type, exc, tb)
+
+    def thread_hook(args) -> None:
+        if args.exc_type is not SystemExit:
+            log.critical("unhandled exception in thread %s", getattr(args.thread, "name", "?"), exc_info=(args.exc_type, args.exc_value, args.exc_traceback))
+
+    sys.excepthook = hook
+    threading.excepthook = thread_hook
+
+
 def create_app(argv: list[str] | None = None):
     from PySide6.QtCore import Qt
     from PySide6.QtGui import QGuiApplication
@@ -61,6 +84,7 @@ def create_app(argv: list[str] | None = None):
 
 def main() -> int:
     _setup_logging()
+    _install_excepthook()
     if sys.platform == "win32":
         # タスクバーで Python ではなく Spectra のアイコンを表示する
         try:

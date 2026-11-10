@@ -19,6 +19,7 @@ class EngineInfo:
     key_label: str
     free_quota: str
     needs_key: bool = True
+    key_steps: str = ""  # キーの取り方（初めての人向けの手順。案内のダイアログと設定に出す）
 
 
 ENGINES: dict[str, EngineInfo] = {
@@ -29,6 +30,12 @@ ENGINES: dict[str, EngineInfo] = {
         key_url="https://aistudio.google.com/apikey",
         key_label="API キー",
         free_quota="",
+        key_steps=(
+            "キーは Google AI Studio で、無料で作れます。\n"
+            "1. 「キーを取得」を押して、Google アカウントでログインする\n"
+            "2. 「API キーを作成」を押して、表示されたキーをコピーする\n"
+            "3. 設定の「API キー」の欄に貼り付ける"
+        ),
     ),
     "dummy": EngineInfo(
         engine_id="dummy",

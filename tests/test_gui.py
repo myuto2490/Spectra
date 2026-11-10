@@ -331,7 +331,7 @@ def test_network_failure_stops_queue_once(window, tmp_path, monkeypatch, no_dial
 
 
 def test_partial_failure_message_depends_on_cause(window, tmp_path, no_dialogs):
-    """訳せた段落があるときの失敗は、原因が 1 日の上限のときだけ「明日以降」と案内する。"""
+    """訳せた段落があるときの失敗は、原因が 1 日の上限のときだけ、上限が戻る時刻を案内する。"""
     app, w = window
     from spectra.translate.errors import NetworkError, QuotaExceededError
     from spectra.translate.service import PartialTranslationError
@@ -349,7 +349,7 @@ def test_partial_failure_message_depends_on_cause(window, tmp_path, no_dialogs):
         w.translate_papers([p.id for p in papers])
         pump(app, 10, until=lambda: not w._busy())
         assert len(no_dialogs) == 1
-        assert ("明日以降" in no_dialogs[0]) is tomorrow
+        assert ("ごろに戻ります" in no_dialogs[0]) is tomorrow
         assert "1 件の翻訳は取りやめました" in no_dialogs[0]
 
 

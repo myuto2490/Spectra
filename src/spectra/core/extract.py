@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import re
 import statistics
 
@@ -289,13 +290,16 @@ def _all_bold(ln: Line) -> bool:
 
 def _split_block(lines: list[Line]) -> list[list[Line]]:
     """1 ブロック内に見出しと本文など性質の異なる行が混在する場合に分割する。"""
+    # 先頭の見出しの行を 1 行ずつ切り離す（見出しらしい行が続く PDF でも再帰が深くならないよう、繰り返しで行う）
+    heads: list[list[Line]] = []
+    while len(lines) > 1 and _heading_first_line(lines):
+        heads.append([lines[0]])
+        lines = lines[1:]
     if len(lines) <= 1:
-        return [lines]
+        return [*heads, lines]
     gaps = [lines[i + 1].bbox[1] - lines[i].bbox[3] for i in range(len(lines) - 1)]
     typical_gap = statistics.median(gaps) if gaps else 0.0
-    if _heading_first_line(lines):
-        return [[lines[0]], *_split_block(lines[1:])]
-    parts: list[list[Line]] = [[lines[0]]]
+    parts: list[list[Line]] = [*heads, [lines[0]]]
     for prev, ln, gap in zip(lines, lines[1:], gaps):
         size_prev, size_cur = _line_size(prev), _line_size(ln)
         size_change = abs(size_prev - size_cur) > max(1.0, 0.12 * size_prev)
@@ -377,6 +381,9 @@ def find_figure_rects(page: pymupdf.Page, drawings: list[dict] | None = None) ->
     return rects
 
 
+MAX_GRID_CELLS = 2_000_000  # cluster_drawings のマス目の総数の上限（A0 の 3 pt 角で約 90 万）
+
+
 def cluster_drawings(drawings: list[dict], page_rect: Rect, cell: float = 3.0) -> list[tuple[Rect, list[dict]]]:
     """近くにあるベクター描画をまとめる（図の領域の検出）。
 
@@ -385,6 +392,11 @@ def cluster_drawings(drawings: list[dict], page_rect: Rect, cell: float = 3.0) -
     数万〜数十万の図形を含む散布図のページでも速い（PyMuPDF の cluster_drawings は二乗に近い）。
     """
     x0, y0, x1, y1 = page_rect
+    if not all(math.isfinite(v) for v in page_rect):
+        return []
+    # 極端に大きなページ（細工された PDF など）でマス目がメモリを使い切らないよう、マスを粗くして総数を抑える
+    while (max(0.0, x1 - x0) / cell + 2) * (max(0.0, y1 - y0) / cell + 2) > MAX_GRID_CELLS:
+        cell *= 2
     cols = max(1, int((x1 - x0) / cell) + 2)
     rows = max(1, int((y1 - y0) / cell) + 2)
     grid = [0] * (cols * rows)  # 0: 空き、それ以外: 描画あり

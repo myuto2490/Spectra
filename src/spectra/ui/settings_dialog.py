@@ -33,6 +33,7 @@ from ..config import paths
 from ..config.quota import QuotaBook
 from ..config.secrets import SecretStore, default_label, slot
 from ..config.settings import MAX_KEYS, Settings
+from ..errors import SpectraError
 from ..translate import registry
 from ..translate.cache import TranslationCache
 from ..translate.errors import TranslatorError
@@ -597,7 +598,9 @@ class SettingsDialog(QDialog):
         def failed(err):
             opt.progress.hide()
             opt.action.setEnabled(True)
-            opt.sample.setText(f"ダウンロードに失敗しました: {err}")
+            # 接続できない・ファイルが想定と違う、は日本語の案内を出す（それ以外は、例外の内容をそのまま添える）
+            known = isinstance(err, SpectraError)
+            opt.sample.setText(err.user_message().replace("\n", " ") if known else f"ダウンロードに失敗しました: {err}")
 
         worker.start(job, done, failed, progress)
 

@@ -25,9 +25,10 @@ def fetch(doi: str, client: httpx.Client) -> Metadata | None:
         return None
     try:
         msg = r.json()["message"]
-    except (ValueError, KeyError, TypeError) as e:
+        return parse(msg)
+    except (ValueError, KeyError, TypeError, AttributeError, IndexError) as e:
+        # 形の違う応答（項目の型が想定と違うなど）も、落とさずに照会の失敗として扱う
         raise LookupFailed("Crossref の応答を解釈できません") from e
-    return parse(msg)
 
 
 def parse(msg: dict) -> Metadata:

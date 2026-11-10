@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import math
 from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -45,6 +46,17 @@ MARGIN = 24
 MIN_ZOOM, MAX_ZOOM = 0.25, 4.0
 ZOOM_PRESETS = (0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0, 4.0)
 _CACHE_LIMIT = 24
+# 1 ページの描画のピクセル数の上限。極端に大きなページ（ポスターや、細工された PDF）を高い倍率で描いて
+# メモリを使い切らないよう、これを超えるときは粗く描いて拡大する（A4 を 400%・Retina で描いても約 3,200 万）
+MAX_PAGE_PIXELS = 64_000_000
+
+
+def capped_scale(width: float, height: float, scale: float, limit: int = MAX_PAGE_PIXELS) -> float:
+    """幅 width・高さ height（pt）のページを scale 倍で描くときの倍率。ピクセル数が limit を超えるなら、収まる倍率に下げる。"""
+    pixels = max(width, 1.0) * max(height, 1.0) * scale * scale
+    if not math.isfinite(pixels) or pixels <= limit:
+        return scale
+    return scale * math.sqrt(limit / pixels)
 MAX_HITS = 2000  # 検索の一致の上限（巨大な文書で重くならないように）
 _DRAG_SLOP = 4  # これ以下の動きはクリックとみなす（リンクを開く）
 _HIT = QColor(255, 214, 10, 110)
@@ -641,7 +653,7 @@ class PdfView(QScrollArea):
             return pm
         try:
             page = self._doc[index]
-            scale = self._zoom * dpr
+            scale = capped_scale(page.rect.width, page.rect.height, self._zoom * dpr)
             pix = page.get_pixmap(matrix=pymupdf.Matrix(scale, scale), alpha=False, annots=True)
             img = QImage(pix.samples, pix.width, pix.height, pix.stride, QImage.Format.Format_RGB888).copy()
         except Exception:

@@ -13,6 +13,7 @@ from dataclasses import dataclass
 
 _WALL_DIGITS = 13
 _COUNTER_DIGITS = 6
+MAX_DRIFT_MS = 24 * 60 * 60 * 1000  # ほかの端末の時計のずれとして受け入れる上限（1 日）
 
 
 @dataclass(frozen=True, order=True)
@@ -56,13 +57,21 @@ class HybridClock:
             last = self._last
             if physical > last.wall_ms:
                 new = HLC(physical, 0, self.device)
+            elif last.counter + 1 >= 10**_COUNTER_DIGITS:
+                new = HLC(last.wall_ms + 1, 0, self.device)  # カウンターの桁があふれたら、時刻を 1 ミリ秒進める
             else:
                 new = HLC(last.wall_ms, last.counter + 1, self.device)
             self._last = new
             return new
 
     def observe(self, remote: HLC) -> None:
-        """相手の時刻を見た。以後の自分の時刻は、これより後になる。"""
+        """相手の時刻を見た。以後の自分の時刻は、これより後になる。
+
+        今の時刻より MAX_DRIFT_MS を超えて先の時刻は取り込まない（壊れた・細工されたファイル 1 つで、
+        この端末の時計が遠い未来に進んだまま戻らなくなるのを防ぐ）。
+        """
+        if remote.wall_ms > int(self._now() * 1000) + MAX_DRIFT_MS:
+            return
         with self._lock:
             if (remote.wall_ms, remote.counter) > (self._last.wall_ms, self._last.counter):
                 self._last = HLC(remote.wall_ms, remote.counter, self.device)

@@ -7,8 +7,10 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
+import tempfile
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -1766,8 +1768,11 @@ class MainWindow(QMainWindow):
         target = Path(path)
         if target.suffix.lower() != ".pdf":
             target = target.with_suffix(".pdf")
+            # 保存のダイアログが上書きを確かめたのは、拡張子を補う前の名前。補った後の名前のファイルがあれば、ここで確かめる
+            if target.exists() and not self._confirm_overwrite(target):
+                return
         try:
-            target.write_bytes(self._output_bytes(mode, annotations=dlg.include_annotations()))
+            write_file_atomic(target, self._output_bytes(mode, annotations=dlg.include_annotations()))
         except OSError as e:
             self._alert("PDF を出力できませんでした", str(e))
             return
@@ -1777,6 +1782,17 @@ class MainWindow(QMainWindow):
         self._show_banner(
             "success", "PDF を出力しました", str(target), folder, lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(target.parent)))
         )
+
+    def _confirm_overwrite(self, target: Path) -> bool:
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setText(f"「{_elide(target.name, 60)}」は既にあります。置き換えますか？")
+        box.setInformativeText("同じ名前のファイルが、このフォルダにあります。置き換えると、今の内容は失われます。")
+        replace_btn = box.addButton("置き換える", QMessageBox.ButtonRole.DestructiveRole)
+        cancel_btn = box.addButton("キャンセル", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(cancel_btn)
+        plain_box(box).exec()
+        return box.clickedButton() is replace_btn
 
     def _output_pages(self) -> range:
         first, last = self.translated_range
@@ -2233,6 +2249,19 @@ class MainWindow(QMainWindow):
 
 def _elide(text: str, n: int) -> str:
     return text if len(text) <= n else text[: n - 1] + "…"
+
+
+def write_file_atomic(target: Path, data: bytes) -> None:
+    """同じフォルダの一時ファイルに書いてから置き換える（書いている途中で失敗しても、元のファイルを壊さない）。"""
+    fd, tmp = tempfile.mkstemp(dir=target.parent, prefix=f".{target.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+        os.replace(tmp, target)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
 
 
 def _collect_pdfs(paths: list[Path]) -> list[Path]:

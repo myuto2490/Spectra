@@ -20,20 +20,39 @@ class AuthenticationError(TranslatorError):
     hint = "設定 → 翻訳エンジン で API キーを確認してください。"
 
 
-# 1 日の上限は米国太平洋時間の 0 時に戻る（米国の夏時間のあいだは日本時間の 16 時、それ以外は 17 時）
-RESET_TIME = "上限は日本時間の 17 時（米国の夏時間のあいだは 16 時）ごろに戻ります。"
+def reset_time_text(now: float | None = None) -> str:
+    """1 日の上限が戻る時刻の案内。このパソコンの時刻で「今日の 16:00 ごろ」のように具体的に書く。
+
+    上限は米国太平洋時間の 0 時に戻る（日本時間では、米国の夏時間のあいだは 16 時、それ以外は 17 時）。
+    """
+    import time
+
+    from ..config.quota import next_reset
+
+    now = time.time() if now is None else now
+    reset = time.localtime(next_reset(now))
+    today = time.localtime(now)
+    day = "今日" if (reset.tm_year, reset.tm_yday) == (today.tm_year, today.tm_yday) else "明日"
+    return f"上限は{day}の {reset.tm_hour}:{reset.tm_min:02d} ごろに戻ります。"
 
 
 class QuotaExceededError(TranslatorError):
     title = "無料枠の 1 日あたりの上限に達しました"
-    hint = (
-        f"{RESET_TIME}翻訳済みの段落はキャッシュに保存されているので、続きから翻訳できます。"
-        "設定で別のモデルを選ぶか、API キーを追加すると、別の枠で続けられる場合があります。"
-    )
-    all_keys_hint = (
-        f"登録したすべての API キーが、今日の上限に達しました。{RESET_TIME}"
-        "翻訳済みの段落はキャッシュに保存されているので、続きから翻訳できます。"
-    )
+
+    def __init__(self, detail: str = "", *, hint: str | None = None, all_keys: bool = False):
+        """hint を渡さなければ、上限が戻る時刻を入れた案内にする（all_keys: 登録したキーがすべて上限）。"""
+        if hint is None:
+            if all_keys:
+                hint = (
+                    f"登録したすべての API キーが、今日の上限に達しました。{reset_time_text()}"
+                    "翻訳済みの段落はキャッシュに保存されているので、続きから翻訳できます。"
+                )
+            else:
+                hint = (
+                    f"{reset_time_text()}翻訳済みの段落はキャッシュに保存されているので、続きから翻訳できます。"
+                    "設定で別のモデルを選ぶか、API キーを追加すると、別の枠で続けられる場合があります。"
+                )
+        super().__init__(detail, hint=hint)
 
 
 class RateLimitError(TranslatorError):

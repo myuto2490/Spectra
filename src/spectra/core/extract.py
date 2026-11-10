@@ -193,6 +193,14 @@ def _continues_paragraph(a: TextBlock, b: TextBlock) -> bool:
     # 分数などで行が高くなると、前後のブロックが上下に重なることがある（負の隙間も許す）
     if gap < -size * 1.5 or gap > size * 1.5:
         return False
+    if len(a.lines) == 1 and len(b.lines) >= 2:
+        # 前が 1 行だけのときは、続く段落の行送りと比べる。段落の行送りより大きく離れた 1 行は、その段落の行ではない
+        # （ページ上端の柱のすぐ下に、図の横のキャプションが来る場合など。柱とキャプションを 1 つの段落にしない）
+        pitch = b.lines[1].baseline - b.lines[0].baseline
+        step = first.baseline - last.baseline
+        tall = max(first.bbox[3] - first.bbox[1], last.bbox[3] - last.bbox[1]) > size * 1.6
+        if pitch > 0 and step - pitch > max(2.0, pitch * 0.25) and not (tall and gap <= size * 0.6):
+            return False
     if len(a.lines) >= 2:
         pitch = a.lines[-1].baseline - a.lines[-2].baseline
         step = first.baseline - last.baseline

@@ -270,7 +270,7 @@ class GeminiTranslator(Translator):
 
     def _quota_error(self) -> QuotaExceededError:
         if len(self.keys) > 1 and self.key_auto_switch:
-            return QuotaExceededError(hint=QuotaExceededError.all_keys_hint)
+            return QuotaExceededError(all_keys=True)
         return QuotaExceededError()
 
     def _notice(self, note: str) -> None:

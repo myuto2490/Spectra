@@ -54,6 +54,15 @@ _CAPTION = re.compile(
     r"(s\d+|[a-z]?\d+|[ivxlc]+)[a-z]?\s*[:.|\-–—]",
     re.IGNORECASE,
 )
+# 区切り記号のないキャプション（Springer などの "Fig. 1 Schematic of …"）の番号まで。本文の "Figure 1 shows …" と
+# 見分けるため、これだけではキャプションとせず、番号までが太字で続きが太字でないことも確かめる（_bold_label_caption）
+_CAPTION_LABEL = re.compile(
+    r"^\s*(figure|fig\.|table|tab\.|algorithm|listing|scheme|chart|plate|exhibit)\s*"
+    r"(s\d+|[a-z]?\d+|[ivxlc]+)[a-z]?(?=\s)",
+    re.IGNORECASE,
+)
+# ページ上端の柱に入るページ番号（"Page 5 of 41"）。左右に離れた語が空白なしでつながるので、語の境界は見ない
+_PAGE_OF = re.compile(r"page\s+\d+\s+of\s+\d+", re.IGNORECASE)
 # 擬似コード（アルゴリズムの枠）の行： "1:" "12:" や "Input:" "Require:" で始まる
 _PSEUDOCODE = re.compile(r"^\s*(\d{1,2}:|(input|output|require|ensure|return)\s*:)", re.IGNORECASE)
 _EQUATION_SIGN = re.compile(r"[=≈≤≥<>∝≡]")
@@ -66,6 +75,35 @@ _REFERENCES = re.compile(
     r"^\s*(\d+\.?|[ivx]+\.)?\s*(references|bibliography|literature\s+cited|works\s+cited|参考文献)\s*$",
     re.IGNORECASE,
 )
+
+
+def _bold_label_caption(block: TextBlock) -> bool:
+    """区切り記号のないキャプションか: 1 行目が "Fig. 1" などで始まり、番号までが太字で、続きが太字でない大文字か括弧で始まる。"""
+    line = block.lines[0]
+    text = line.text
+    m = _CAPTION_LABEL.match(text)
+    if not m:
+        return False
+    rest = text[m.end():].lstrip()
+    if not rest or not (rest[0].isupper() or rest[0] in "(["):
+        return False
+    pos = 0
+    for span in line.spans:
+        for ch in span.text:
+            if ch.strip():
+                if pos < m.end():
+                    if not span.is_bold:
+                        return False  # ラベルが太字でない: 本文の "Figure 1 Shows …" かもしれないので、キャプションとしない
+                else:
+                    return not span.is_bold  # ラベルの次の文字が太字でない（行全体が太字の見出しではない）
+            pos += 1
+    return False
+
+
+def _split_header(block: TextBlock, size: float) -> bool:
+    """1 行の中で、語のまとまりが大きく離れている（左に題名、右にページ番号、のような柱の並び）。"""
+    spans = [s for s in block.lines[0].spans if s.text.strip()]
+    return any(b.bbox[0] - a.bbox[2] > size * 4 for a, b in zip(spans, spans[1:]))
 
 
 class BlockStats:
@@ -303,7 +341,7 @@ class DocumentClassifier:
 
     def _kind(self, b: TextBlock, st: BlockStats, page_height: float) -> BlockKind:
         body = self.body_size
-        if _CAPTION.match(st.text):
+        if _CAPTION.match(st.text) or _bold_label_caption(b):
             return BlockKind.CAPTION
         if b.page == 0 and st.size >= body * 1.35:
             return BlockKind.TITLE
@@ -340,7 +378,12 @@ class DocumentClassifier:
         if b.bbox[1] > self._page_height * 0.93 and len(b.lines) == 1 and st.words <= 6 and re.search(r"\d", st.text):
             return SkipReason.RUNNING_HEADER
         # ページ上端の柱（"Smith et al." や雑誌名など）
-        if b.bbox[3] < self._page_height * 0.07 and len(b.lines) == 1 and (st.words <= 4 or "et al" in st.text):
+        if b.bbox[3] < self._page_height * 0.07 and len(b.lines) == 1 and (
+            st.words <= 4
+            or "et al" in st.text
+            or _PAGE_OF.search(st.text)
+            or (_split_header(b, st.size) and re.search(r"\d", st.text))
+        ):
             return SkipReason.RUNNING_HEADER
 
         if b.page == 0 and not self.seen_abstract:

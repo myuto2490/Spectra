@@ -5,6 +5,7 @@ import logging
 import sys
 import threading
 import time
+from pathlib import Path
 
 import pytest
 from test_gui import _distinct_paper, pump, window  # noqa: F401 - window はフィクスチャ
@@ -91,6 +92,7 @@ def test_empty_library_says_the_key_is_free(window):  # noqa: F811
 # -- 上限が戻る時刻 ------------------------------------------------------------------
 
 
+@pytest.mark.skipif(not hasattr(time, "tzset"), reason="Windows では実行中にタイムゾーンを切り替えられない")
 def test_reset_time_is_a_concrete_local_time(monkeypatch):
     from zoneinfo import ZoneInfo
 
@@ -129,7 +131,7 @@ def test_unexpected_error_offers_to_open_the_log_folder(window, dialogs, monkeyp
     assert sorted(dialogs["shown"][0][2]) == sorted(["ログフォルダを開く", "閉じる"])  # 並びは OS の流儀で変わる
     from spectra.config import paths
 
-    assert opened == [str(paths.log_dir())] and paths.log_dir().is_dir()
+    assert [Path(o) for o in opened] == [paths.log_dir()] and paths.log_dir().is_dir()  # 区切り文字（/ と \）の違いは無視
     dialogs["choose"] = "閉じる"
     w._alert("予期しないエラーが発生しました", "RuntimeError: boom", log_button=True)
     assert len(opened) == 1

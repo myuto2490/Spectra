@@ -451,3 +451,88 @@ def test_background_fill_is_not_figure_content():
     assert not _is_background_fill({**white, "color": (0, 0, 0)})  # 枠線がある
     assert not _is_background_fill({**white, "type": "s"})
     assert not _is_background_fill({"type": "f", "fill": None, "color": None})
+
+
+# -- 区切り記号のないキャプション（"Fig. 1 Schematic of …"）と、ページ上端の柱 ----------------------------
+
+
+def _side_caption_page(label_bold: bool = True, header: bool = True, caption: str | None = None) -> pymupdf.Document:
+    """ページ上端に柱、そのすぐ下の左に図の横のキャプション（番号だけが太字で、区切り記号なし）、右に図。下に本文。"""
+    from pdf_factory import BODY, BOLD, write_runs
+
+    doc = pymupdf.open()
+    page = doc.new_page(width=440, height=666)
+    if header:
+        page.insert_text((47, 40), "87", fontname=BOLD, fontsize=8)
+        page.insert_text((63, 40), "Page 8 of 41", fontname=BODY, fontsize=8)
+        page.insert_text((338, 40), "T. Imamura et al.", fontname=BODY, fontsize=8)
+    lines = (caption or "Schematic of|cyclostrophic balance, where the|centrifugal force balances the|pressure gradient force.").split("|")
+    write_runs(page, 47, 59, [("Fig. 3", BOLD if label_bold else BODY, 8), (" " + lines[0], BODY, 8)])
+    for i, text in enumerate(lines[1:], 1):
+        page.insert_text((47, 59 + i * 9.5), text, fontname=BODY, fontsize=8)
+    for i in range(12):  # 図（曲線の集まり）
+        page.draw_bezier((215, 70 + i * 9), (270, 40 + i * 9), (330, 120 + i * 9), (390, 70 + i * 9), color=(0, 0, 1), width=0.8)
+    body = "The mean zonal wind is maintained by the transport of angular momentum in the atmosphere of the planet"
+    for i in range(12):
+        page.insert_text((47, 260 + i * 12), f"{body} {i}." if i == 11 else body, fontname=BODY, fontsize=9.5)
+    return doc
+
+
+def test_caption_without_delimiter_is_translated_when_its_label_is_bold():
+    a = analyze_document(_side_caption_page())
+    cap = _find(a, "Schematic of")
+    assert cap.kind == BlockKind.CAPTION and cap.translate
+    assert cap.block.text.startswith("Fig. 3 Schematic")  # 柱と 1 つの段落になっていない
+    assert "pressure gradient force" in cap.block.text
+
+
+def test_running_header_is_not_joined_to_the_caption_below_it():
+    a = analyze_document(_side_caption_page())
+    head = _find(a, "Page 8 of 41")
+    assert len(head.block.lines) == 1 and head.skip == SkipReason.RUNNING_HEADER
+    assert "Schematic" not in head.block.text
+
+
+def test_running_header_with_title_and_page_number_is_skipped():
+    from pdf_factory import BODY
+
+    doc = _side_caption_page(header=False)
+    page = doc[0]
+    page.insert_text((47, 40), "Superrotation in Planetary Atmospheres", fontname=BODY, fontsize=8)
+    page.insert_text((337, 40), "Page 5 of 41", fontname=BODY, fontsize=8)
+    page.insert_text((385, 40), "87", fontname=BODY, fontsize=8)
+    a = analyze_document(doc)
+    assert _find(a, "Superrotation in Planetary").skip == SkipReason.RUNNING_HEADER
+    assert _find(a, "Schematic of").translate
+
+
+def test_figure_reference_without_bold_label_is_not_a_caption():
+    """本文の "Fig. 3 Shows …"（太字でない）は、キャプションにしない（迷ったら今までどおり）。"""
+    a = analyze_document(_side_caption_page(label_bold=False))
+    assert _find(a, "Schematic of").kind != BlockKind.CAPTION
+
+
+@pytest.mark.parametrize(
+    "caption",
+    ["shows the balance of|forces in the atmosphere|of a slowly rotating planet|such as Venus or Titan."],
+)
+def test_bold_label_followed_by_a_lowercase_sentence_is_not_a_caption(caption):
+    a = analyze_document(_side_caption_page(caption=caption))
+    assert _find(a, "shows the balance").kind != BlockKind.CAPTION
+
+
+def test_first_line_of_a_paragraph_still_joins_the_rest():
+    """行送りがそろっていれば、1 行だけのブロックと続きの段落は、今までどおり 1 つの段落になる。"""
+    from spectra.core.extract import _continues_paragraph
+    from spectra.core.models import Line, Span, TextBlock
+
+    def line(y: float, x1: float = 393.0) -> Line:
+        box = (47.0, y, x1, y + 9.0)
+        return Line(spans=[Span("word " * 12, "Times", 9.5, 0, 0, box, (47.0, y + 8))], bbox=box)
+
+    def block(lines: list[Line]) -> TextBlock:
+        return TextBlock(page=0, index=0, bbox=(47.0, lines[0].bbox[1], 393.0, lines[-1].bbox[3]), lines=lines)
+
+    first = block([line(100)])
+    assert _continues_paragraph(first, block([line(112), line(124), line(136, 200.0)]))
+    assert not _continues_paragraph(first, block([line(121), line(133), line(145, 200.0)]))  # 行送り 12 に対して 21 離れている

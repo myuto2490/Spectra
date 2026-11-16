@@ -22,7 +22,7 @@ import httpx
 
 from ..core.markup import placeholder
 from ..core.options import Formality, TranslateOptions
-from ..core.textnorm import is_degenerate
+from ..core.textnorm import is_degenerate, looks_untranslated
 from .base import Translator, Usage
 from .errors import (
     AuthenticationError,
@@ -295,6 +295,8 @@ class GeminiTranslator(Translator):
         else:
             self._good_response()
         if result is not None and len(result) == len(texts):
+            # 原文を英語のまま返した項目も、崩れた項目として扱う
+            result = [None if t is not None and looks_untranslated(s, t) else t for s, t in zip(texts, result)]
             # 出力が崩れた項目は、1 件ずつ訳し直す（それでも崩れれば原文のまま残す）
             if len(texts) > 1:
                 for i in [i for i, t in enumerate(result) if t is None]:

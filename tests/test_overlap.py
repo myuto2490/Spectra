@@ -1,5 +1,7 @@
 """訳文が見出しや別の段落と重なる・訳されないまま残る不具合の再発防止（Icarus 186 の Hesman et al. など）。"""
 
+import json
+
 import pymupdf
 
 from spectra.core.extract import extract_blocks
@@ -7,6 +9,10 @@ from spectra.core.models import BlockKind, DocumentAnalysis, Segment
 from spectra.core.options import RenderOptions
 from spectra.core.qa import _overlapping_lines
 from spectra.core.render import Renderer, _overlapping
+from spectra.core.textnorm import looks_untranslated
+from spectra.translate.cache import TranslationCache, cache_key
+from spectra.translate.dummy import DummyTranslator
+from spectra.translate.service import translate_texts
 
 
 def _split_math_line_page():
@@ -87,3 +93,48 @@ def test_qa_finds_translated_lines_drawn_on_top_of_each_other():
     assert _overlapping_lines(page, [tuple(page.rect)]) == 1
     # 書き換えていない範囲（原文のまま）の行は数えない
     assert _overlapping_lines(page, []) == 0
+
+
+def test_english_echo_is_not_a_translation():
+    src = "(3–7 K rather than 6–10 K). The best-fit CO profiles are shown in Fig. 9."
+    assert looks_untranslated(src, src)
+    assert not looks_untranslated(src, "（6〜10 K ではなく 3〜7 K）。最適な CO プロファイルを図 9 に示す。")
+    assert not looks_untranslated("NASA Ames Research Center", "NASA Ames Research Center")  # 固有名詞だけ
+    assert not looks_untranslated('Fig. <x id="0"/>', 'Fig. <x id="0"/>')
+
+
+def test_english_echo_from_engine_or_cache_is_retranslated(tmp_path):
+    src = "The best-fit CO profiles corresponding to the nominal profiles are shown here."
+
+    class Echo(DummyTranslator):
+        def _translate_batch(self, texts):
+            return list(texts)  # 原文をそのまま返す
+
+    cache = TranslationCache(tmp_path / "cache.db")
+    # 英語のまま返った段落は、結果にもキャッシュにも入れない（原文のまま残し、警告に出す）
+    assert translate_texts([src, "OK"], Echo(), cache) == {"OK": "OK"}
+    assert cache.count() == 1
+    assert translate_texts([src], DummyTranslator(), cache)[src] != src
+    # 以前に英語のまま保存された訳はキャッシュから使わない
+    poisoned = TranslationCache(tmp_path / "poisoned.db")
+    t = DummyTranslator()
+    poisoned.put_many({cache_key(t.cache_namespace(), src): src})
+    assert translate_texts([src], t, poisoned)[src] != src
+
+
+def test_gemini_retries_an_item_returned_in_english():
+    from tests.test_translators import gemini, gemini_reply
+
+    src = "The best-fit CO profiles corresponding to the nominal profiles are shown here."
+    calls = []
+
+    def handler(req):
+        items = json.loads(json.loads(req.content)["contents"][0]["parts"][0]["text"])
+        calls.append(len(items))
+        if len(calls) == 1:
+            return gemini_reply([{"id": i, "text": it["text"]} for i, it in enumerate(items)])  # 英語のまま
+        return gemini_reply([{"id": 0, "text": "最適な CO プロファイルを示す。"}])
+
+    out = gemini(handler).translate([src, "another sentence that is long enough here"])
+    assert out[0] == "最適な CO プロファイルを示す。"
+    assert calls[0] == 2 and len(calls) == 3  # 英語のまま返った 2 件を 1 件ずつ訳し直した

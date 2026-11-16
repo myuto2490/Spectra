@@ -111,7 +111,7 @@ class LayoutResult:
     scale: float  # 原文サイズに対する実際の倍率
     fits: bool
     line_count: int
-    used: list[Rect] = field(default_factory=list)  # 領域ごとの使用範囲
+    used: list[tuple[int, Rect]] = field(default_factory=list)  # 領域ごとの使用範囲（ページ, 矩形）
     runs: list[PlacedRun] = field(default_factory=list)
 
 
@@ -468,7 +468,9 @@ def layout(
     return LayoutResult(placed, scale * text_scale, best.fits, len(best.lines), used, placed_runs)
 
 
-def _place(trial: _Trial, frames: list[Frame], style: TextStyle) -> tuple[list[PlacedGlyphs], list[Rect], list[PlacedRun]]:
+def _place(
+    trial: _Trial, frames: list[Frame], style: TextStyle
+) -> tuple[list[PlacedGlyphs], list[tuple[int, Rect]], list[PlacedRun]]:
     size, pitch = trial.size, trial.pitch
     placed: list[PlacedGlyphs] = []
     placed_runs: list[PlacedRun] = []
@@ -531,7 +533,7 @@ def _place(trial: _Trial, frames: list[Frame], style: TextStyle) -> tuple[list[P
             used.extend([None] * (fi + 1 - len(used)))  # type: ignore[list-item]
         prev = used[fi]
         used[fi] = rect if prev is None else (min(prev[0], rect[0]), min(prev[1], rect[1]), max(prev[2], rect[2]), max(prev[3], rect[3]))
-    return placed, [u for u in used if u is not None], placed_runs
+    return placed, [(frames[i].page, u) for i, u in enumerate(used) if u is not None], placed_runs
 
 
 def _top_pad(frame: Frame, style: TextStyle) -> float:

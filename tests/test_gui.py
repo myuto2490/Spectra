@@ -1136,3 +1136,23 @@ def test_context_menu_find_opens_the_find_bar_with_the_selection(window, paper_p
     w.find_bar.close_bar()
     w.preview.findRequested.emit("")  # 何も選んでいなければ、帯を開くだけ（前に探した語は残る）
     assert not w.find_bar.isHidden() and w.find_bar.edit.text() == "neural"
+
+
+def test_reopened_paper_translates_all_pages_not_the_previous_range(window, paper_path):
+    """前に一部のページだけ翻訳した論文を開き直しても、ページの欄は「全ページ」に戻る。
+
+    （前回の範囲が残ると、気づかずに続きを翻訳しても、最初の数ページしか訳されない。）
+    """
+    app, w = window
+    assert w.open_file(paper_path)
+    pump(app, 5, until=lambda: w.inspector.est_paragraphs.text().isdigit())
+    w.inspector.set_page_range(0, 1)  # 1〜2 ページだけ試しに翻訳する
+    assert w.inspector.page_range() == (0, 1)
+    w.start_translation()
+    pump(app, 60, until=lambda: not w._busy())
+    assert w.paper.translation is not None and w.paper.translation.last_page == 1
+
+    w.show_library()
+    assert w.open_paper(w.library.papers()[0].id)
+    assert w.translated_range == (0, 1)  # 保存済みの訳文は 1〜2 ページ
+    assert w.inspector.page_range() == (0, None)  # 次に翻訳するのは全ページ

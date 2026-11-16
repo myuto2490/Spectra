@@ -31,6 +31,22 @@ def is_degenerate(text: str) -> bool:
     return _COMBINING_RUN.search(text) is not None
 
 
+_TAG = re.compile(r"<[^>]*>")
+_JAPANESE = re.compile(r"[\u3040-\u30ff\u3400-\u9fff]")
+_ENGLISH_WORD = re.compile(r"\b[a-z]{3,}\b")
+
+
+def looks_untranslated(source: str, translated: str) -> bool:
+    """訳文が英語のまま（かなも漢字も無い）で、原文が英語の文（小文字の単語が 3 つ以上）だったか。
+
+    翻訳エンジンが原文をそのまま返すことがある。そのまま使うと、訳されないまま「訳した」ことになる。
+    固有名詞だけの見出し（"NASA Ames"）などは、原文に小文字の単語が少ないので当てはまらない。
+    """
+    if _JAPANESE.search(translated):
+        return False
+    return len(_ENGLISH_WORD.findall(_TAG.sub(" ", source))) >= 3
+
+
 def normalize_translation(markup: str) -> str:
     text = _LEAKED_TAG.sub("", markup)
     text = _COMBINING_RUN.sub("", text)

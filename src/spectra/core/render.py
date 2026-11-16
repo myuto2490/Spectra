@@ -49,6 +49,8 @@ class SegmentReport:
 @dataclass
 class RenderReport:
     segments: list[SegmentReport] = field(default_factory=list)
+    # 訳文が収まらない・他の訳文と重なるため、原文のまま残した段落
+    kept_original: list[SegmentReport] = field(default_factory=list)
 
     @property
     def shrunk(self) -> list[SegmentReport]:
@@ -75,6 +77,28 @@ def _unchanged(seg: Segment) -> bool:
 
 def _rendered(segments: list[Segment]) -> list[Segment]:
     return [s for s in segments if s.translated and not _unchanged(s)]
+
+
+def _overlapping(layouts: list[tuple[Segment, LayoutResult]]) -> set[str]:
+    """描いた訳文の行の範囲が、別の枠（他の段落、または同じ段落の別の枠）の行と重なる段落。"""
+    boxes: dict[int, list[tuple[str, int, Rect]]] = defaultdict(list)
+    for seg, result in layouts:
+        for i, (pno, rect) in enumerate(result.used):
+            boxes[pno].append((seg.id, i, rect))
+    out: set[str] = set()
+    for items in boxes.values():
+        items.sort(key=lambda t: t[2][1])
+        for k, (sid, fi, a) in enumerate(items):
+            for sid2, fi2, b in items[k + 1 :]:
+                if b[1] >= a[3]:
+                    break
+                if (sid, fi) == (sid2, fi2):
+                    continue
+                w = min(a[2], b[2]) - max(a[0], b[0])
+                h = min(a[3], b[3]) - max(a[1], b[1])
+                if w > 1.0 and h > 1.0:
+                    out.update((sid, sid2))
+    return out
 
 
 def _complement(page: Rect, keep: list[Rect]) -> list[Rect]:
@@ -211,14 +235,26 @@ class Renderer:
                 single_line = len(r.line_rects) == 1 and len(seg.regions) == 1
                 last = i == len(seg.regions) - 1
                 rect = _expand(r, self.geometry(r.page), own[r.page], horizontal=single_line, vertical=last)
-            rect = self._clip_to_neighbors(seg, r.page, rect)
+            earlier = [f.rect for f in frames if f.page == r.page]
+            clipped = self._clip_to_neighbors(seg, r.page, rect, earlier)
             offset = None if r.first_baseline is None else r.first_baseline - r.rect[1]
-            frames.append(Frame(page=r.page, rect=rect, style=r.style, first_baseline_offset=offset))
+            if offset is not None:
+                offset -= clipped[1] - rect[1]  # 上端を下げた分、原文の 1 行目の位置は枠の上端に近づく
+                offset = offset if offset > 0 else None
+            frames.append(Frame(page=r.page, rect=clipped, style=r.style, first_baseline_offset=offset))
         return frames
 
-    def _clip_to_neighbors(self, seg: Segment, pno: int, rect: Rect) -> Rect:
-        """他の段落の枠と重なる部分を削る（訳文どうしが重なって書かれることを防ぐ）。"""
+    def _clip_to_neighbors(self, seg: Segment, pno: int, rect: Rect, earlier: list[Rect] = ()) -> Rect:
+        """他の段落の枠と重なる部分を削る（訳文どうしが重なって書かれることを防ぐ）。
+
+        earlier: 同じ段落の、このページの前の枠。段落の続きの枠が前の枠と上下に重なっている
+        （1 行が数式で左右のブロックに分かれ、続きのブロックが前の行の高さから始まる）と、
+        両方の枠に行を書いて重なるので、続きの枠の上端を前の枠の下に下げる。
+        """
         x0, y0, x1, y1 = rect
+        for o in earlier:
+            if min(x1, o[2]) - max(x0, o[0]) > 1 and o[1] < y0 < o[3]:
+                y0 = min(y1 - 1, o[3] + 0.5)
         for other_id, o in self._translated_rects(pno):
             if other_id == seg.id or min(x1, o[2]) - max(x0, o[0]) <= 1:
                 continue
@@ -288,10 +324,20 @@ class Renderer:
         self.fonts.prepare(_used_text(segments))
         total = len(segments) + len(self._pa)
         done = 0
+        layouts: list[tuple[Segment, LayoutResult]] = []
         for seg in segments:
             if should_cancel and should_cancel():
                 raise InterruptedError
-            result = self.layout_segment(seg)
+            layouts.append((seg, self.layout_segment(seg)))
+        # 収まらない（末尾の行が描かれない）段落と、訳文が他の訳文と重なる段落は、原文のまま残す（迷ったら訳さない）
+        keep = {seg.id for seg, result in layouts if not result.fits} | _overlapping(layouts)
+        for seg, result in layouts:
+            if seg.id in keep:
+                log.warning("render %s: translation does not fit or overlaps; kept the original", seg.id)
+                report.kept_original.append(SegmentReport(seg.id, seg.regions[0].page, result.scale, result.fits))
+                seg.translated = None
+        layouts = [(seg, result) for seg, result in layouts if seg.id not in keep]
+        for seg, result in layouts:
             movable = {rid for rid, run in seg.runs.items() if self._can_transplant(run)}
             for g in result.placed:
                 if g.run_id is not None and g.run_id in movable:

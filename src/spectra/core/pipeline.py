@@ -257,6 +257,11 @@ class TranslationJob:
         warnings = list(getattr(self.translator, "notices", []))
         if untranslated:
             warnings.append(f"{partial_note or '一部の段落を翻訳できませんでした'}。{untranslated} 個の段落は原文のままです。")
+        if render_report.kept_original:
+            warnings.append(
+                f"{len(render_report.kept_original)} 個の段落は、訳文が元の枠に収まらない、または他の段落と重なるため、原文のまま残しました。"
+            )
+            untranslated += len(render_report.kept_original)
         if render_report.shrunk:
             warnings.append(f"{len(render_report.shrunk)} 個の段落を、元の枠に収めるため小さめの文字で組みました。")
         if not report.ok:

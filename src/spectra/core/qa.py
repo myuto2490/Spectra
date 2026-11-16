@@ -123,6 +123,42 @@ def _lost_images(before: pymupdf.Page, after: pymupdf.Page) -> list[tuple]:
     return lost
 
 
+_CJK = re.compile(r"[\u3040-\u30ff\u3400-\u9fff\uff00-\uffef]")
+
+
+def _overlapping_lines(after: pymupdf.Page, written: list[Rect]) -> int:
+    """書き換えた範囲の訳文（和文を含む行）どうしが、重なって描かれている箇所の数。"""
+    zones = [inflate(r, 2) for r in written]
+    lines: list[tuple[Rect, float, bool]] = []
+    for b in after.get_text("dict", flags=TEXT_FLAGS)["blocks"]:
+        for ln in b.get("lines", ()):
+            spans = [s for s in ln["spans"] if s["text"].strip()]
+            if not spans:
+                continue
+            size = max(s["size"] for s in spans)
+            base = max(spans, key=lambda s: s["size"])["origin"][1]
+            # 行の矩形はフォントの上下の余白を含んで高いので、字面（ベースラインの 0.8 字上から 0.12 字下）で比べる
+            r = (ln["bbox"][0], base - size * 0.8, ln["bbox"][2], base + size * 0.12)
+            text = "".join(s["text"] for s in spans)
+            mine = bool(_CJK.search(text)) and any(rect_area(rect_intersect(r, z)) > 0 for z in zones)
+            lines.append((r, size, mine))
+    lines.sort(key=lambda t: t[0][1])
+    count = 0
+    for i, (a, sa, ma) in enumerate(lines):
+        for b, sb, mb in lines[i + 1 :]:
+            if b[1] >= a[3]:
+                break
+            # 段落中の数式（添字・分数）は訳文の行の上下にはみ出して置かれるので、訳文の行どうしだけを比べる
+            if not (ma and mb):
+                continue
+            size = min(sa, sb)
+            w = min(a[2], b[2]) - max(a[0], b[0])
+            h = min(a[3], b[3]) - max(a[1], b[1])
+            if w > size * 0.5 and h > size * 0.2:
+                count += 1
+    return count
+
+
 def check(
     before: pymupdf.Document,
     after: pymupdf.Document,
@@ -148,6 +184,10 @@ def check(
         lost_drawings = _lost_drawings(pb, pf, mine_rects)
         if lost_drawings:
             report.issues.append(QAIssue(pno, "drawings", f"図形が {lost_drawings} 個失われました"))
+
+        overlaps = _overlapping_lines(pf, mine_rects)
+        if overlaps:
+            report.issues.append(QAIssue(pno, "overlap", f"訳文が別の行と重なっています（{overlaps} か所）"))
 
         for d in pa.decisions:
             if d.translate:

@@ -7,6 +7,8 @@
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-11-16
+
 ### 修正
 
 - 一部の Elsevier の論文（Planetary and Space Science など）で、本文のほぼ全部が数式と判定され、翻訳されない問題を修正しました。本文の Times のフォント名（AdvP4DF60E など）が記号用のフォントの名前と区別できなかったためで、フォントごとに中身（英単語を組んでいるか）を見て判定します
@@ -189,7 +191,7 @@
 **コマンドラインツール**
 - `spectra translate` / `spectra estimate` / `spectra key`
 
-[Unreleased]: https://github.com/myuto2490/Spectra/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/myuto2490/Spectra/compare/v0.4.2...HEAD
 [0.1.0]: https://github.com/myuto2490/Spectra/releases/tag/v0.1.0
 [0.1.1]: https://github.com/myuto2490/Spectra/compare/v0.1.0...v0.1.1
 [0.1.2]: https://github.com/myuto2490/Spectra/compare/v0.1.1...v0.1.2
@@ -200,3 +202,4 @@
 [0.3.0]: https://github.com/myuto2490/Spectra/compare/v0.2.0...v0.3.0
 [0.4.0]: https://github.com/myuto2490/Spectra/compare/v0.3.0...v0.4.0
 [0.4.1]: https://github.com/myuto2490/Spectra/compare/v0.4.0...v0.4.1
+[0.4.2]: https://github.com/myuto2490/Spectra/compare/v0.4.1...v0.4.2

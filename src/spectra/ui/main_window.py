@@ -1365,8 +1365,9 @@ class MainWindow(QMainWindow):
         except Exception:
             log.warning("saved translation is unreadable: %s", paper.translated_path, exc_info=True)
             return False
+        # 訳したページの範囲は translated_range に持つ。「翻訳するページ」の欄は全ページのままにする
+        # （前回の範囲を入れると、気づかずに翻訳し直したとき、そのページまでしか訳されない）
         self._set_translation(pdf, doc, (t.first_page, t.last_page))
-        self.inspector.set_page_range(t.first_page, t.last_page)
         return True
 
     def _set_translation(self, pdf: bytes, doc: pymupdf.Document, page_range: tuple[int, int | None]) -> None:

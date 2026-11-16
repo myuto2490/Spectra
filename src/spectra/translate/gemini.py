@@ -290,6 +290,10 @@ class GeminiTranslator(Translator):
             result = self._request(items)
         except _BlockedError:
             result = None
+        if result is None:
+            self._bad_response("blocked, empty or malformed")
+        else:
+            self._good_response()
         if result is not None and len(result) == len(texts):
             # 出力が崩れた項目は、1 件ずつ訳し直す（それでも崩れれば原文のまま残す）
             if len(texts) > 1:

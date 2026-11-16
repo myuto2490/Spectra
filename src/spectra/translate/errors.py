@@ -73,5 +73,12 @@ class ServiceError(TranslatorError):
     retryable = True
 
 
+class NoValidResponseError(TranslatorError):
+    """応答が空・壊れていて、訳文を 1 件も受け取れなかった（待っても直らないので、再試行しない）。"""
+
+    title = "翻訳サーバーから有効な応答がありませんでした"
+    hint = "しばらくしてからやり直してください。訳せた段落はキャッシュに保存されます。"
+
+
 class CancelledError(TranslatorError):
     title = "キャンセルされました"

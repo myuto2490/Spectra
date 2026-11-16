@@ -12,13 +12,21 @@ from typing import ClassVar
 import httpx
 
 from ..core.options import TranslateOptions
-from .errors import CancelledError, NetworkError, RateLimitError, ServiceError, TranslatorError
+from .errors import (
+    CancelledError,
+    NetworkError,
+    NoValidResponseError,
+    RateLimitError,
+    ServiceError,
+    TranslatorError,
+)
 
 log = logging.getLogger(__name__)
 
 USER_AGENT = "Spectra (+https://github.com/myuto2490/Spectra)"
 RETRY_DELAYS = (1.0, 2.0, 4.0, 8.0, 16.0)
 MAX_RETRY_AFTER = 60.0
+MAX_BAD_RESPONSES = 8  # 空・壊れた応答がこの回数続いたら、それ以上リクエストを送らずに打ち切る
 
 
 @dataclass(frozen=True)
@@ -54,6 +62,7 @@ class Translator(ABC):
         self._owns_client = client is None
         self.cancel_event = cancel_event or threading.Event()
         self.sleep: Callable[[float], None] = self._interruptible_sleep
+        self._bad_responses = 0  # 連続して、使えない応答だった回数
 
     # -- サブクラスで実装 ----------------------------------------------------
 
@@ -63,6 +72,16 @@ class Translator(ABC):
 
         訳せなかった項目は None を返す（その段落は原文のまま一切変更しない）。
         """
+
+    def _good_response(self) -> None:
+        self._bad_responses = 0
+
+    def _bad_response(self, why: str) -> None:
+        """使えない応答（空・壊れた JSON・件数の不一致など）を数え、続いたら NoValidResponseError で打ち切る。"""
+        self._bad_responses += 1
+        log.warning("%s: unusable response (%d in a row): %s", self.engine_id, self._bad_responses, why)
+        if self._bad_responses >= MAX_BAD_RESPONSES:
+            raise NoValidResponseError(f"使えない応答が {self._bad_responses} 回続いたため、翻訳を中止しました。")
 
     def usage(self) -> Usage | None:
         return None

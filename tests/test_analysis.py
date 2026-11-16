@@ -1,3 +1,5 @@
+import re
+
 import pymupdf
 import pytest
 
@@ -585,3 +587,37 @@ def test_find_text_fonts_separates_numbered_body_and_symbol_fonts():
         for name in ("AdvP4C4E74", "AdvP4C4E46", "AdvP4C4E51", "AdvPSMP10", "AdvPi2"):
             assert is_math_font(name), name
     assert is_math_font("AdvP4DF60E")
+
+
+def test_elsevier_entity_font_is_kept_as_original_glyph():
+    # AdvEls-ent5 などは 1 字ずつの特殊文字のフォントで、"10–15°S" の "°" が "1" として取り出される
+    doc = pymupdf.open()
+    page = doc.new_page(width=595, height=842)
+    y = 100
+    page.insert_text((60, y), "The winds were measured at 10-15", fontname="tiro", fontsize=10)
+    x = 60 + pymupdf.get_text_length("The winds were measured at 10-15", fontname="tiro", fontsize=10)
+    page.insert_text((x, y), "1", fontname="cour", fontsize=10)
+    page.insert_text((x + 6, y), " South latitude near the equatorial region.", fontname="tiro", fontsize=10)
+    page.insert_text((60, y + 12), "These results are compared with the spacecraft retrievals.", fontname="tiro", fontsize=10)
+    for xref, _, _, name, *_ in page.get_fonts():
+        if "Courier" in name:
+            doc.xref_set_key(xref, "BaseFont", "/MNENOH+AdvEls-ent5")
+    doc = pymupdf.open("pdf", doc.tobytes())
+    a = analyze_document(doc)
+    assert _find(a, "measured at").translate
+    source = next(s.source for s in a.segments if "measured at" in s.source)
+    assert "151" not in source
+    assert re.search(r'10-15 ?<x id="0"/> South', source), source
+
+
+def test_elsevier_symbol_and_garbled_spans_are_math():
+    from spectra.core.fonts import is_math_font, is_math_span
+
+    for name in ("MNENOH+AdvEls-ent5", "AdvEls-ent8", "AdvMacMthSyN", "AdvMacMthSy"):
+        assert is_math_font(name), name
+    for name in ("AdvMacT_R", "AdvUnivers", "AdvGulliver-SCO"):
+        assert not is_math_font(name), name
+    # 対応の壊れた記号（"∼" が "\x02"、"×" が "\x03"）は、どのフォントでも数式として元の字形のまま残す
+    for text in ("\x02", " \x03", "\x04", ""):
+        assert is_math_span("Times-Roman", text, "Times-Roman"), repr(text)
+    assert not is_math_span("Times-Roman", "South", "Times-Roman")

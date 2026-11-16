@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 from .base import Translator
 from .cache import TranslationCache, cache_key
-from .errors import CancelledError, TranslatorError
+from .errors import CancelledError, NoValidResponseError, TranslatorError
 
 ProgressFn = Callable[[int, int], None]  # (完了文字数, 全文字数)
 
@@ -79,4 +79,7 @@ def translate_texts(
         if results and not isinstance(e, (PartialTranslationError, CancelledError)):
             raise PartialTranslationError(e, results) from e
         raise
+    if p.pending and not results:
+        # 1 件も訳せなかった（原文のままの PDF を「完了」として作らない）
+        raise NoValidResponseError("訳せた段落が 1 つもありませんでした。")
     return results

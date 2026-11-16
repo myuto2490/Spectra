@@ -82,6 +82,7 @@ def _rendered(segments: list[Segment]) -> list[Segment]:
 def _overlapping(layouts: list[tuple[Segment, LayoutResult]]) -> set[str]:
     """描いた訳文の行の範囲が、別の枠（他の段落、または同じ段落の別の枠）の行と重なる段落。"""
     boxes: dict[int, list[tuple[str, int, Rect]]] = defaultdict(list)
+    result_of = {seg.id: result for seg, result in layouts}
     for seg, result in layouts:
         for i, (pno, rect) in enumerate(result.used):
             boxes[pno].append((seg.id, i, rect))
@@ -96,7 +97,10 @@ def _overlapping(layouts: list[tuple[Segment, LayoutResult]]) -> set[str]:
                     continue
                 w = min(a[2], b[2]) - max(a[0], b[0])
                 h = min(a[3], b[3]) - max(a[1], b[1])
-                if w > 1.0 and h > 1.0:
+                # 行の範囲は字面より上下に広いので、上下に並ぶ段落の行が少し接するのは重なりとしない。
+                # 1 行の高さの 3 割以上重なるものだけを数える
+                line = min(result_of[sid].line_height, result_of[sid2].line_height)
+                if w > 1.0 and h > line * 0.3:
                     out.update((sid, sid2))
     return out
 

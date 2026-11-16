@@ -621,3 +621,43 @@ def test_elsevier_symbol_and_garbled_spans_are_math():
     for text in ("\x02", " \x03", "\x04", ""):
         assert is_math_span("Times-Roman", text, "Times-Roman"), repr(text)
     assert not is_math_span("Times-Roman", "South", "Times-Roman")
+
+
+def _elsevier_table_page(caption_first_line, caption_second_line):
+    """Elsevier の表: 番号の行（名前に Bold の無い太字）の下に題名、その下に灰色の地と罫線の表。本文より小さい文字。"""
+    doc = pymupdf.open()
+    page = doc.new_page(width=595, height=842)
+    for i in range(6):
+        page.insert_text(
+            (60, 100 + i * 12), "The winds of Titan were measured with infrared heterodyne spectroscopy.", fontname="tiro", fontsize=10
+        )
+    page.insert_text((60, 200), caption_first_line, fontname="tibo", fontsize=6.5)
+    if caption_second_line:
+        page.insert_text((60, 208), caption_second_line, fontname="tiro", fontsize=6.5)
+    page.draw_rect((60, 212, 540, 264), color=None, fill=(0.93, 0.93, 0.93))  # Elsevier の表の薄い灰色の地
+    for y in (214, 226, 262):
+        page.draw_line((60, y), (540, y), width=0.5)
+    page.insert_text((64, 222), "Date", fontname="tiro", fontsize=6.5)
+    page.insert_text((300, 222), "Wind speed (m/s)", fontname="tiro", fontsize=6.5)
+    for i, (date, speed) in enumerate([("November 1980", "100"), ("July 3, 1989", "100"), ("October 1995", "210")]):
+        page.insert_text((64, 236 + i * 9), date, fontname="tiro", fontsize=6.5)
+        page.insert_text((300, 236 + i * 9), speed, fontname="tiro", fontsize=6.5)
+    for xref, _, _, name, *_ in page.get_fonts():
+        if name == "Times-Bold":
+            doc.xref_set_key(xref, "BaseFont", "/MNENAB+AdvTT5a1c2d3e")
+    return pymupdf.open("pdf", doc.tobytes())
+
+
+def test_table_caption_without_delimiter_or_bold_name_is_translated():
+    # "Table 1" の後に区切り記号が無く、ラベルのフォント名に Bold が無い（Elsevier の Planetary and Space Science など）
+    a = analyze_document(_elsevier_table_page("Table 1", "Titan wind speed: 1981-2005."))
+    cap = _find(a, "Titan wind speed")
+    assert cap.kind == BlockKind.CAPTION
+    assert cap.translate
+    assert not _find(a, "November 1980").translate  # 表の中身は訳さない
+
+
+def test_table_sentence_in_label_font_position_is_not_caption():
+    # 番号の後が小文字で続く文（"Table 1 shows …"）は、ラベルの書式でもキャプションにしない
+    a = analyze_document(_elsevier_table_page("Table 1", "shows the wind speed of Titan."))
+    assert _find(a, "shows the wind speed").kind != BlockKind.CAPTION

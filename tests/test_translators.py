@@ -406,3 +406,63 @@ def test_bold_tags_survive_round_trip():
     out = t.translate(["<b>Results.</b> We find &lt;1 <x id=\"0\"/>"])[0]
     assert calls[0]["items"][0]["text"] == '<b>Results.</b> We find <1 <x id="0"/>'
     assert out == '<b>結果。</b> We find &lt;1 <x id="0"/>'
+
+
+# ---- 使えない応答が続いたとき ----------------------------------------------------
+
+
+def broken_handler(calls: list):
+    def handler(req: httpx.Request):
+        calls.append(1)
+        return httpx.Response(200, json={"candidates": [{"content": {"parts": [{"text": ""}]}, "finishReason": "STOP"}]})
+
+    return handler
+
+
+def test_unusable_responses_stop_after_a_limit():
+    from spectra.translate.base import MAX_BAD_RESPONSES
+    from spectra.translate.errors import NoValidResponseError
+
+    calls: list = []
+    t = gemini(broken_handler(calls))
+    with pytest.raises(NoValidResponseError) as e:
+        t.translate([f"para {i}" for i in range(200)])
+    assert len(calls) == MAX_BAD_RESPONSES  # 200 件を 1 件ずつ訳し直すところまで続けない
+    assert "有効な応答" in e.value.user_message() and "やり直して" in e.value.user_message()
+
+
+def test_one_bad_item_does_not_stop_the_rest():
+    def handler(req: httpx.Request):
+        items = json.loads(json.loads(req.content)["contents"][0]["parts"][0]["text"])
+        if any("POISON" in it["text"] for it in items):
+            return httpx.Response(200, json={"candidates": [], "promptFeedback": {"blockReason": "SAFETY"}})
+        return gemini_reply([{"id": it["id"], "text": "訳:" + it["text"]} for it in items])
+
+    t = gemini(handler)
+    out = t.translate([f"para {i}" for i in range(30)] + ["POISON"] + [f"more {i}" for i in range(20)])
+    assert out[:2] == ["訳:para 0", "訳:para 1"] and out[30] is None and out[-1] == "訳:more 19"
+
+
+def test_nothing_translated_is_an_error_not_a_result(tmp_path):
+    from spectra.translate.errors import NoValidResponseError
+
+    class Empty(DummyTranslator):
+        def _translate_batch(self, texts):
+            return [None] * len(texts)
+
+    with pytest.raises(NoValidResponseError):
+        translate_texts(["a", "b"], Empty())
+    # キャッシュだけで足りる場合は、翻訳しなくてよい
+    cache = TranslationCache(tmp_path / "cache.db")
+    translate_texts(["a"], DummyTranslator(), cache)
+    assert translate_texts(["a"], Empty(), cache)
+
+
+def test_job_fails_instead_of_finishing_with_original_text(paper_path):
+    from spectra.core.pipeline import TranslationJob
+    from spectra.translate.errors import NoValidResponseError
+
+    calls: list = []
+    job = TranslationJob(paper_path, gemini(broken_handler(calls)))
+    with pytest.raises(NoValidResponseError):
+        job.run(allow_partial=True)

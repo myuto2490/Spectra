@@ -536,3 +536,52 @@ def test_first_line_of_a_paragraph_still_joins_the_rest():
     first = block([line(100)])
     assert _continues_paragraph(first, block([line(112), line(124), line(136, 200.0)]))
     assert not _continues_paragraph(first, block([line(121), line(133), line(145, 200.0)]))  # 行送り 12 に対して 21 離れている
+
+
+# ---- 本文の Times が番号だけの名前（AdvP4DF60E）の Elsevier の論文 -------------------
+
+
+def _rename_fonts(doc, name):
+    """合成した PDF のフォント（Times）の名前を、Elsevier の組版の名前に付け替える。"""
+    for page in doc:
+        for xref, *_ in page.get_fonts():
+            doc.xref_set_key(xref, "BaseFont", f"/{name}")
+
+
+def test_numbered_elsevier_body_font_is_text_not_math():
+    # Planetary and Space Science (2010) など: 本文の Times が AdvP4DF60E、記号が AdvP4C4E74 のように、名前では区別できない
+    doc = pymupdf.open()
+    page = doc.new_page(width=595, height=842)
+    lines = [
+        "Infrared heterodyne spectroscopy enables spectral resolving power great",
+        "enough to directly measure fully resolved emission line profiles from",
+        "the stratosphere of Titan, and to retrieve winds and temperatures.",
+    ]
+    for i, text in enumerate(lines):
+        page.insert_text((60, 100 + i * 12), text, fontname="tiro", fontsize=10)
+    for i, text in enumerate(lines):
+        page.insert_text((60, 300 + i * 12), text.replace("the", "a"), fontname="tiro", fontsize=10)
+    _rename_fonts(doc, "AdvP4DF60E")
+    doc = pymupdf.open("pdf", doc.tobytes())
+    a = analyze_document(doc)
+    assert _find(a, "Infrared heterodyne").translate
+    assert _find(a, "a stratosphere of Titan").translate
+
+
+def test_find_text_fonts_separates_numbered_body_and_symbol_fonts():
+    from spectra.core.fonts import find_text_fonts, is_math_font, text_fonts
+
+    words = ["High", "spectral", "resolution", "infrared", "observations", "of", "Titan", "winds"]
+    spans = [("ABCDEF+AdvP4DF60E", w) for w in words]
+    # 記号フォントの文字（"=" が "¼"、"−" が "\x03"、根号の上線が "ﬃ"、小数点が ":"）は英単語にならない
+    spans += [("AdvP4C4E74", t) for t in ("¼", "\x03", "þ", "ð", "Þ", "p")]
+    spans += [("AdvP4C4E46", t) for t in ("ffiffiffiffi", "ﬃﬃﬃﬃ", "Z", "c", "X")]
+    spans += [("AdvP4C4E51", t) for t in (":", ";", "=", "@")]
+    found = find_text_fonts(spans)
+    assert found == {"AdvP4DF60E"}
+    assert is_math_font("AdvP4DF60E")  # 解析の外では、これまでどおり記号フォントとみなす（迷ったら訳さない）
+    with text_fonts(found):
+        assert not is_math_font("ABCDEF+AdvP4DF60E")
+        for name in ("AdvP4C4E74", "AdvP4C4E46", "AdvP4C4E51", "AdvPSMP10", "AdvPi2"):
+            assert is_math_font(name), name
+    assert is_math_font("AdvP4DF60E")

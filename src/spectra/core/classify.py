@@ -100,6 +100,48 @@ def _bold_label_caption(block: TextBlock) -> bool:
     return False
 
 
+def _label_caption_by_graphic(block: TextBlock, body_size: float, rects: list) -> bool:
+    """区切り記号がなく、ラベルが太字と判定されないキャプション（Elsevier の "Table 1" の行の下に "Titan wind speed: …"）。
+
+    1〜3 行で、1 行目が "Table 1" などで始まり、番号までのフォントが続きと違う（名前に Bold の無い太字など）か
+    太字で、続きが大文字か括弧で始まり、文字が本文より小さいか番号までが太字で、すぐ上か下に図・表がある。
+    本文の "Table 1 shows …" は、続きが小文字で、ラベルが続きと同じフォントなので当てはまらない。
+    """
+    if len(block.lines) > 3:
+        return False
+    first = block.lines[0]
+    m = _CAPTION_LABEL.match(first.text + " ")  # ラベルだけの行（番号の後で改行）も認める
+    if not m:
+        return False
+    label: list[Span] = []
+    rest: Span | None = None
+    pos = 0
+    for span in first.spans:
+        for ch in span.text:
+            if ch.strip() and pos < m.end():
+                label.append(span)
+            elif ch.strip() and rest is None:
+                rest = span
+            pos += 1
+    if rest is None:  # 続きが 2 行目から始まる
+        rest = next((s for ln in block.lines[1:] for s in ln.spans if s.text.strip()), None)
+    if not label or rest is None:
+        return False
+    head = rest.text.lstrip()[:1]
+    if not (head.isupper() or head in "(["):
+        return False
+    bold_label = all(s.is_bold for s in label) and not rest.is_bold
+    other_font = base_name(rest.font) not in {base_name(s.font) for s in label}
+    if not (bold_label or other_font):
+        return False
+    if not bold_label and max(s.size for s in label) >= body_size * 0.95:
+        return False
+    x0, y0, x1, y1 = block.bbox
+    reach = body_size * 2
+    # 左右に重なり、上下の隙間が本文の文字 2 つ分以内
+    return any(min(x1, r[2]) - max(x0, r[0]) > 0 and max(r[1] - y1, y0 - r[3]) <= reach for r in rects)
+
+
 def _split_header(block: TextBlock, size: float) -> bool:
     """1 行の中で、語のまとまりが大きく離れている（左に題名、右にページ番号、のような柱の並び）。"""
     spans = [s for s in block.lines[0].spans if s.text.strip()]
@@ -287,7 +329,7 @@ class DocumentClassifier:
         decisions = []
         for b in blocks:
             st = stats[b.index]
-            kind = self._kind(b, st, height)
+            kind = self._kind(b, st, height, figures + tables)
             if b.index in front:
                 kind, skip = front[b.index]
             else:
@@ -339,9 +381,9 @@ class DocumentClassifier:
 
     # -- 種類 ------------------------------------------------------------
 
-    def _kind(self, b: TextBlock, st: BlockStats, page_height: float) -> BlockKind:
+    def _kind(self, b: TextBlock, st: BlockStats, page_height: float, graphics: list = ()) -> BlockKind:
         body = self.body_size
-        if _CAPTION.match(st.text) or _bold_label_caption(b):
+        if _CAPTION.match(st.text) or _bold_label_caption(b) or _label_caption_by_graphic(b, body, list(graphics)):
             return BlockKind.CAPTION
         if b.page == 0 and st.size >= body * 1.35:
             return BlockKind.TITLE

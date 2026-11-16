@@ -4,6 +4,7 @@ import json
 
 import pymupdf
 
+from spectra.core.analysis import analyze_document
 from spectra.core.extract import extract_blocks
 from spectra.core.models import BlockKind, DocumentAnalysis, Segment
 from spectra.core.options import RenderOptions
@@ -93,6 +94,38 @@ def test_qa_finds_translated_lines_drawn_on_top_of_each_other():
     assert _overlapping_lines(page, [tuple(page.rect)]) == 1
     # 書き換えていない範囲（原文のまま）の行は数えない
     assert _overlapping_lines(page, []) == 0
+
+
+def _split_paragraph_doc():
+    """前のページの段落が文の途中で終わり、次のページの段落が括弧から始まる。"""
+    doc = pymupdf.open()
+    first = doc.new_page(width=595, height=842)
+    for i, t in enumerate(
+        [
+            "The cooler temperature profile provides a better fit to the data",
+            "over the entire line than the nominal and warmer profiles. This",
+            "implies that the tropospheric temperature is better represented",
+            "by a smaller increase over the Voyager radio occultation profile",
+        ]
+    ):
+        first.insert_text((60, 700 + i * 12), t, fontname="tiro", fontsize=10)
+    second = doc.new_page(width=595, height=842)
+    for i, t in enumerate(
+        [
+            "(3-7 K rather than 6-10 K). The best-fit CO profiles corresponding",
+            "to the nominal and warmer temperature profiles are shown in the",
+            "figure, together with the calculated spectra for these profiles.",
+        ]
+    ):
+        second.insert_text((60, 100 + i * 12), t, fontname="tiro", fontsize=10)
+    return pymupdf.open("pdf", doc.tobytes())
+
+
+def test_paragraph_continuing_with_parenthesis_on_next_page_is_one_segment():
+    a = analyze_document(_split_paragraph_doc())
+    seg = next(s for s in a.segments if "radio occultation profile" in s.source)
+    assert "(3-7 K rather than 6-10 K)" in seg.source
+    assert {r.page for r in seg.regions} == {0, 1}
 
 
 def test_english_echo_is_not_a_translation():

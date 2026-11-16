@@ -353,7 +353,8 @@ def _continues(prev: _Unit, nxt: _Unit) -> bool:
     if _SENTENCE_END.search(prev.markup):
         return False
     head = to_plain(nxt.markup).lstrip()
-    if not head or not (head[0].islower() or nxt.markup.startswith("<x")):
+    # 文の途中で切れた段落の続き: 小文字・数式で始まるか、括弧で始まる（"… profile" の次ページが "(3–7 K rather …"）
+    if not head or not (head[0].islower() or nxt.markup.startswith("<x") or head[0] in "(["):
         return False
     a, b = prev.region.style.size, nxt.region.style.size
     return abs(a - b) <= max(0.3, a * 0.05)

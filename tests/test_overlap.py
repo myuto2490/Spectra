@@ -75,12 +75,12 @@ def test_overlapping_translations_are_found():
     a = Segment(id="a", kind=BlockKind.BODY, source="x", runs={}, regions=[])
     b = Segment(id="b", kind=BlockKind.BODY, source="y", runs={}, regions=[])
     c = Segment(id="c", kind=BlockKind.BODY, source="z", runs={}, regions=[])
-    la = LayoutResult([], 1.0, True, 2, used=[(0, (300, 610, 553, 672))])
-    lb = LayoutResult([], 1.0, True, 1, used=[(0, (300, 664, 360, 676))])  # a の最終行に食い込む
-    lc = LayoutResult([], 1.0, True, 3, used=[(0, (300, 680, 553, 720)), (1, (40, 600, 280, 700))])
+    la = LayoutResult([], 1.0, True, 2, used=[(0, (300, 610, 553, 672))], line_height=10.0)
+    lb = LayoutResult([], 1.0, True, 1, used=[(0, (300, 662, 360, 672))], line_height=10.0)  # a の最終行に食い込む
+    lc = LayoutResult([], 1.0, True, 3, used=[(0, (300, 671, 553, 720)), (1, (40, 600, 280, 700))], line_height=10.0)  # 1pt 接するだけ
     assert _overlapping([(a, la), (b, lb), (c, lc)]) == {"a", "b"}
     # 同じ段落の 2 つの枠が重なる場合も見つける
-    ld = LayoutResult([], 1.0, True, 3, used=[(0, (300, 610, 553, 672)), (0, (300, 660, 553, 694))])
+    ld = LayoutResult([], 1.0, True, 3, used=[(0, (300, 610, 553, 672)), (0, (300, 660, 553, 694))], line_height=10.0)
     assert _overlapping([(a, ld)]) == {"a"}
 
 
@@ -171,3 +171,18 @@ def test_gemini_retries_an_item_returned_in_english():
     out = gemini(handler).translate([src, "another sentence that is long enough here"])
     assert out[0] == "最適な CO プロファイルを示す。"
     assert calls[0] == 2 and len(calls) == 3  # 英語のまま返った 2 件を 1 件ずつ訳し直した
+
+
+def test_symbol_heavy_equation_line_with_squeezed_letters_is_math():
+    # OCR の数式の行が 1 つにつながると、字間の空いた "a e x p" が詰まって長い単語 "aexp" に見える
+    from spectra.core.classify import BlockStats, _looks_like_equation
+    from spectra.core.models import Line, Span, TextBlock
+
+    text = 'p ( y ) = (2,)n/»|LALT|i/a e x p < - ^ ( y - y ) T L A " l L T ( y - ?>} <2-12>'
+    span = Span(text, "Times-Roman", 9.9, 0, 0, (80, 227, 403, 243), (80, 240.6))
+    block = TextBlock(0, 0, (80, 227, 403, 243), [Line([span], (80, 227, 403, 243))])
+    assert _looks_like_equation(block, BlockStats(block))
+    sentence = "where x = 5 and y is the data"
+    span = Span(sentence, "Times-Roman", 9.9, 0, 0, (80, 227, 300, 243), (80, 240.6))
+    block = TextBlock(0, 0, (80, 227, 300, 243), [Line([span], (80, 227, 300, 243))])
+    assert not _looks_like_equation(block, BlockStats(block))

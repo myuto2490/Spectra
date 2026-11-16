@@ -113,6 +113,7 @@ class LayoutResult:
     line_count: int
     used: list[tuple[int, Rect]] = field(default_factory=list)  # 領域ごとの使用範囲（ページ, 矩形）
     runs: list[PlacedRun] = field(default_factory=list)
+    line_height: float = 0.0  # 描いた 1 行の高さ（字の上端から下端まで）
 
 
 # ---- 組版単位への分解 --------------------------------------------------------
@@ -465,7 +466,8 @@ def layout(
             best, scale = low_trial, lo
 
     placed, used, placed_runs = _place(best, frames, style)
-    return LayoutResult(placed, scale * text_scale, best.fits, len(best.lines), used, placed_runs)
+    line_height = best.size * (ASCENT + DESCENT)
+    return LayoutResult(placed, scale * text_scale, best.fits, len(best.lines), used, placed_runs, line_height)
 
 
 def _place(

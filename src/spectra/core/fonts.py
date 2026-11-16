@@ -16,6 +16,8 @@ _SUBSET_PREFIX = re.compile(r"^[A-Z]{6}\+")
 
 # 数式専用フォント。CMR（Computer Modern Roman）は本文にも使われるため含めない。
 # Adv* は Elsevier の古い組版の記号フォント（"=" が "¼"、"−" が "\x03"、根号の上線が "ﬃ" として取り出される）。
+# AdvEls-ent* は 1 字ずつの特殊文字のフォントで、"°" が "1"、"±" が "7"、"∼" が "X" のように、論文ごとに別の文字として
+# 取り出される。正しい文字に対応づけられないので、数式と同じく元の字形のまま残す。
 # 番号だけの名前の AdvP4C4E74 などは、論文によって本文の Times のこともあるので、ここには含めず文書ごとに決める（_ADV_NUMBERED）
 _MATH_FONT = re.compile(
     r"""^(
@@ -26,7 +28,7 @@ _MATH_FONT = re.compile(
         tex.?gyre.*math | fira.?math | garamond.?math | libertinus.?math |
         MTSY | MTMI | MTEX | MT.?Extra | Euclid | esint | stmary | wasy | bbm | dsrom |
         Symbol | SymbolMT | MathematicalPi | Mathematica | MathJax | KaTeX_(?!Main) |
-        Adv(PSMP | PSSym | PSMSAM | PSMSBM | MTSY | MTMI | MTEX | Pi\d)
+        Adv(PSMP | PSSym | PSMSAM | PSMSBM | MTSY | MTMI | MTEX | Pi\d | MacMthSy\w* | Els-ent\d+)
     )""",
     re.IGNORECASE | re.VERBOSE,
 )
@@ -124,6 +126,8 @@ def math_char_ratio(text: str) -> float:
     return sum(c in _MATH_CHARS for c in chars) / len(chars)
 
 
+_GARBLED = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\ue000-\uf8ff]")
+
 _CM_TEXT_FONT = re.compile(r"^(CMR|CMBX|CMB\d|CMSL|LMRoman|LMRomanSlant|CMU\s?Serif)", re.IGNORECASE)
 
 
@@ -136,6 +140,8 @@ def is_math_span(font: str, text: str, body_font: str) -> bool:
     if is_math_font(font):
         return True
     t = text.strip()
+    if t and len(t) <= 4 and _GARBLED.search(t):
+        return True  # 制御文字・私用領域の文字は、文字の対応が壊れた記号（訳文に出せないので元の字形のまま残す）
     if t and len(t) <= 4 and math_char_ratio(t) >= 0.5:
         return True
     name = base_name(font)

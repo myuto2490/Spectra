@@ -172,3 +172,17 @@ def test_gemini_retries_an_item_returned_in_english():
     assert out[0] == "最適な CO プロファイルを示す。"
     assert calls[0] == 2 and len(calls) == 3  # 英語のまま返った 2 件を 1 件ずつ訳し直した
 
+
+def test_symbol_heavy_equation_line_with_squeezed_letters_is_math():
+    # OCR の数式の行が 1 つにつながると、字間の空いた "a e x p" が詰まって長い単語 "aexp" に見える
+    from spectra.core.classify import BlockStats, _looks_like_equation
+    from spectra.core.models import Line, Span, TextBlock
+
+    text = 'p ( y ) = (2,)n/»|LALT|i/a e x p < - ^ ( y - y ) T L A " l L T ( y - ?>} <2-12>'
+    span = Span(text, "Times-Roman", 9.9, 0, 0, (80, 227, 403, 243), (80, 240.6))
+    block = TextBlock(0, 0, (80, 227, 403, 243), [Line([span], (80, 227, 403, 243))])
+    assert _looks_like_equation(block, BlockStats(block))
+    sentence = "where x = 5 and y is the data"
+    span = Span(sentence, "Times-Roman", 9.9, 0, 0, (80, 227, 300, 243), (80, 240.6))
+    block = TextBlock(0, 0, (80, 227, 300, 243), [Line([span], (80, 227, 300, 243))])
+    assert not _looks_like_equation(block, BlockStats(block))

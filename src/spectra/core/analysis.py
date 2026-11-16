@@ -7,7 +7,8 @@ from collections.abc import Callable
 import pymupdf
 
 from .classify import DocumentClassifier, estimate_body_font, estimate_body_size
-from .extract import extract_blocks
+from .extract import TEXT_FLAGS, extract_blocks
+from .fonts import find_text_fonts, has_numbered_adv_fonts, text_fonts
 from .models import (
     DocumentAnalysis,
     PageAnalysis,
@@ -37,6 +38,31 @@ def analyze_document(
 ) -> DocumentAnalysis:
     options = options or AnalysisOptions()
     pages = page_range(doc, options)
+    with text_fonts(_document_text_fonts(doc, pages)):
+        return _analyze(doc, options, pages, progress, should_cancel)
+
+
+def _document_text_fonts(doc: pymupdf.Document, pages: range) -> frozenset[str]:
+    """名前が記号フォントと区別できない Elsevier のフォント（AdvP4DF60E など）のうち、本文を組んでいるもの。"""
+    if not any(has_numbered_adv_fonts(f[3] for f in doc.get_page_fonts(pno)) for pno in pages):
+        return frozenset()
+    spans = (
+        (s["font"], s["text"])
+        for pno in pages
+        for b in doc[pno].get_text("dict", flags=TEXT_FLAGS)["blocks"]
+        for ln in b.get("lines", ())
+        for s in ln["spans"]
+    )
+    return find_text_fonts(spans)
+
+
+def _analyze(
+    doc: pymupdf.Document,
+    options: AnalysisOptions,
+    pages: range,
+    progress: ProgressFn | None,
+    should_cancel: Callable[[], bool] | None,
+) -> DocumentAnalysis:
     blocks = {pno: extract_blocks(doc[pno]) for pno in pages}
     all_blocks = [b for bl in blocks.values() for b in bl]
     body_size = estimate_body_size(all_blocks)

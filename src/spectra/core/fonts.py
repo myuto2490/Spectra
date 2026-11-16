@@ -6,12 +6,17 @@
 from __future__ import annotations
 
 import re
+from collections import defaultdict
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from functools import lru_cache
 
 _SUBSET_PREFIX = re.compile(r"^[A-Z]{6}\+")
 
 # 数式専用フォント。CMR（Computer Modern Roman）は本文にも使われるため含めない。
-# Adv* は Elsevier の古い組版の記号フォント（"=" が "¼"、"−" が "\x03"、根号の上線が "ﬃ" として取り出される）
+# Adv* は Elsevier の古い組版の記号フォント（"=" が "¼"、"−" が "\x03"、根号の上線が "ﬃ" として取り出される）。
+# 番号だけの名前の AdvP4C4E74 などは、論文によって本文の Times のこともあるので、ここには含めず文書ごとに決める（_ADV_NUMBERED）
 _MATH_FONT = re.compile(
     r"""^(
         CMMI | CMBSY | CMSY | CMEX | CMMIB | MSAM | MSBM | EUFM | EUFB | EUSM | EURM | RSFS |
@@ -21,10 +26,15 @@ _MATH_FONT = re.compile(
         tex.?gyre.*math | fira.?math | garamond.?math | libertinus.?math |
         MTSY | MTMI | MTEX | MT.?Extra | Euclid | esint | stmary | wasy | bbm | dsrom |
         Symbol | SymbolMT | MathematicalPi | Mathematica | MathJax | KaTeX_(?!Main) |
-        Adv(P[0-9A-F]{6} | PSMP | PSSym | PSMSAM | PSMSBM | MTSY | MTMI | MTEX | Pi\d)
+        Adv(PSMP | PSSym | PSMSAM | PSMSBM | MTSY | MTMI | MTEX | Pi\d)
     )""",
     re.IGNORECASE | re.VERBOSE,
 )
+
+# 名前が番号だけの Elsevier のフォント。記号フォント（AdvP4C4E74 など）のことも、本文の Times（AdvP4DF60E など）のこともある
+_ADV_NUMBERED = re.compile(r"^AdvP[0-9A-F]{6}$")
+# 文書の中で文章を組んでいるとわかった、番号だけの名前のフォント（find_text_fonts）。解析の間だけ設定する
+_TEXT_FONTS: ContextVar[frozenset[str]] = ContextVar("text_fonts", default=frozenset())
 
 _MONO_FONT = re.compile(
     r"(mono|courier|consol|menlo|inconsolata|source.?code|fira.?code|"
@@ -49,9 +59,48 @@ def base_name(font: str) -> str:
     return _SUBSET_PREFIX.sub("", font or "")
 
 
-@lru_cache(maxsize=1024)
 def is_math_font(font: str) -> bool:
-    return bool(_MATH_FONT.match(base_name(font)))
+    name = base_name(font)
+    if _ADV_NUMBERED.match(name):
+        return name not in _TEXT_FONTS.get()
+    return _is_named_math_font(name)
+
+
+@lru_cache(maxsize=1024)
+def _is_named_math_font(name: str) -> bool:
+    return bool(_MATH_FONT.match(name))
+
+
+_WORD = re.compile(r"[A-Za-z]{2,}")
+_LIGATURES = re.compile(r"(ff|fi|ffi|fl|ffl)+")  # 根号の上線は "ffiffi…" として取り出される
+_MIN_DISTINCT_WORDS = 5
+
+
+def find_text_fonts(spans: Iterable[tuple[str, str]]) -> frozenset[str]:
+    """番号だけの名前の Elsevier のフォントのうち、文章を組んでいるもの（異なる英単語が 5 つ以上）。
+
+    spans は (フォント名, 文字列) の並び。記号フォントの文字は "¼" "\x03" "ﬃ" などで、英単語にならない。
+    """
+    words: dict[str, set[str]] = defaultdict(set)
+    for font, text in spans:
+        name = base_name(font)
+        if _ADV_NUMBERED.match(name) and len(words[name]) < _MIN_DISTINCT_WORDS:
+            words[name].update(w.lower() for w in _WORD.findall(text) if not _LIGATURES.fullmatch(w))
+    return frozenset(name for name, ws in words.items() if len(ws) >= _MIN_DISTINCT_WORDS)
+
+
+def has_numbered_adv_fonts(font_names: Iterable[str]) -> bool:
+    return any(_ADV_NUMBERED.match(base_name(f)) for f in font_names)
+
+
+@contextmanager
+def text_fonts(names: frozenset[str]) -> Iterator[None]:
+    """この中では、names のフォントを（名前が記号フォントに似ていても）本文のフォントとして扱う。"""
+    token = _TEXT_FONTS.set(names)
+    try:
+        yield
+    finally:
+        _TEXT_FONTS.reset(token)
 
 
 @lru_cache(maxsize=1024)

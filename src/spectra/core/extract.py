@@ -29,26 +29,34 @@ def _to_rect(r) -> Rect:
 
 def extract_blocks(page: pymupdf.Page) -> list[TextBlock]:
     """ページのテキストブロックを読み取り、視覚的な行単位に整える。"""
-    data = page.get_text("dict", flags=TEXT_FLAGS)
+    textpage = page.get_textpage(flags=TEXT_FLAGS)
+    data = textpage.extractDICT()
+    chars: dict | None = None  # 文字ごとの位置（必要なページだけ読む）
     blocks: list[TextBlock] = []
-    for raw in data["blocks"]:
+    for bi, raw in enumerate(data["blocks"]):
         if raw.get("type") != 0:
             continue
         lines: list[Line] = []
-        for raw_line in raw["lines"]:
-            spans = [
-                Span(
-                    text=s["text"],
-                    font=s["font"],
-                    size=float(s["size"]),
-                    color=int(s["color"]),
-                    flags=int(s["flags"]),
-                    bbox=_to_rect(s["bbox"]),
-                    origin=(float(s["origin"][0]), float(s["origin"][1])),
+        for li, raw_line in enumerate(raw["lines"]):
+            spans: list[Span] = []
+            for si, s in enumerate(raw_line["spans"]):
+                if not s["text"]:
+                    continue
+                origin = (float(s["origin"][0]), float(s["origin"][1]))
+                if _origin_may_be_off(s):
+                    chars = chars or textpage.extractRAWDICT()
+                    origin = _first_glyph_origin(chars["blocks"][bi]["lines"][li]["spans"][si], origin)
+                spans.append(
+                    Span(
+                        text=s["text"],
+                        font=s["font"],
+                        size=float(s["size"]),
+                        color=int(s["color"]),
+                        flags=int(s["flags"]),
+                        bbox=_to_rect(s["bbox"]),
+                        origin=origin,
+                    )
                 )
-                for s in raw_line["spans"]
-                if s["text"]
-            ]
             if not spans or not "".join(s.text for s in spans).strip():
                 continue
             d = raw_line.get("dir", (1.0, 0.0))
@@ -62,6 +70,25 @@ def extract_blocks(page: pymupdf.Page) -> list[TextBlock]:
     for i, b in enumerate(blocks):
         b.index = i
     return blocks
+
+
+def _origin_may_be_off(span: dict) -> bool:
+    """スパンの基準点が、本文の文字の位置とずれているかもしれない。
+
+    スパンの基準点は先頭の文字の位置になる。上付き文字の直後の空白が上付きの高さに置かれていると
+    （"10⁻⁶ in the lower …" の " "）、続く本文の文字まで上付きの高さにあるものとして扱われ、
+    同じ行の左右の断片をつなげなくなる。先頭が空白で、文字の大きさより背の高いスパンだけを確かめる。
+    """
+    text, size = span["text"], float(span["size"])
+    return text[:1].isspace() and bool(text.strip()) and span["bbox"][3] - span["bbox"][1] > size * 1.2
+
+
+def _first_glyph_origin(raw_span: dict, default: tuple[float, float]) -> tuple[float, float]:
+    """空白以外の最初の文字のベースライン（左端はスパンの基準点のまま）。"""
+    for ch in raw_span.get("chars", ()):
+        if ch["c"].strip():
+            return (default[0], float(ch["origin"][1]))
+    return default
 
 
 def _make_block(page: int, index: int, lines: list[Line]) -> TextBlock:

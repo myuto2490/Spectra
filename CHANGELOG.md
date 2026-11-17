@@ -7,6 +7,15 @@
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-11-17
+
+### 修正
+
+- 段落の最終行が数式（"2.2⁺⁰·⁶₋₀.₄ × 10⁻⁶" など）で左右に分かれていると、続きの部分と直後の見出し（"5. Discussion"）が 1 つの段落として訳され、訳文が前の行や見出しと重なって読めなくなる問題を修正しました（Icarus の論文など）。上付き文字の直後の空白に引きずられて、行の高さを読み違えていたためです
+- 訳文が元の枠に収まらない、または別の段落の訳文と重なるときは、その段落を原文のまま残し、警告に出すようにしました。レイアウト検査でも、訳文の行どうしの重なりを調べます
+- 翻訳エンジンが段落を英語のまま返したとき、訳せたものとして扱い、原文のまま黙って残していた問題を修正しました。訳し直し、それでも英語のままなら原文のまま残して警告に出します。以前に保存された英語のままの訳も使いません
+- 前のページから文の途中で続く段落が括弧で始まる（"… profile" の次が "(3–7 K rather than …"）とき、2 つの段落を別々に訳していた問題を修正しました。1 つの段落として訳します
+
 ## [0.4.2] - 2026-11-16
 
 ### 修正
@@ -191,7 +200,7 @@
 **コマンドラインツール**
 - `spectra translate` / `spectra estimate` / `spectra key`
 
-[Unreleased]: https://github.com/myuto2490/Spectra/compare/v0.4.2...HEAD
+[Unreleased]: https://github.com/myuto2490/Spectra/compare/v0.4.3...HEAD
 [0.1.0]: https://github.com/myuto2490/Spectra/releases/tag/v0.1.0
 [0.1.1]: https://github.com/myuto2490/Spectra/compare/v0.1.0...v0.1.1
 [0.1.2]: https://github.com/myuto2490/Spectra/compare/v0.1.1...v0.1.2
@@ -203,3 +212,4 @@
 [0.4.0]: https://github.com/myuto2490/Spectra/compare/v0.3.0...v0.4.0
 [0.4.1]: https://github.com/myuto2490/Spectra/compare/v0.4.0...v0.4.1
 [0.4.2]: https://github.com/myuto2490/Spectra/compare/v0.4.1...v0.4.2
+[0.4.3]: https://github.com/myuto2490/Spectra/compare/v0.4.2...v0.4.3

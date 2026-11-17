@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from ..core.textnorm import looks_untranslated
 from .base import Translator
 from .cache import TranslationCache, cache_key
 from .errors import CancelledError, NoValidResponseError, TranslatorError
@@ -36,7 +37,8 @@ def plan(texts: list[str], namespace: str, cache: TranslationCache | None) -> Tr
     if cache is not None and unique:
         keys = {t: cache_key(namespace, t) for t in unique}
         hits = cache.get_many(list(keys.values()))
-        cached = {t: hits[k] for t, k in keys.items() if k in hits}
+        # 以前に英語のまま返された訳（キャッシュに残っている）は使わず、訳し直す
+        cached = {t: hits[k] for t, k in keys.items() if k in hits and not looks_untranslated(t, hits[k])}
     total = sum(len(t) for t in unique)
     return TranslationPlan(unique, cached, total, sum(len(t) for t in cached))
 
@@ -67,8 +69,8 @@ def translate_texts(
     try:
         for batch in translator.batches(p.pending):
             translated = translator.translate(batch)
-            # 訳せなかった項目（None）は結果にもキャッシュにも入れない
-            new = {s: t for s, t in zip(batch, translated) if t}
+            # 英語のまま返った項目も、訳せなかったものとして扱う（原文のまま残し、警告に出す）
+            new = {s: t for s, t in zip(batch, translated) if t and not looks_untranslated(s, t)}
             results.update(new)
             if cache is not None:
                 cache.put_many({cache_key(namespace, s): t for s, t in new.items()})

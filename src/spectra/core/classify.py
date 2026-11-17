@@ -282,7 +282,11 @@ def _looks_like_equation(block: TextBlock, st: BlockStats) -> bool:
         return True
     if not _EQUATION_SIGN.search(st.text):
         return False
-    return len(_LONG_WORD.findall(st.text)) <= 1 and st.words <= 4
+    if st.words > 4:
+        return False
+    # 記号が大半の行（OCR の読み取りで崩れた数式の "p ( y ) = (2,)n/»|LALT|i/a e x p < - ^ …" など）は、
+    # 字間を詰めて長い単語ができても数式とする
+    return len(_LONG_WORD.findall(st.text)) <= 1 or st.letters < st.chars * 0.45
 
 
 def _is_background_fill(d: dict) -> bool:

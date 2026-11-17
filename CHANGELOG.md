@@ -7,6 +7,8 @@
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-11-17
+
 ### 修正
 
 - 段落の最終行が数式（"2.2⁺⁰·⁶₋₀.₄ × 10⁻⁶" など）で左右に分かれていると、続きの部分と直後の見出し（"5. Discussion"）が 1 つの段落として訳され、訳文が前の行や見出しと重なって読めなくなる問題を修正しました（Icarus の論文など）。上付き文字の直後の空白に引きずられて、行の高さを読み違えていたためです
@@ -198,7 +200,7 @@
 **コマンドラインツール**
 - `spectra translate` / `spectra estimate` / `spectra key`
 
-[Unreleased]: https://github.com/myuto2490/Spectra/compare/v0.4.2...HEAD
+[Unreleased]: https://github.com/myuto2490/Spectra/compare/v0.4.3...HEAD
 [0.1.0]: https://github.com/myuto2490/Spectra/releases/tag/v0.1.0
 [0.1.1]: https://github.com/myuto2490/Spectra/compare/v0.1.0...v0.1.1
 [0.1.2]: https://github.com/myuto2490/Spectra/compare/v0.1.1...v0.1.2
@@ -210,3 +212,4 @@
 [0.4.0]: https://github.com/myuto2490/Spectra/compare/v0.3.0...v0.4.0
 [0.4.1]: https://github.com/myuto2490/Spectra/compare/v0.4.0...v0.4.1
 [0.4.2]: https://github.com/myuto2490/Spectra/compare/v0.4.1...v0.4.2
+[0.4.3]: https://github.com/myuto2490/Spectra/compare/v0.4.2...v0.4.3

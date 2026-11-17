@@ -156,7 +156,7 @@ def test_english_echo_from_engine_or_cache_is_retranslated(tmp_path):
 
 
 def test_gemini_retries_an_item_returned_in_english():
-    from tests.test_translators import gemini, gemini_reply
+    from test_translators import gemini, gemini_reply
 
     src = "The best-fit CO profiles corresponding to the nominal profiles are shown here."
     calls = []

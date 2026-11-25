@@ -7,6 +7,8 @@
 
 ## [Unreleased]
 
+## [0.4.4] - 2026-11-25
+
 ### 修正
 
 - 何度翻訳しても、ライブラリの状態が「◐ 一部」のままになることがある問題を修正しました。DOI・URL・所属・メールアドレス・著作権表示・数式の切れ端など、訳すところがない段落を、訳せなかった段落に数えていたためです。翻訳エンジンが原文のまま返しても、訳し終えたものとして保存し、次の翻訳で送り直しません。すでに「一部」になっている論文は、もう一度翻訳すると「翻訳済み」になります（送るのは残っていた数段落だけです）
@@ -205,7 +207,7 @@
 **コマンドラインツール**
 - `spectra translate` / `spectra estimate` / `spectra key`
 
-[Unreleased]: https://github.com/myuto2490/Spectra/compare/v0.4.3...HEAD
+[Unreleased]: https://github.com/myuto2490/Spectra/compare/v0.4.4...HEAD
 [0.1.0]: https://github.com/myuto2490/Spectra/releases/tag/v0.1.0
 [0.1.1]: https://github.com/myuto2490/Spectra/compare/v0.1.0...v0.1.1
 [0.1.2]: https://github.com/myuto2490/Spectra/compare/v0.1.1...v0.1.2
@@ -218,3 +220,4 @@
 [0.4.1]: https://github.com/myuto2490/Spectra/compare/v0.4.0...v0.4.1
 [0.4.2]: https://github.com/myuto2490/Spectra/compare/v0.4.1...v0.4.2
 [0.4.3]: https://github.com/myuto2490/Spectra/compare/v0.4.2...v0.4.3
+[0.4.4]: https://github.com/myuto2490/Spectra/compare/v0.4.3...v0.4.4

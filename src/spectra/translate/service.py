@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from ..core.textnorm import looks_untranslated, needs_translation
+from ..core.textnorm import has_words, looks_untranslated
 from .base import Translator
 from .cache import TranslationCache, cache_key
 from .errors import CancelledError, NoValidResponseError, TranslatorError
+
+log = logging.getLogger(__name__)
 
 ProgressFn = Callable[[int, int], None]  # (完了文字数, 全文字数)
 
@@ -69,12 +72,17 @@ def translate_texts(
     try:
         for batch in translator.batches(p.pending):
             translated = translator.translate(batch)
-            # 英語のまま返った項目も、訳せなかったものとして扱う（原文のまま残し、警告に出す）
+            # 英語の文が英語のまま返った項目も、訳せなかったものとして扱う（原文のまま残し、警告に出す）。
+            # 訳す語の無い段落（URL・DOI だけの行、所属とメールアドレスなど）は、原文のまま返れば訳し終えた
             new = {s: t for s, t in zip(batch, translated) if t and t.strip() and not looks_untranslated(s, t)}
-            # 訳す語の無い段落（URL・DOI だけの行、所属とメールアドレスなど）は、空で返っても原文のまま
-            # 「訳し終えた」ことにする（キャッシュにも入れ、次からは送り直さない）。
-            # 答えが返らなかった（ブロック・崩れなどで None）段落は、これまでどおり訳せなかったものとする
-            new.update({s: s for s, t in zip(batch, translated) if t is not None and s not in new and not needs_translation(s)})
+            # 空で返った項目は、訳せそうな語が 1 つも無い段落（URL・DOI だけの行、数式の切れ端など）に限り、
+            # 原文のまま「訳し終えた」ことにする（キャッシュにも入れ、次からは送り直さない）。
+            # 見出しや短い文は、空で返っても確定しない（訳せなかったものとし、次の翻訳で送り直す）。
+            # 答えが返らなかった（ブロック・崩れなどで None）段落も、これまでどおり訳せなかったものとする
+            as_is = {s: s for s, t in zip(batch, translated) if t is not None and not t.strip() and not has_words(s)}
+            if as_is:
+                log.info("translate: %d item(s) with nothing to translate were kept as they are", len(as_is))
+            new.update(as_is)
             results.update(new)
             if cache is not None:
                 cache.put_many({cache_key(namespace, s): t for s, t in new.items()})

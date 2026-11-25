@@ -84,6 +84,19 @@ def needs_translation(source: str) -> bool:
     return len({w.lower() for w in words} & _FUNCTION_WORDS) >= 4
 
 
+_ANY_WORD = re.compile(r"[A-Za-z]{3,}")
+
+
+def has_words(source: str) -> bool:
+    """URL・DOI・メールアドレス・定型句・タグを除いて、訳せそうな語（3 文字以上）が 1 つでもあるか。
+
+    数式の語（min, cos など）と、すべて大文字の略語（DOI, NASA など）は数えない。
+    "Introduction" や "2. Related Work" のような見出しは語があるので True。
+    """
+    text = _NOT_WORDS.sub(" ", _TAG.sub(" ", source))
+    return any(w.lower() not in _MATH_WORDS and not w.isupper() for w in _ANY_WORD.findall(text))
+
+
 def looks_untranslated(source: str, translated: str) -> bool:
     """訳文が英語のまま（かなも漢字も無い）で、原文が訳すべき英語の文（needs_translation）だったか。
 

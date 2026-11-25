@@ -10,7 +10,7 @@ from spectra.core.models import BlockKind, DocumentAnalysis, Segment
 from spectra.core.options import RenderOptions
 from spectra.core.qa import _overlapping_lines
 from spectra.core.render import Renderer, _overlapping
-from spectra.core.textnorm import looks_untranslated, needs_translation
+from spectra.core.textnorm import has_words, looks_untranslated, needs_translation
 from spectra.translate.cache import TranslationCache, cache_key
 from spectra.translate.dummy import DummyTranslator
 from spectra.translate.service import translate_texts
@@ -223,36 +223,66 @@ def test_needs_translation_separates_prose_from_metadata():
 
 def test_paragraph_with_nothing_to_translate_is_done_and_not_resent(tmp_path):
     sent: list[str] = []
+    url, orcid, prose = _NOTHING_TO_TRANSLATE[0], _NOTHING_TO_TRANSLATE[5], _PROSE[0]
 
     class Stubborn(DummyTranslator):
         def _translate_batch(self, texts):
             sent.extend(texts)
-            return ["" if "orcid" in t else t for t in texts]  # 原文のまま・空で返す
+            return ["" if t == url else t for t in texts]  # 原文のまま・空で返す
 
-    src_url, src_orcid = _NOTHING_TO_TRANSLATE[0], _NOTHING_TO_TRANSLATE[5]
-    prose = _PROSE[0]
     cache = TranslationCache(tmp_path / "cache.db")
-    out = translate_texts([src_url, src_orcid, prose], Stubborn(), cache)
+    out = translate_texts([url, orcid, prose], Stubborn(), cache)
     # 訳す語の無い段落は原文のまま「訳し終えた」。英語の文が英語のまま返ったものだけ、訳せなかった
-    assert out == {src_url: src_url, src_orcid: src_orcid}
+    assert out == {url: url, orcid: orcid}
     sent.clear()
-    translate_texts([src_url, src_orcid, prose], Stubborn(), cache)
+    translate_texts([url, orcid, prose], Stubborn(), cache)
     assert sent == [prose]  # 2 回目は、訳せなかった英語の文だけを送り直す
 
 
-def test_gemini_retries_an_item_returned_empty_but_not_metadata():
+# 空で返っても原文のまま確定してはいけない、短い見出しや文（一度確定すると、ずっと英語のまま「翻訳済み」になる）
+_SHORT_HEADINGS = [
+    "Introduction",
+    "2. Related Work",
+    "Table 2: Results on CIFAR-10.",
+    "We propose ResNet.",
+    "Takahiro Example https://orcid.org/0000-0000-0000-0000",
+]
+
+
+def test_empty_answer_does_not_settle_headings_or_short_sentences(tmp_path):
+    sent: list[str] = []
+
+    class Empty(DummyTranslator):
+        def _translate_batch(self, texts):
+            sent.extend(texts)
+            return [""] * len(texts)
+
+    cache = TranslationCache(tmp_path / "cache.db")
+    url = _NOTHING_TO_TRANSLATE[0]
+    out = translate_texts([*_SHORT_HEADINGS, url], Empty(), cache)
+    assert out == {url: url}  # 訳せそうな語が 1 つも無い行だけ、原文のまま確定する
+    for h in _SHORT_HEADINGS:
+        assert has_words(h), h
+    assert not any(has_words(s) for s in _NOTHING_TO_TRANSLATE[:2])
+    out = translate_texts([*_SHORT_HEADINGS, url], DummyTranslator(), cache)
+    for h in _SHORT_HEADINGS:
+        assert out[h] != h  # 次の翻訳で送り直され、訳される
+
+
+def test_gemini_retries_empty_items_once_each():
     from test_translators import gemini, gemini_reply
 
-    prose, url = _PROSE[0], _NOTHING_TO_TRANSLATE[0]
     calls = []
 
     def handler(req):
         items = json.loads(json.loads(req.content)["contents"][0]["parts"][0]["text"])
         calls.append(len(items))
         if len(calls) == 1:
-            return gemini_reply([{"id": i, "text": ""} for i, _ in enumerate(items)])  # 空で返す
-        return gemini_reply([{"id": 0, "text": "最適な CO プロファイルを示す。"}])
+            return gemini_reply([{"id": i, "text": ""} for i, _ in enumerate(items)])  # すべて空で返す
+        if items[0]["text"] == "Introduction":
+            return gemini_reply([{"id": 0, "text": "はじめに"}])
+        return gemini_reply([{"id": 0, "text": ""}])  # 2 回目も空
 
-    out = gemini(handler).translate([prose, url])
-    assert out[0] == "最適な CO プロファイルを示す。"
-    assert calls == [2, 1]  # 空で返った英語の文だけを 1 件で訳し直した（URL の行は送り直さない）
+    out = gemini(handler).translate(["Introduction", _NOTHING_TO_TRANSLATE[0]])
+    assert out == ["はじめに", ""]  # 空の項目は、どちらも 1 件で 1 回だけ訳し直した
+    assert calls == [2, 1, 1]

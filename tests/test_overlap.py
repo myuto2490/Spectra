@@ -10,7 +10,7 @@ from spectra.core.models import BlockKind, DocumentAnalysis, Segment
 from spectra.core.options import RenderOptions
 from spectra.core.qa import _overlapping_lines
 from spectra.core.render import Renderer, _overlapping
-from spectra.core.textnorm import looks_untranslated
+from spectra.core.textnorm import has_words, looks_untranslated, needs_translation
 from spectra.translate.cache import TranslationCache, cache_key
 from spectra.translate.dummy import DummyTranslator
 from spectra.translate.service import translate_texts
@@ -186,3 +186,103 @@ def test_symbol_heavy_equation_line_with_squeezed_letters_is_math():
     span = Span(sentence, "Times-Roman", 9.9, 0, 0, (80, 227, 300, 243), (80, 240.6))
     block = TextBlock(0, 0, (80, 227, 300, 243), [Line([span], (80, 227, 300, 243))])
     assert not _looks_like_equation(block, BlockStats(block))
+
+
+# 訳す語の無い段落（URL・DOI・所属・著作権表示・数式の切れ端）は、英語のまま返っても訳せなかったことにしない。
+# 以前はこれらが毎回「訳せなかった段落」に数えられ、何度訳し直しても「一部」のままだった。
+_NOTHING_TO_TRANSLATE = [
+    "DOI: https://doi.org/10.1016/j.example.2020.01.001",
+    '<x id="0"/>http://data.example.org/vol/archive/calib/ <x id="1"/>http://www.example.edu/?q=node/123',
+    '<x id="0"/> Department of Physics and Astronomy, Example University, Springfield, IL 60000, USA '
+    "e-mail: someone@example.edu",
+    "0019-1035/$ - see front matter 2020 Example Inc. All rights reserved. doi:10.1016/j.example.2020.01.001",
+    "E-mail address: someone@example.edu (A.B. Author).",
+    "Alice Example https://orcid.org/0000-0000-0000-0000",
+    'min <x id="0"/> C <x id="1"/> min <x id="2"/> foversampling. (3)',
+    'x <x id="0"/> R cos<x id="1"/>lat<x id="2"/> sin<x id="3"/>long<x id="4"/>',
+]
+
+_PROSE = [
+    "The best-fit CO profiles corresponding to the nominal profiles are shown here.",
+    "3. Heterodyne submm-wave observations",
+    "Fig. 16. Same as Fig. 15, except for the CO (1–0) line.",
+    "This work was funded by the Example Science and Technology Facilities Council (ESTFC). The Example "
+    "Instrument has been developed by a consortium of institutes led by Example University (UK) and including "
+    "Univ. Lethbridge (Canada); NAOC (China); CEA, LAM (France); IFSI, Univ. Padua (Italy).",
+]
+
+
+def test_needs_translation_separates_prose_from_metadata():
+    for src in _NOTHING_TO_TRANSLATE:
+        assert not needs_translation(src), src
+        assert not looks_untranslated(src, src), src
+    for src in _PROSE:
+        assert needs_translation(src), src
+        assert looks_untranslated(src, src), src
+
+
+def test_paragraph_with_nothing_to_translate_is_done_and_not_resent(tmp_path):
+    sent: list[str] = []
+    url, orcid, prose = _NOTHING_TO_TRANSLATE[0], _NOTHING_TO_TRANSLATE[5], _PROSE[0]
+
+    class Stubborn(DummyTranslator):
+        def _translate_batch(self, texts):
+            sent.extend(texts)
+            return ["" if t == url else t for t in texts]  # 原文のまま・空で返す
+
+    cache = TranslationCache(tmp_path / "cache.db")
+    out = translate_texts([url, orcid, prose], Stubborn(), cache)
+    # 訳す語の無い段落は原文のまま「訳し終えた」。英語の文が英語のまま返ったものだけ、訳せなかった
+    assert out == {url: url, orcid: orcid}
+    sent.clear()
+    translate_texts([url, orcid, prose], Stubborn(), cache)
+    assert sent == [prose]  # 2 回目は、訳せなかった英語の文だけを送り直す
+
+
+# 空で返っても原文のまま確定してはいけない、短い見出しや文（一度確定すると、ずっと英語のまま「翻訳済み」になる）
+_SHORT_HEADINGS = [
+    "Introduction",
+    "2. Related Work",
+    "Table 2: Results on CIFAR-10.",
+    "We propose ResNet.",
+    "Takahiro Example https://orcid.org/0000-0000-0000-0000",
+]
+
+
+def test_empty_answer_does_not_settle_headings_or_short_sentences(tmp_path):
+    sent: list[str] = []
+
+    class Empty(DummyTranslator):
+        def _translate_batch(self, texts):
+            sent.extend(texts)
+            return [""] * len(texts)
+
+    cache = TranslationCache(tmp_path / "cache.db")
+    url = _NOTHING_TO_TRANSLATE[0]
+    out = translate_texts([*_SHORT_HEADINGS, url], Empty(), cache)
+    assert out == {url: url}  # 訳せそうな語が 1 つも無い行だけ、原文のまま確定する
+    for h in _SHORT_HEADINGS:
+        assert has_words(h), h
+    assert not any(has_words(s) for s in _NOTHING_TO_TRANSLATE[:2])
+    out = translate_texts([*_SHORT_HEADINGS, url], DummyTranslator(), cache)
+    for h in _SHORT_HEADINGS:
+        assert out[h] != h  # 次の翻訳で送り直され、訳される
+
+
+def test_gemini_retries_empty_items_once_each():
+    from test_translators import gemini, gemini_reply
+
+    calls = []
+
+    def handler(req):
+        items = json.loads(json.loads(req.content)["contents"][0]["parts"][0]["text"])
+        calls.append(len(items))
+        if len(calls) == 1:
+            return gemini_reply([{"id": i, "text": ""} for i, _ in enumerate(items)])  # すべて空で返す
+        if items[0]["text"] == "Introduction":
+            return gemini_reply([{"id": 0, "text": "はじめに"}])
+        return gemini_reply([{"id": 0, "text": ""}])  # 2 回目も空
+
+    out = gemini(handler).translate(["Introduction", _NOTHING_TO_TRANSLATE[0]])
+    assert out == ["はじめに", ""]  # 空の項目は、どちらも 1 件で 1 回だけ訳し直した
+    assert calls == [2, 1, 1]

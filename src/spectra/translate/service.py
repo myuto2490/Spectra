@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from ..core.textnorm import looks_untranslated
+from ..core.textnorm import looks_untranslated, needs_translation
 from .base import Translator
 from .cache import TranslationCache, cache_key
 from .errors import CancelledError, NoValidResponseError, TranslatorError
@@ -70,7 +70,11 @@ def translate_texts(
         for batch in translator.batches(p.pending):
             translated = translator.translate(batch)
             # 英語のまま返った項目も、訳せなかったものとして扱う（原文のまま残し、警告に出す）
-            new = {s: t for s, t in zip(batch, translated) if t and not looks_untranslated(s, t)}
+            new = {s: t for s, t in zip(batch, translated) if t and t.strip() and not looks_untranslated(s, t)}
+            # 訳す語の無い段落（URL・DOI だけの行、所属とメールアドレスなど）は、空で返っても原文のまま
+            # 「訳し終えた」ことにする（キャッシュにも入れ、次からは送り直さない）。
+            # 答えが返らなかった（ブロック・崩れなどで None）段落は、これまでどおり訳せなかったものとする
+            new.update({s: s for s, t in zip(batch, translated) if t is not None and s not in new and not needs_translation(s)})
             results.update(new)
             if cache is not None:
                 cache.put_many({cache_key(namespace, s): t for s, t in new.items()})

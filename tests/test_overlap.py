@@ -10,7 +10,7 @@ from spectra.core.models import BlockKind, DocumentAnalysis, Segment
 from spectra.core.options import RenderOptions
 from spectra.core.qa import _overlapping_lines
 from spectra.core.render import Renderer, _overlapping
-from spectra.core.textnorm import looks_untranslated
+from spectra.core.textnorm import looks_untranslated, needs_translation
 from spectra.translate.cache import TranslationCache, cache_key
 from spectra.translate.dummy import DummyTranslator
 from spectra.translate.service import translate_texts
@@ -186,3 +186,73 @@ def test_symbol_heavy_equation_line_with_squeezed_letters_is_math():
     span = Span(sentence, "Times-Roman", 9.9, 0, 0, (80, 227, 300, 243), (80, 240.6))
     block = TextBlock(0, 0, (80, 227, 300, 243), [Line([span], (80, 227, 300, 243))])
     assert not _looks_like_equation(block, BlockStats(block))
+
+
+# 訳す語の無い段落（URL・DOI・所属・著作権表示・数式の切れ端）は、英語のまま返っても訳せなかったことにしない。
+# 以前はこれらが毎回「訳せなかった段落」に数えられ、何度訳し直しても「一部」のままだった。
+_NOTHING_TO_TRANSLATE = [
+    "DOI: https://doi.org/10.1016/j.example.2020.01.001",
+    '<x id="0"/>http://data.example.org/vol/archive/calib/ <x id="1"/>http://www.example.edu/?q=node/123',
+    '<x id="0"/> Department of Physics and Astronomy, Example University, Springfield, IL 60000, USA '
+    "e-mail: someone@example.edu",
+    "0019-1035/$ - see front matter 2020 Example Inc. All rights reserved. doi:10.1016/j.example.2020.01.001",
+    "E-mail address: someone@example.edu (A.B. Author).",
+    "Alice Example https://orcid.org/0000-0000-0000-0000",
+    'min <x id="0"/> C <x id="1"/> min <x id="2"/> foversampling. (3)',
+    'x <x id="0"/> R cos<x id="1"/>lat<x id="2"/> sin<x id="3"/>long<x id="4"/>',
+]
+
+_PROSE = [
+    "The best-fit CO profiles corresponding to the nominal profiles are shown here.",
+    "3. Heterodyne submm-wave observations",
+    "Fig. 16. Same as Fig. 15, except for the CO (1–0) line.",
+    "This work was funded by the Example Science and Technology Facilities Council (ESTFC). The Example "
+    "Instrument has been developed by a consortium of institutes led by Example University (UK) and including "
+    "Univ. Lethbridge (Canada); NAOC (China); CEA, LAM (France); IFSI, Univ. Padua (Italy).",
+]
+
+
+def test_needs_translation_separates_prose_from_metadata():
+    for src in _NOTHING_TO_TRANSLATE:
+        assert not needs_translation(src), src
+        assert not looks_untranslated(src, src), src
+    for src in _PROSE:
+        assert needs_translation(src), src
+        assert looks_untranslated(src, src), src
+
+
+def test_paragraph_with_nothing_to_translate_is_done_and_not_resent(tmp_path):
+    sent: list[str] = []
+
+    class Stubborn(DummyTranslator):
+        def _translate_batch(self, texts):
+            sent.extend(texts)
+            return ["" if "orcid" in t else t for t in texts]  # 原文のまま・空で返す
+
+    src_url, src_orcid = _NOTHING_TO_TRANSLATE[0], _NOTHING_TO_TRANSLATE[5]
+    prose = _PROSE[0]
+    cache = TranslationCache(tmp_path / "cache.db")
+    out = translate_texts([src_url, src_orcid, prose], Stubborn(), cache)
+    # 訳す語の無い段落は原文のまま「訳し終えた」。英語の文が英語のまま返ったものだけ、訳せなかった
+    assert out == {src_url: src_url, src_orcid: src_orcid}
+    sent.clear()
+    translate_texts([src_url, src_orcid, prose], Stubborn(), cache)
+    assert sent == [prose]  # 2 回目は、訳せなかった英語の文だけを送り直す
+
+
+def test_gemini_retries_an_item_returned_empty_but_not_metadata():
+    from test_translators import gemini, gemini_reply
+
+    prose, url = _PROSE[0], _NOTHING_TO_TRANSLATE[0]
+    calls = []
+
+    def handler(req):
+        items = json.loads(json.loads(req.content)["contents"][0]["parts"][0]["text"])
+        calls.append(len(items))
+        if len(calls) == 1:
+            return gemini_reply([{"id": i, "text": ""} for i, _ in enumerate(items)])  # 空で返す
+        return gemini_reply([{"id": 0, "text": "最適な CO プロファイルを示す。"}])
+
+    out = gemini(handler).translate([prose, url])
+    assert out[0] == "最適な CO プロファイルを示す。"
+    assert calls == [2, 1]  # 空で返った英語の文だけを 1 件で訳し直した（URL の行は送り直さない）

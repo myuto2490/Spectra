@@ -68,18 +68,33 @@ _FUNCTION_WORDS = frozenset(
 _REF_AUTHOR = re.compile(r"\b[A-Z][^\W\d_]+(?:[-'’ ][A-Z]?[^\W\d_]+)?,\s(?:[A-Z]\.\s?-?){1,3}")
 _REF_AUTHOR_FIRST = re.compile(r"(?:\b[A-Z]\.\s?-?){1,3}\s?[A-Z][^\W\d_]+(?:-[A-Z][^\W\d_]+)?,")
 _REF_YEAR = re.compile(r"\((?:19|20)\d{2}[a-z]?\)|\b(?:19|20)\d{2}[a-z]?\b")
-_REF_LOCATOR = re.compile(r"\bdoi:|\b10\.\d{4,}/|\b\d+[–-]\d+\b|\bpp?\.\s?\d+", re.IGNORECASE)
+# 誌名のあとの「, 巻, 始–終ページ」（", 12, 345–356" ", 115(3), E1–E9"）か DOI。
+# 単位つきの数値の範囲（"10–20 um"）や年の範囲（"2019–2020"）は数えない
+_REF_LOCATOR = re.compile(
+    r"\bdoi:|\b10\.\d{4,}/|,\s[A-Z]?\d{1,4}(?:\(\d+\))?,\s[A-Z]?\d{1,6}[–-][A-Z]?\d{1,6}(?![\w–-])(?!\s?[a-zµμ°])",
+    re.IGNORECASE,
+)
+# 文らしさ：本文に出て、参考文献の書名にはほとんど出ない語。
+# 1 人称・謝辞の語が 1 つでも、時制のある動詞・関係詞などが 2 種類以上あれば、参考文献とみなさない
+_FIRST_PERSON = frozenset({"we", "our", "us", "thank", "thanks"})
+_SENTENCE_WORDS = frozenset({"was", "were", "has", "have", "had", "been", "which", "these", "here", "found", "confirm"})
 
 
 def looks_like_references(source: str) -> bool:
-    """参考文献の項目（の並び）か。著者名の形が 2 つ以上、出版年、ページ範囲か DOI がそろうもの。
+    """参考文献の項目（の並び）か。迷うときは偽（訳すべき側）にする。
 
+    次をすべて満たすときだけ真：著者名の形（「姓, 頭文字.」「頭文字. 姓,」）が 2 つ以上、出版年、
+    誌名のあとの「, 巻, 始–終ページ」か DOI があり、文らしい語（we, thank や、was, which など 2 種類以上）が無い。
     参考文献の項目は、翻訳エンジンが原文のまま返すことが多い（書名・誌名・人名は訳さない）。
-    本文の引用（"(Moses, 1992; Romani et al., 1993)"）は「姓, 頭文字.」の形にならないので当てはまらない。
+    本文の引用（"(Moses, 1992; Romani et al., 1993)"）や、謝辞・観測の説明のように人名と数値の範囲を含む
+    文は当てはまらない。
     """
     text = _TAG.sub(" ", source)
     authors = len(_REF_AUTHOR.findall(text)) + len(_REF_AUTHOR_FIRST.findall(text))
-    return authors >= 2 and bool(_REF_YEAR.search(text)) and bool(_REF_LOCATOR.search(text))
+    if authors < 2 or not _REF_YEAR.search(text) or not _REF_LOCATOR.search(text):
+        return False
+    words = {w.lower() for w in _WORD.findall(_NOT_WORDS.sub(" ", text))}
+    return not (words & _FIRST_PERSON) and len(words & _SENTENCE_WORDS) < 2
 
 
 def needs_translation(source: str) -> bool:
@@ -98,7 +113,7 @@ def needs_translation(source: str) -> bool:
     prose = [w for w in _ENGLISH_WORD.findall(text) if w not in _MATH_WORDS]
     if len(prose) < 3:
         return False
-    words = _WORD.findall(text)
+    words = [w for w in _WORD.findall(text) if len(w) > 1]  # 人名の頭文字（J. K.）は数えない
     if sum(1 for w in words if w[0].islower()) / len(words) >= 0.4:
         return True
     return len({w.lower() for w in words} & _FUNCTION_WORDS) >= 4

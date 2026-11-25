@@ -286,7 +286,10 @@ class GeminiTranslator(Translator):
             except Exception:
                 log.exception("notice handler failed")
 
-    def _translate_batch(self, texts: list[str]) -> list[str | None]:
+    def _translate_batch(self, texts: list[str], budget: list[int] | None = None) -> list[str | None]:
+        """budget: 1 件ずつ訳し直してよい残りの件数。分割したバッチどうしで共有し、元のバッチ全体で数える。"""
+        if budget is None:
+            budget = [MAX_ITEM_RETRIES]
         items = [{"id": i, "text": _unescape(t)} for i, t in enumerate(texts)]
         try:
             result = self._request(items)
@@ -302,14 +305,15 @@ class GeminiTranslator(Translator):
                 # ただし多いとき（そのモデルが続けて英語のまま返しているなど）は、訳し直しても同じ結果に
                 # なりやすく、リクエストの回数（無料枠）を使うだけなので、訳し直さずに訳せなかったものとする
                 bad = [i for i, (s, t) in enumerate(zip(texts, result)) if t is None or not t.strip() or looks_untranslated(s, t)]
-                if len(bad) > MAX_ITEM_RETRIES:
+                if len(bad) > budget[0]:
                     log.warning("gemini: %d of %d items came back untranslated, empty or garbled; not retrying them one by one", len(bad), len(texts))
                     for i in bad:
                         if result[i] is not None and result[i].strip():
                             result[i] = None  # 英語のまま返った項目（空の項目は "" のまま呼び出し側が決める）
                     return result
+                budget[0] -= len(bad)
                 for i in bad:
-                    result[i] = self._translate_batch([texts[i]])[0]
+                    result[i] = self._translate_batch([texts[i]], budget)[0]
                 return result
             # 1 件で送っても駄目だった（段落の中身はログに出さない）。
             # 空の答えは "" のまま返し、原文として確定してよいかは呼び出し側（translate_texts）が決める
@@ -328,7 +332,7 @@ class GeminiTranslator(Translator):
             log.warning("gemini: could not translate one item")
             return [None]
         mid = len(texts) // 2
-        return self._translate_batch(texts[:mid]) + self._translate_batch(texts[mid:])
+        return self._translate_batch(texts[:mid], budget) + self._translate_batch(texts[mid:], budget)
 
     def _request(self, items: list[dict]) -> list[str | None] | None:
         config: dict = {

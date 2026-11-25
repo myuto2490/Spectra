@@ -351,3 +351,42 @@ def test_references_back_in_english_cost_one_request_and_are_not_resent(tmp_path
     assert calls == [2]
     translate_texts(_REFERENCES, t, cache)
     assert calls == [2]  # 2 回目はキャッシュから（送り直さない）
+
+
+# 人名と数値の範囲を含む本文（謝辞・観測の説明・図表の説明・本文の引用）は、参考文献ではない
+_NOT_REFERENCES = [
+    "We thank J. Smith, K. Lee, and M. Brown for helpful discussions during 2019–2020.",
+    "Following Smith, J. A. and Doe, K. (2010), we fit the spectra over 10–20 um.",
+    "Observations were made by A. Example, B. Sample (2015) at wavelengths of 7–12 um, as described in Section 2.",
+    "Fig. 3. Spectra obtained by J. Doe, K. Roe in 2014, covering 600–1400 cm-1.",
+    "Table 1. Parameters from Smith, J. (2010) and Lee, K. (2012); see pp. 3-5.",
+    "Previous work (Smith, J., 2010; Doe, K., 2012) found values of 10-20 K, which we confirm here with new data.",
+]
+
+
+def test_prose_with_names_and_ranges_is_not_references():
+    for src in _NOT_REFERENCES:
+        assert not looks_like_references(src), src
+    # 英語のまま返ったら、訳せなかったものとする（"Fig. 3. ..." は小文字の語が 2 つだけの短い説明で、
+    # 参考文献とは関係なく v0.4.3 から「訳す語の少ない段落」の扱い）
+    for src in _NOT_REFERENCES[:3] + _NOT_REFERENCES[4:]:
+        assert looks_untranslated(src, src), src
+
+
+def test_retry_limit_is_shared_by_split_batches():
+    from test_translators import gemini, gemini_reply
+
+    calls: list[int] = []
+
+    def handler(req):
+        items = json.loads(json.loads(req.content)["contents"][0]["parts"][0]["text"])
+        calls.append(len(items))
+        if len(calls) == 1:
+            return gemini_reply([{"id": 0, "text": "訳文。"}])  # 件数が合わない → 半分に分けて送り直す
+        return gemini_reply([{"id": i, "text": it["text"]} for i, it in enumerate(items)])  # 英語のまま
+
+    out = gemini(handler).translate(_SENTENCES[:4])
+    # 分けた 2 回（2 件ずつ）で英語のまま返った 4 件のうち、1 件ずつ訳し直すのは全体で 3 件まで
+    assert calls[:3] == [4, 2, 2] or calls[:2] == [4, 2]
+    assert sum(1 for n in calls if n == 1) <= 3
+    assert out == [None] * 4

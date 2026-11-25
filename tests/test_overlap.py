@@ -10,7 +10,12 @@ from spectra.core.models import BlockKind, DocumentAnalysis, Segment
 from spectra.core.options import RenderOptions
 from spectra.core.qa import _overlapping_lines
 from spectra.core.render import Renderer, _overlapping
-from spectra.core.textnorm import has_words, looks_untranslated, needs_translation
+from spectra.core.textnorm import (
+    has_words,
+    looks_like_references,
+    looks_untranslated,
+    needs_translation,
+)
 from spectra.translate.cache import TranslationCache, cache_key
 from spectra.translate.dummy import DummyTranslator
 from spectra.translate.service import translate_texts
@@ -286,3 +291,102 @@ def test_gemini_retries_empty_items_once_each():
     out = gemini(handler).translate(["Introduction", _NOTHING_TO_TRANSLATE[0]])
     assert out == ["はじめに", ""]  # 空の項目は、どちらも 1 件で 1 回だけ訳し直した
     assert calls == [2, 1, 1]
+
+
+# ---- リクエストの回数（無料枠）を増やさない ----------------------------------------------
+
+_SENTENCES = [f"The sample number {i} was observed with the example telescope during the night." for i in range(10)]
+
+_REFERENCES = [
+    "Example, A. B., C. D. Sample, and E. F. Test (2015), Production and transport of example particles, "
+    "Example J. Res., 12, 345–356, doi:10.0000/example.2015.001.",
+    "doi:10.0000/example.2010.002. Sample, C. D., and A. B. Example (2010), A model of example haze, "
+    "Icarus, 205, 10–20. Test, E. F., et al. (2012), Example observations of the example moon, Science, 3, 1–9.",
+]
+
+
+def _counting_gemini(answer):
+    from test_translators import gemini, gemini_reply
+
+    calls: list[int] = []
+
+    def handler(req):
+        items = json.loads(json.loads(req.content)["contents"][0]["parts"][0]["text"])
+        calls.append(len(items))
+        return gemini_reply([{"id": i, "text": answer(it["text"], len(calls))} for i, it in enumerate(items)])
+
+    return gemini(handler), calls
+
+
+def test_references_are_not_text_to_translate():
+    for ref in _REFERENCES:
+        assert looks_like_references(ref), ref
+        assert not needs_translation(ref)
+    # 本文の引用は参考文献ではない
+    assert not looks_like_references(
+        "The CO profile was derived by Moses (1992) and Romani et al. (1993), see pp. 10–20 for details."
+    )
+    assert not looks_like_references(_PROSE[0])
+
+
+def test_many_items_back_in_english_are_not_retried_one_by_one():
+    t, calls = _counting_gemini(lambda text, n: text)  # すべて英語のまま返す
+    out = t.translate(_SENTENCES)
+    assert calls == [10]  # 以前は 1 + 10 回
+    assert out == [None] * 10
+
+
+def test_a_few_items_back_in_english_are_retried_once_each():
+    english = set(_SENTENCES[:3])
+    t, calls = _counting_gemini(lambda text, n: text if text in english and n == 1 else "訳文。")
+    out = t.translate(_SENTENCES)
+    assert calls == [10, 1, 1, 1]  # 上限（3 件）までは 1 件ずつ 1 回だけ訳し直す
+    assert out == ["訳文。"] * 10
+
+
+def test_references_back_in_english_cost_one_request_and_are_not_resent(tmp_path):
+    t, calls = _counting_gemini(lambda text, n: text)  # 参考文献はそのまま返ってくる
+    cache = TranslationCache(tmp_path / "cache.db")
+    assert translate_texts(_REFERENCES, t, cache) == {r: r for r in _REFERENCES}
+    assert calls == [2]
+    translate_texts(_REFERENCES, t, cache)
+    assert calls == [2]  # 2 回目はキャッシュから（送り直さない）
+
+
+# 人名と数値の範囲を含む本文（謝辞・観測の説明・図表の説明・本文の引用）は、参考文献ではない
+_NOT_REFERENCES = [
+    "We thank J. Smith, K. Lee, and M. Brown for helpful discussions during 2019–2020.",
+    "Following Smith, J. A. and Doe, K. (2010), we fit the spectra over 10–20 um.",
+    "Observations were made by A. Example, B. Sample (2015) at wavelengths of 7–12 um, as described in Section 2.",
+    "Fig. 3. Spectra obtained by J. Doe, K. Roe in 2014, covering 600–1400 cm-1.",
+    "Table 1. Parameters from Smith, J. (2010) and Lee, K. (2012); see pp. 3-5.",
+    "Previous work (Smith, J., 2010; Doe, K., 2012) found values of 10-20 K, which we confirm here with new data.",
+]
+
+
+def test_prose_with_names_and_ranges_is_not_references():
+    for src in _NOT_REFERENCES:
+        assert not looks_like_references(src), src
+    # 英語のまま返ったら、訳せなかったものとする（"Fig. 3. ..." は小文字の語が 2 つだけの短い説明で、
+    # 参考文献とは関係なく v0.4.3 から「訳す語の少ない段落」の扱い）
+    for src in _NOT_REFERENCES[:3] + _NOT_REFERENCES[4:]:
+        assert looks_untranslated(src, src), src
+
+
+def test_retry_limit_is_shared_by_split_batches():
+    from test_translators import gemini, gemini_reply
+
+    calls: list[int] = []
+
+    def handler(req):
+        items = json.loads(json.loads(req.content)["contents"][0]["parts"][0]["text"])
+        calls.append(len(items))
+        if len(calls) == 1:
+            return gemini_reply([{"id": 0, "text": "訳文。"}])  # 件数が合わない → 半分に分けて送り直す
+        return gemini_reply([{"id": i, "text": it["text"]} for i, it in enumerate(items)])  # 英語のまま
+
+    out = gemini(handler).translate(_SENTENCES[:4])
+    # 分けた 2 回（2 件ずつ）で英語のまま返った 4 件のうち、1 件ずつ訳し直すのは全体で 3 件まで
+    assert calls[:3] == [4, 2, 2] or calls[:2] == [4, 2]
+    assert sum(1 for n in calls if n == 1) <= 3
+    assert out == [None] * 4

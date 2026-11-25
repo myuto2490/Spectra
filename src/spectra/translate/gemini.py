@@ -37,6 +37,8 @@ log = logging.getLogger(__name__)
 
 API_BASE = "https://generativelanguage.googleapis.com/v1beta"
 PROMPT_VERSION = 2  # 指示文を変えたら上げる（キャッシュを分けるため）
+# 1 回のバッチで、英語のまま・空・崩れて返った項目を 1 件ずつ訳し直す上限（超えたら 1 件も訳し直さない）
+MAX_ITEM_RETRIES = 3
 
 
 
@@ -296,10 +298,18 @@ class GeminiTranslator(Translator):
             self._good_response()
         if result is not None and len(result) == len(texts):
             if len(texts) > 1:
-                # 崩れた項目・英語の文を英語のまま返した項目・空で返した項目は、1 件ずつ訳し直す
-                for i, (s, t) in enumerate(zip(texts, result)):
-                    if t is None or not t.strip() or looks_untranslated(s, t):
-                        result[i] = self._translate_batch([s])[0]
+                # 崩れた項目・英語の文を英語のまま返した項目・空で返した項目は、1 件ずつ訳し直す。
+                # ただし多いとき（そのモデルが続けて英語のまま返しているなど）は、訳し直しても同じ結果に
+                # なりやすく、リクエストの回数（無料枠）を使うだけなので、訳し直さずに訳せなかったものとする
+                bad = [i for i, (s, t) in enumerate(zip(texts, result)) if t is None or not t.strip() or looks_untranslated(s, t)]
+                if len(bad) > MAX_ITEM_RETRIES:
+                    log.warning("gemini: %d of %d items came back untranslated, empty or garbled; not retrying them one by one", len(bad), len(texts))
+                    for i in bad:
+                        if result[i] is not None and result[i].strip():
+                            result[i] = None  # 英語のまま返った項目（空の項目は "" のまま呼び出し側が決める）
+                    return result
+                for i in bad:
+                    result[i] = self._translate_batch([texts[i]])[0]
                 return result
             # 1 件で送っても駄目だった（段落の中身はログに出さない）。
             # 空の答えは "" のまま返し、原文として確定してよいかは呼び出し側（translate_texts）が決める

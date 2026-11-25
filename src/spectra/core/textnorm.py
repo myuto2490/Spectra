@@ -64,6 +64,24 @@ _FUNCTION_WORDS = frozenset(
 )
 
 
+# 参考文献の項目の形：「Surname, A. B.,」「A. B. Surname,」の著者名、出版年、ページ範囲・DOI
+_REF_AUTHOR = re.compile(r"\b[A-Z][^\W\d_]+(?:[-'’ ][A-Z]?[^\W\d_]+)?,\s(?:[A-Z]\.\s?-?){1,3}")
+_REF_AUTHOR_FIRST = re.compile(r"(?:\b[A-Z]\.\s?-?){1,3}\s?[A-Z][^\W\d_]+(?:-[A-Z][^\W\d_]+)?,")
+_REF_YEAR = re.compile(r"\((?:19|20)\d{2}[a-z]?\)|\b(?:19|20)\d{2}[a-z]?\b")
+_REF_LOCATOR = re.compile(r"\bdoi:|\b10\.\d{4,}/|\b\d+[–-]\d+\b|\bpp?\.\s?\d+", re.IGNORECASE)
+
+
+def looks_like_references(source: str) -> bool:
+    """参考文献の項目（の並び）か。著者名の形が 2 つ以上、出版年、ページ範囲か DOI がそろうもの。
+
+    参考文献の項目は、翻訳エンジンが原文のまま返すことが多い（書名・誌名・人名は訳さない）。
+    本文の引用（"(Moses, 1992; Romani et al., 1993)"）は「姓, 頭文字.」の形にならないので当てはまらない。
+    """
+    text = _TAG.sub(" ", source)
+    authors = len(_REF_AUTHOR.findall(text)) + len(_REF_AUTHOR_FIRST.findall(text))
+    return authors >= 2 and bool(_REF_YEAR.search(text)) and bool(_REF_LOCATOR.search(text))
+
+
 def needs_translation(source: str) -> bool:
     """原文に、訳すべき英語の文（または見出し）が含まれるか。
 
@@ -74,6 +92,8 @@ def needs_translation(source: str) -> bool:
     当てはまらないもの：DOI や URL だけの行、所属とメールアドレス、著作権表示、ORCID、数式の切れ端、
     固有名詞だけの見出しなど。翻訳エンジンが原文のまま返しても、訳せなかったことにはしない。
     """
+    if looks_like_references(source):
+        return False
     text = _NOT_WORDS.sub(" ", _TAG.sub(" ", source))
     prose = [w for w in _ENGLISH_WORD.findall(text) if w not in _MATH_WORDS]
     if len(prose) < 3:

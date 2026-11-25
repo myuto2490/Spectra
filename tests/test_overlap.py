@@ -10,7 +10,12 @@ from spectra.core.models import BlockKind, DocumentAnalysis, Segment
 from spectra.core.options import RenderOptions
 from spectra.core.qa import _overlapping_lines
 from spectra.core.render import Renderer, _overlapping
-from spectra.core.textnorm import has_words, looks_untranslated, needs_translation
+from spectra.core.textnorm import (
+    has_words,
+    looks_like_references,
+    looks_untranslated,
+    needs_translation,
+)
 from spectra.translate.cache import TranslationCache, cache_key
 from spectra.translate.dummy import DummyTranslator
 from spectra.translate.service import translate_texts
@@ -286,3 +291,63 @@ def test_gemini_retries_empty_items_once_each():
     out = gemini(handler).translate(["Introduction", _NOTHING_TO_TRANSLATE[0]])
     assert out == ["はじめに", ""]  # 空の項目は、どちらも 1 件で 1 回だけ訳し直した
     assert calls == [2, 1, 1]
+
+
+# ---- リクエストの回数（無料枠）を増やさない ----------------------------------------------
+
+_SENTENCES = [f"The sample number {i} was observed with the example telescope during the night." for i in range(10)]
+
+_REFERENCES = [
+    "Example, A. B., C. D. Sample, and E. F. Test (2015), Production and transport of example particles, "
+    "Example J. Res., 12, 345–356, doi:10.0000/example.2015.001.",
+    "doi:10.0000/example.2010.002. Sample, C. D., and A. B. Example (2010), A model of example haze, "
+    "Icarus, 205, 10–20. Test, E. F., et al. (2012), Example observations of the example moon, Science, 3, 1–9.",
+]
+
+
+def _counting_gemini(answer):
+    from test_translators import gemini, gemini_reply
+
+    calls: list[int] = []
+
+    def handler(req):
+        items = json.loads(json.loads(req.content)["contents"][0]["parts"][0]["text"])
+        calls.append(len(items))
+        return gemini_reply([{"id": i, "text": answer(it["text"], len(calls))} for i, it in enumerate(items)])
+
+    return gemini(handler), calls
+
+
+def test_references_are_not_text_to_translate():
+    for ref in _REFERENCES:
+        assert looks_like_references(ref), ref
+        assert not needs_translation(ref)
+    # 本文の引用は参考文献ではない
+    assert not looks_like_references(
+        "The CO profile was derived by Moses (1992) and Romani et al. (1993), see pp. 10–20 for details."
+    )
+    assert not looks_like_references(_PROSE[0])
+
+
+def test_many_items_back_in_english_are_not_retried_one_by_one():
+    t, calls = _counting_gemini(lambda text, n: text)  # すべて英語のまま返す
+    out = t.translate(_SENTENCES)
+    assert calls == [10]  # 以前は 1 + 10 回
+    assert out == [None] * 10
+
+
+def test_a_few_items_back_in_english_are_retried_once_each():
+    english = set(_SENTENCES[:3])
+    t, calls = _counting_gemini(lambda text, n: text if text in english and n == 1 else "訳文。")
+    out = t.translate(_SENTENCES)
+    assert calls == [10, 1, 1, 1]  # 上限（3 件）までは 1 件ずつ 1 回だけ訳し直す
+    assert out == ["訳文。"] * 10
+
+
+def test_references_back_in_english_cost_one_request_and_are_not_resent(tmp_path):
+    t, calls = _counting_gemini(lambda text, n: text)  # 参考文献はそのまま返ってくる
+    cache = TranslationCache(tmp_path / "cache.db")
+    assert translate_texts(_REFERENCES, t, cache) == {r: r for r in _REFERENCES}
+    assert calls == [2]
+    translate_texts(_REFERENCES, t, cache)
+    assert calls == [2]  # 2 回目はキャッシュから（送り直さない）

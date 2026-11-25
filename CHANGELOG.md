@@ -7,6 +7,8 @@
 
 ## [Unreleased]
 
+## [0.4.5] - 2026-11-26
+
 ### 修正
 
 - 翻訳エンジンが英語のまま返す段落が多い論文（参考文献の項目が本文として読み取られた論文など）で、1 段落ずつの訳し直しが重なり、API の回数の上限を早く使い切ることがあった問題を修正しました。訳し直しは 1 回のまとめ送りあたり 3 段落までにしました（以前は最大で段落数ぶん）
@@ -212,7 +214,7 @@
 **コマンドラインツール**
 - `spectra translate` / `spectra estimate` / `spectra key`
 
-[Unreleased]: https://github.com/myuto2490/Spectra/compare/v0.4.4...HEAD
+[Unreleased]: https://github.com/myuto2490/Spectra/compare/v0.4.5...HEAD
 [0.1.0]: https://github.com/myuto2490/Spectra/releases/tag/v0.1.0
 [0.1.1]: https://github.com/myuto2490/Spectra/compare/v0.1.0...v0.1.1
 [0.1.2]: https://github.com/myuto2490/Spectra/compare/v0.1.1...v0.1.2
@@ -226,3 +228,4 @@
 [0.4.2]: https://github.com/myuto2490/Spectra/compare/v0.4.1...v0.4.2
 [0.4.3]: https://github.com/myuto2490/Spectra/compare/v0.4.2...v0.4.3
 [0.4.4]: https://github.com/myuto2490/Spectra/compare/v0.4.3...v0.4.4
+[0.4.5]: https://github.com/myuto2490/Spectra/compare/v0.4.4...v0.4.5

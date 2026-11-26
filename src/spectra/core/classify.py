@@ -487,7 +487,13 @@ def graphic_rects(page: pymupdf.Page, drawings: list[dict]) -> list:
 
 
 def _header_key(text: str) -> str:
-    """柱の比較用の文字列（ページ番号などの数字と空白を除き、小文字にする）。"""
+    """柱の比較用の文字列（ページ番号などの数字と空白を除き、小文字にする）。
+
+    前付けの柱のローマ数字のページ番号（"viii An Atmospheric …" "Table of Contents ix"）も、行の先頭・末尾にあれば除く。
+    """
+    # 先頭のローマ数字は、抽出で次の語とつながる（"viiiAn"）ことがあるので、大文字が続く場合も除く
+    text = re.sub(r"^(?=[ivxlc])c{0,3}(?:xc|xl|l?x{0,3})(?:ix|iv|v?i{0,3})(?=[A-Z\s])", "", text.strip())
+    text = re.sub(rf"{_ROMAN}\s*$", "", text)
     return re.sub(r"[\d\s]+", "", text).lower()
 
 

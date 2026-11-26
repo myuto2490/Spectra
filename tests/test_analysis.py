@@ -1082,3 +1082,19 @@ def test_index_entries_after_an_index_heading_are_not_translated():
     assert _find(a, "Index").translate and _find(a, "Deep neural networks").translate
     assert not _find(a, "angular frequency").translate
     assert not _find(a, "quantum yield").translate
+
+
+def test_running_headers_with_roman_page_numbers_are_found():
+    """前付けの柱 "viii An Atmospheric Primer"（ローマ数字のページ番号が題名につながる）も、繰り返しで柱とする。"""
+    from pdf_factory import BODY, LOREM, write_paragraph
+
+    doc = pymupdf.open()
+    for roman in ["vi", "viii", "x", "xii"]:
+        page = doc.new_page(width=595, height=842)
+        page.insert_text((140, 160), roman, fontname=BODY, fontsize=10)
+        page.insert_text((140 + 4 * len(roman), 160), "An Atmospheric Primer", fontname=BODY, fontsize=10)
+        write_paragraph(page, (140, 473), 190, LOREM, 6)
+    a = analyze_document(doc)
+    for pa in a.pages[1:]:
+        top = min(pa.decisions, key=lambda d: d.block.bbox[1])
+        assert top.skip == SkipReason.RUNNING_HEADER, pa.page

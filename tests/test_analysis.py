@@ -1085,14 +1085,14 @@ def test_index_entries_after_an_index_heading_are_not_translated():
 
 
 def test_running_headers_with_roman_page_numbers_are_found():
-    """前付けの柱 "viii An Atmospheric Primer"（ローマ数字のページ番号が題名につながる）も、繰り返しで柱とする。"""
+    """前付けの柱 "viii     An Atmospheric Primer"（左端のローマ数字のページ番号と、離れた題名）も、繰り返しで柱とする。"""
     from pdf_factory import BODY, LOREM, write_paragraph
 
     doc = pymupdf.open()
     for roman in ["vi", "viii", "x", "xii"]:
         page = doc.new_page(width=595, height=842)
         page.insert_text((140, 160), roman, fontname=BODY, fontsize=10)
-        page.insert_text((140 + 4 * len(roman), 160), "An Atmospheric Primer", fontname=BODY, fontsize=10)
+        page.insert_text((300, 160), "An Atmospheric Primer", fontname=BODY, fontsize=10)  # ページ番号と題名は左右に離れる
         write_paragraph(page, (140, 473), 190, LOREM, 6)
     a = analyze_document(doc)
     for pa in a.pages[1:]:
@@ -1161,3 +1161,18 @@ def test_two_line_paragraph_ending_in_leader_dots_and_a_number_is_translated():
     page.insert_text((140, 212), "and the partial sums converges to the value 2", fontname=BODY, fontsize=10)
     a = analyze_document(doc)
     assert _find(a, "partial sums").translate
+
+
+def test_first_lines_differing_only_by_a_one_letter_variable_are_not_running_headers():
+    """各ページの先頭行が行末の 1 文字の変数（x, v, c, i）だけ違っても、題名と離れたページ番号ではないので柱としない。"""
+    from pdf_factory import BODY, LOREM, write_paragraph
+
+    doc = pymupdf.open()
+    for var in ["x", "v", "c", "i"]:
+        page = doc.new_page(width=595, height=842)
+        page.insert_text((140, 160), f"We now consider the dependence on the variable {var}", fontname=BODY, fontsize=10)
+        write_paragraph(page, (140, 473), 190, LOREM, 6)
+    a = analyze_document(doc)
+    for pa in a.pages:
+        top = min(pa.decisions, key=lambda d: d.block.bbox[1])
+        assert top.skip != SkipReason.RUNNING_HEADER, pa.page

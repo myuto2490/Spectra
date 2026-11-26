@@ -533,14 +533,28 @@ def graphic_rects(page: pymupdf.Page, drawings: list[dict]) -> list:
 
 
 def _header_key(text: str) -> str:
-    """柱の比較用の文字列（ページ番号などの数字と空白を除き、小文字にする）。
-
-    前付けの柱のローマ数字のページ番号（"viii An Atmospheric …" "Table of Contents ix"）も、行の先頭・末尾にあれば除く。
-    """
-    # 先頭のローマ数字は、抽出で次の語とつながる（"viiiAn"）ことがあるので、大文字が続く場合も除く
-    text = re.sub(r"^(?=[ivxlc])c{0,3}(?:xc|xl|l?x{0,3})(?:ix|iv|v?i{0,3})(?=[A-Z\s])", "", text.strip())
-    text = re.sub(rf"{_ROMAN}\s*$", "", text)
+    """柱の比較用の文字列（ページ番号などの数字と空白を除き、小文字にする）。"""
     return re.sub(r"[\d\s]+", "", text).lower()
+
+
+def _line_header_key(line) -> str:
+    """行の柱の比較用の文字列。前付けの柱のローマ数字のページ番号（"viii      An Atmospheric …"
+    "Table of Contents      ix"）は、行の端の独立したスパンで、題名から大きく離れているときだけ除く。
+
+    行頭・行末の 1 文字の変数（"c Speed of light" の "c"）や語（"li Wang notes"）は、題名と離れていないので除かない。
+    """
+    spans = [s for s in line.spans if s.text.strip()]
+    if len(spans) >= 2:
+        size = _line_size(line)
+        first, second = spans[0], spans[1]
+        if _ROMAN_NUMBER.fullmatch(first.text.strip()) and second.bbox[0] - first.bbox[2] >= size * 2:
+            spans = spans[1:]
+    if len(spans) >= 2:
+        size = _line_size(line)
+        last, before = spans[-1], spans[-2]
+        if _ROMAN_NUMBER.fullmatch(last.text.strip()) and last.bbox[0] - before.bbox[2] >= size * 2:
+            spans = spans[:-1]
+    return _header_key("".join(s.text for s in spans))
 
 
 def find_running_headers(blocks_by_page: dict[int, list[TextBlock]]) -> set[tuple[int, int]]:
@@ -559,7 +573,7 @@ def find_running_headers(blocks_by_page: dict[int, list[TextBlock]]) -> set[tupl
         first = min(flat, key=lambda b: b.lines[0].bbox[1])
         last = max(flat, key=lambda b: b.lines[-1].bbox[3])
         for b, at in ((first, 0), (last, -1)):
-            key = _header_key(b.lines[at].text)
+            key = _line_header_key(b.lines[at])
             if len(key) >= 4:
                 found.setdefault(key, []).append((pno, b, at))
     need = max(3, len(blocks_by_page) * 0.2)

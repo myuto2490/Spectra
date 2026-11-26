@@ -14,6 +14,7 @@ import pymupdf
 
 from .extract import (
     SECTION_NAME,
+    _line_size,
     extract_blocks,
     find_figure_rects,
     find_table_rects,
@@ -23,6 +24,7 @@ from .fonts import base_name, is_math_font, is_math_span, is_mono_font, math_cha
 from .models import (
     BlockDecision,
     BlockKind,
+    Line,
     PageAnalysis,
     SkipReason,
     Span,
@@ -66,11 +68,13 @@ _PAGE_OF = re.compile(r"page\s+\d+\s+of\s+\d+", re.IGNORECASE)
 # 擬似コード（アルゴリズムの枠）の行： "1:" "12:" や "Input:" "Require:" で始まる
 _PSEUDOCODE = re.compile(r"^\s*(\d{1,2}:|(input|output|require|ensure|return)\s*:)", re.IGNORECASE)
 _EQUATION_SIGN = re.compile(r"[=≈≤≥<>∝≡]")
-_EQUATION_NUMBER = re.compile(r"\S\s*\(\d{1,3}[a-z]?\)\s*$")
+_EQUATION_NUMBER = re.compile(r"\S\s*\(\d{1,3}(\.\d{1,3}){0,2}[a-z]?\)\s*$")  # "(7)" "(6.4)" "(2.10b)"
 _LONG_WORD = re.compile(r"[A-Za-z]{4,}")
 _ABSTRACT = re.compile(r"^\s*(abstract|summary)\b", re.IGNORECASE)
 _ABSTRACT_HEADING = re.compile(r"^\s*(abstract|summary)\s*[.:—-]?\s*$", re.IGNORECASE)
 _SENTENCE = re.compile(r"[a-z]{2,}[,;]?\s+[a-z]{2,}\s+[a-z]{2,}.*[.]\s*$")
+# 番号付きの節見出し（"6.1 Microphysical ..." "2. Methods"）。1 ページ目でこれが出たら、題名・著者の並びは終わり
+_NUMBERED_SECTION = re.compile(r"^\s*\d{1,2}(\.\d{1,2}){0,3}\.?\s*[A-Z][a-z]")
 _REFERENCES = re.compile(
     r"^\s*(\d+\.?|[ivx]+\.)?\s*(references|bibliography|literature\s+cited|works\s+cited|参考文献)\s*$",
     re.IGNORECASE,
@@ -228,9 +232,21 @@ def _subscripts(block: TextBlock) -> set[int]:
     数式の断片（分数の分子など）が本文と判定されてしまう。
     """
     result: set[int] = set()
+    base: Span | None = None  # 添字が付く変数・記号
+    prev: Span | None = None
+    prev_line: Line | None = None
     for ln in block.lines:
-        base: Span | None = None  # 添字が付く変数・記号
-        prev: Span | None = None
+        # 上付きと下付きが重なる位置で、同じ高さの並びが別の行に分けられることがある（"β" + "ext" の次の行が
+        # 下付きの "particle" から始まる）。前の行の右端から続く行なら、添字の判定を引き継ぐ
+        continues = (
+            prev_line is not None
+            and prev is not None
+            and min(ln.bbox[3], prev_line.bbox[3]) - max(ln.bbox[1], prev_line.bbox[1]) > 0
+            and prev_line.bbox[0] < ln.bbox[0] <= prev.bbox[2] + prev.size * 0.5
+        )
+        if not continues:
+            base = prev = None
+        prev_line = ln
         for span in ln.spans:
             t = span.text.strip()
             if not t:
@@ -243,10 +259,14 @@ def _subscripts(block: TextBlock) -> set[int]:
                 result.add(id(span))
             elif is_math_font(span.font) or (span.is_italic and _VARIABLE.fullmatch(t)):
                 base = span
-            else:
+            elif t not in _ACCENTS:  # 変数の上のアクセント（ω˜ の "˜"）は変数の一部なので、添字の判定を続ける
                 base = None
             prev = span
     return result
+
+
+# 変数の上に別のスパンとして置かれるアクセント記号
+_ACCENTS = frozenset("˜ˆ¯˙¨´`˘ˇ~^\u0303\u0302\u0304\u0307\u0308\u20d7")
 
 
 def estimate_body_size(blocks: Iterable[TextBlock]) -> float:
@@ -338,6 +358,66 @@ def graphic_rects(page: pymupdf.Page, drawings: list[dict]) -> list:
     return rects
 
 
+def _header_key(text: str) -> str:
+    """柱の比較用の文字列（ページ番号などの数字と空白を除き、小文字にする）。"""
+    return re.sub(r"[\d\s]+", "", text).lower()
+
+
+def find_running_headers(blocks_by_page: dict[int, list[TextBlock]]) -> set[tuple[int, int]]:
+    """ページの最上部・最下部にある 1 行のうち、同じ文言（数字を除く）が何ページにも繰り返されるもの（柱）。
+
+    余白の広い本のページでは、柱がページの上端から離れていて位置だけでは見分けられないため、繰り返しで判定する。
+    奇数・偶数ページで柱が違うことが多いので、3 ページ以上かつ全体の 2 割以上に現れれば柱とする。
+    柱が下の段落と 1 つのブロックにまとめられていたら、柱の行を別のブロックに分ける（blocks_by_page を書き換える）。
+    返り値は柱のブロックの (ページ, ブロック番号)。
+    """
+    found: dict[str, list[tuple[int, TextBlock, int]]] = {}  # 文言 → (ページ, ブロック, 行の位置 0 / -1)
+    for pno, blocks in blocks_by_page.items():
+        flat = [b for b in blocks if b.lines and (b.bbox[2] - b.bbox[0]) > 0]
+        if not flat:
+            continue
+        first = min(flat, key=lambda b: b.lines[0].bbox[1])
+        last = max(flat, key=lambda b: b.lines[-1].bbox[3])
+        for b, at in ((first, 0), (last, -1)):
+            key = _header_key(b.lines[at].text)
+            if len(key) >= 4:
+                found.setdefault(key, []).append((pno, b, at))
+    need = max(3, len(blocks_by_page) * 0.2)
+    result: set[tuple[int, int]] = set()
+    for locs in found.values():
+        if len({pno for pno, _, _ in locs}) < need:
+            continue
+        # 1 ページ目の大きな題名が他のページの柱と同じ文言でも、柱より大きな文字のものは柱としない
+        sizes = sorted(_line_size(b.lines[at]) for _, b, at in locs)
+        usual = sizes[len(sizes) // 2]
+        for pno, b, at in locs:
+            if _line_size(b.lines[at]) > usual + 1.0:
+                continue
+            if len(b.lines) > 1:
+                b = _split_off_line(blocks_by_page[pno], b, at)
+            result.add((pno, b.index))
+    return result
+
+
+def _split_off_line(blocks: list[TextBlock], block: TextBlock, at: int) -> TextBlock:
+    """block の先頭（at=0）または末尾（at=-1）の行を、新しい番号の別ブロックに分けて返す。"""
+    line = block.lines.pop(at)
+    block.bbox = _lines_bbox(block.lines)
+    head = TextBlock(page=block.page, index=max(b.index for b in blocks) + 1, bbox=line.bbox, lines=[line])
+    pos = blocks.index(block)
+    blocks.insert(pos if at == 0 else pos + 1, head)
+    return head
+
+
+def _lines_bbox(lines: list) -> tuple[float, float, float, float]:
+    return (
+        min(ln.bbox[0] for ln in lines),
+        min(ln.bbox[1] for ln in lines),
+        max(ln.bbox[2] for ln in lines),
+        max(ln.bbox[3] for ln in lines),
+    )
+
+
 class DocumentClassifier:
     """ページを順に解析し、参考文献セクションなど文書全体の状態を引き継ぐ。"""
 
@@ -350,6 +430,8 @@ class DocumentClassifier:
         self.seen_title = False
         self.seen_abstract = False
         self._page_height = 842.0
+        # 複数のページの上端・下端に繰り返し現れる 1 行（柱）。(ページ, ブロック番号)
+        self.running_headers: set[tuple[int, int]] = set()
         self._graphics: list = []  # 今のページで、図の中身（背景の塗りつぶし以外の描画・画像）の領域
 
     def analyze_page(self, page: pymupdf.Page, blocks: list[TextBlock] | None = None) -> PageAnalysis:
@@ -465,8 +547,14 @@ class DocumentClassifier:
         ):
             return SkipReason.RUNNING_HEADER
 
+        if (b.page, b.index) in self.running_headers:
+            return SkipReason.RUNNING_HEADER
+
         if b.page == 0 and not self.seen_abstract:
             if _ABSTRACT.match(st.text):
+                self.seen_abstract = True
+            elif kind == BlockKind.HEADING and self.seen_title and _NUMBERED_SECTION.match(st.text):
+                # 概要の無い文書（本の章など）で本文の節が始まった。見出しも以降の段落も著者として残さない
                 self.seen_abstract = True
             elif kind == BlockKind.TITLE:
                 if st.words == 0:

@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 
 import pymupdf
 
+from .extract import TEXT_FLAGS
 from .fontbook import FontBook, FontRole
 from .layout import Frame, LayoutResult, PlacedGlyphs, PlacedRun, layout
 from .markup import parse, to_plain
@@ -22,14 +23,16 @@ from .models import (
     PageAnalysis,
     Rect,
     Region,
+    RestoreGlyph,
     Segment,
     erase_rect,
     inflate,
     rect_area,
     rect_intersect,
+    rect_union,
 )
 from .options import RenderOptions
-from .redact import erase_text, stub_forms
+from .redact import apply_redactions, erase_text, stub_forms
 from .scan import cover, cover_rect, image_dpi, is_scanned, paper_color
 from .textnorm import normalize_translation
 
@@ -103,6 +106,20 @@ def _overlapping(layouts: list[tuple[Segment, LayoutResult]]) -> set[str]:
                 if w > 1.0 and h > line * 0.3:
                     out.update((sid, sid2))
     return out
+
+
+def _restore_box(glyph: RestoreGlyph) -> Rect:
+    """戻す字形の切り抜き範囲。字の輪郭から求めた範囲はぎりぎりなので、にじみの分だけ少し広げる
+    （縦に積んだ大きな括弧の部品の継ぎ目が欠けないように）。"""
+    return inflate(glyph.ink, 0.5)
+
+
+def _run_target(run: InlineRun, pr: PlacedRun) -> Rect:
+    """段落中の数式を移した先の範囲。"""
+    x0, y0, x1, y1 = run.bbox  # type: ignore[misc]
+    ox, oy = run.origin  # type: ignore[misc]
+    f = pr.factor
+    return (pr.x + (x0 - ox) * f, pr.baseline + (y0 - oy) * f, pr.x + (x1 - ox) * f, pr.baseline + (y1 - oy) * f)
 
 
 def _complement(page: Rect, keep: list[Rect]) -> list[Rect]:
@@ -186,7 +203,10 @@ def _expand(region: Region, geo: PageGeometry, own_blocks: set[int], horizontal:
             x1 = max(x1, right_limit)
 
     if vertical:
-        below = [o[1] for o in obstacles if o[1] >= y1 - 0.5 and o[0] < x1 - 0.5 and o[2] > x0 + 0.5]
+        # 下にある障害物。上端が枠の下端より少し上にはみ出しているもの（表の隣の行など）も含め、その場合は広げない
+        below = [
+            max(o[1], y1) for o in obstacles if o[3] > y1 + 0.5 and o[1] > y0 + 0.5 and o[0] < x1 - 0.5 and o[2] > x0 + 0.5
+        ]
         bottom = min(below + [geo.content[3] + 0.5])
         limit = y1 + region.style.line_pitch * 3
         y1 = max(y1, min(bottom - size * 0.5, limit))
@@ -335,6 +355,10 @@ class Renderer:
             layouts.append((seg, self.layout_segment(seg)))
         # 収まらない（末尾の行が描かれない）段落と、訳文が他の訳文と重なる段落は、原文のまま残す（迷ったら訳さない）
         keep = {seg.id for seg, result in layouts if not result.fits} | _overlapping(layouts)
+        # 消去に巻き込まれる字形を戻すとき、戻した字形が訳文と重なるなら、その段落は原文のまま残す
+        restores, clash = self._restores([(seg, r) for seg, r in layouts if seg.id not in keep])
+        keep |= clash
+        restores = [(pno, g) for pno, g, sid in restores if sid not in keep]
         for seg, result in layouts:
             if seg.id in keep:
                 log.warning("render %s: translation does not fit or overlaps; kept the original", seg.id)
@@ -362,7 +386,7 @@ class Renderer:
 
         # 数式に付随するベクター線（根号の上線・分数の横線など）を数式と一緒に移動する
         vectors = self._collect_inline_vectors(moves)
-        stamps = self._make_stamps(transplants)
+        stamps = self._make_stamps(transplants, restores)
 
         for pno in sorted(self._pa):
             if should_cancel and should_cancel():
@@ -389,6 +413,7 @@ class Renderer:
             for run, pr in transplants:
                 if pr.page == pno:
                     self._transplant(page, run, pr, stamps)
+            self._restore(page, [g for rpno, g in restores if rpno == pno], stamps)
             done += 1
             if progress:
                 progress(done, total)
@@ -397,7 +422,78 @@ class Renderer:
     def _can_transplant(self, run: InlineRun) -> bool:
         return self.source is not None and run.bbox is not None and run.origin is not None and run.page is not None
 
-    def _make_stamps(self, transplants: list[tuple[InlineRun, PlacedRun]]) -> dict[int, tuple[pymupdf.Document, int]]:
+    def _restores(
+        self, layouts: list[tuple[Segment, LayoutResult]]
+    ) -> tuple[list[tuple[int, RestoreGlyph, str]], set[str]]:
+        """描く段落の消去に巻き込まれる字形 (ページ, 字形, 段落) と、戻す字形が訳文と重なる段落の集まり。"""
+        owner: dict[tuple[int, int], str] = {}
+        for seg, _ in layouts:
+            for r in seg.regions:
+                owner[(r.page, r.block_index)] = seg.id
+        drawn: dict[int, list[Rect]] = defaultdict(list)
+        for seg, result in layouts:
+            for pno, rect in result.used:
+                drawn[pno].append(rect)
+            for pr in result.runs:
+                run = seg.runs.get(pr.run_id)
+                if run is not None and run.bbox is not None and run.origin is not None:
+                    drawn[pr.page].append(_run_target(run, pr))
+        found: list[tuple[int, RestoreGlyph, str]] = []
+        clash: set[str] = set()
+        for pno, pa in self._pa.items():
+            for g in pa.restore:
+                sid = owner.get((pno, g.block_index))
+                if sid is None:
+                    continue
+                box = _restore_box(g)
+                if self.source is None or any(rect_area(rect_intersect(box, inflate(d, 0.3))) > 0 for d in drawn[pno]):
+                    log.warning("render %s: a kept glyph would be lost or overlapped; kept the original", sid)
+                    clash.add(sid)
+                    continue
+                found.append((pno, g, sid))
+        return found, clash
+
+    def _restore(
+        self, page: pymupdf.Page, glyphs: list[RestoreGlyph], stamps: dict[int, tuple[pymupdf.Document, int]]
+    ) -> None:
+        """消去に巻き込まれて消えた翻訳対象外の字形を、元の文書から切り抜いて同じ位置に戻す。
+
+        同じスパンの字形（縦に積んだ括弧の部品など）は、継ぎ目が出ないよう 1 つの範囲にまとめて戻す。
+        """
+        if not glyphs or self.scanned(page.number):
+            return
+        boxes: dict[Rect, Rect] = {}
+        for g in glyphs:
+            if self._glyph_lost(page, g):
+                box = _restore_box(g)
+                boxes[g.span] = rect_union(boxes[g.span], box) if g.span in boxes else box
+        src_doc, src_page = stamps.get(page.number, (self.source, page.number))
+        for box in boxes.values():
+            try:
+                r = pymupdf.Rect(box)
+                page.show_pdf_page(r, src_doc, src_page, clip=r, keep_proportion=False, overlay=True)
+            except Exception:
+                log.warning("page %d: could not restore a kept glyph", page.number + 1, exc_info=True)
+
+    @staticmethod
+    def _glyph_lost(page: pymupdf.Page, glyph: RestoreGlyph) -> bool:
+        """字形が消えたか。元の字形と同じ文字が、同じ原点に残っていなければ消えている。"""
+        if glyph.origin is None:
+            return False
+        gx, gy = glyph.origin
+        data = page.get_text("rawdict", flags=TEXT_FLAGS, clip=pymupdf.Rect(inflate(glyph.span, 1.0)))
+        for b in data["blocks"]:
+            for ln in b.get("lines", ()):
+                for sp in ln["spans"]:
+                    for c in sp.get("chars", ()):
+                        x, y = c["origin"]
+                        if c["c"] == glyph.text and abs(x - gx) < 0.5 and abs(y - gy) < 0.5:
+                            return False
+        return True
+
+    def _make_stamps(
+        self, transplants: list[tuple[InlineRun, PlacedRun]], restores: list[tuple[int, RestoreGlyph]] = ()
+    ) -> dict[int, tuple[pymupdf.Document, int]]:
         """数式の部分だけを残した「切り抜き用のページ」を作る。
 
         元のページをそのまま貼り込むと、切り抜きで隠れた部分（図の大量の図形など）も PDF に残り、
@@ -408,6 +504,9 @@ class Renderer:
         for run, _pr in transplants:
             if not self.scanned(run.page):  # type: ignore[arg-type]
                 by_page[run.page].append(inflate(run.bbox, 1.0))  # type: ignore[arg-type]
+        for pno, glyph in restores:
+            if not self.scanned(pno):
+                by_page[pno].append(inflate(glyph.span, 1.0))
         if not by_page or self.source is None:
             return {}
         stamp_doc = pymupdf.open()
@@ -420,7 +519,8 @@ class Renderer:
             stub_forms(stamp_doc, sp)
             for r in _complement(tuple(sp.rect), keep):
                 sp.add_redact_annot(pymupdf.Rect(r), fill=False, cross_out=False)
-            sp.apply_redactions(
+            apply_redactions(
+                sp,
                 images=pymupdf.PDF_REDACT_IMAGE_REMOVE,
                 graphics=pymupdf.PDF_REDACT_LINE_ART_REMOVE_IF_TOUCHED,
                 text=pymupdf.PDF_REDACT_TEXT_REMOVE,
@@ -436,10 +536,7 @@ class Renderer:
         字形・分数の線・根号のほか、文字コードの対応が分からない記号（Δ など）も正しく再現できる。
         配置した部分の外側は切り抜かれ、文字の抽出にも含まれない。
         """
-        x0, y0, x1, y1 = run.bbox  # type: ignore[misc]
-        ox, oy = run.origin  # type: ignore[misc]
-        f = pr.factor
-        target = pymupdf.Rect(pr.x + (x0 - ox) * f, pr.baseline + (y0 - oy) * f, pr.x + (x1 - ox) * f, pr.baseline + (y1 - oy) * f)
+        target = pymupdf.Rect(_run_target(run, pr))
         if target.is_empty:
             return
         if self.scanned(run.page):  # type: ignore[arg-type]
@@ -492,7 +589,8 @@ class Renderer:
             r = pymupdf.Rect(d["rect"])
             w = (d.get("width") or 1.0) / 2 + 0.3
             page.add_redact_annot(pymupdf.Rect(r.x0 - w, r.y0 - w, r.x1 + w, r.y1 + w), fill=False, cross_out=False)
-        page.apply_redactions(
+        apply_redactions(
+            page,
             images=pymupdf.PDF_REDACT_IMAGE_NONE,
             graphics=pymupdf.PDF_REDACT_LINE_ART_REMOVE_IF_COVERED,
             text=pymupdf.PDF_REDACT_TEXT_NONE,

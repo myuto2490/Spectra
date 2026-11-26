@@ -722,3 +722,118 @@ def test_table_sentence_in_label_font_position_is_not_caption():
     # 番号の後が小文字で続く文（"Table 1 shows …"）は、ラベルの書式でもキャプションにしない
     a = analyze_document(_elsevier_table_page("Table 1", "shows the wind speed of Titan."))
     assert _find(a, "shows the wind speed").kind != BlockKind.CAPTION
+
+
+def _book_chapter(pages: int = 5) -> pymupdf.Document:
+    """余白の広い本の章（概要が無く、柱がページの上端から離れている）。"""
+    from pdf_factory import BODY, BOLD, LOREM, write_paragraph
+
+    doc = pymupdf.open()
+    for i in range(pages):
+        page = doc.new_page(width=595, height=842)
+        if i == 0:
+            page.insert_text((140, 200), "6", fontname=BOLD, fontsize=24)
+            page.insert_text((140, 230), "Transfer of Things", fontname=BODY, fontsize=18)
+            page.insert_text((140, 320), "6.1   Optical Properties of a Mixed Volume", fontname=BOLD, fontsize=12)
+            y = 345
+        else:
+            if i % 2:
+                page.insert_text((140, 160), f"{115 + i}", fontname=BODY, fontsize=10)
+                page.insert_text((320, 160), "A Primer on Transfer", fontname=BODY, fontsize=10)
+            else:
+                page.insert_text((140, 160), "Transfer of Things", fontname=BODY, fontsize=10)
+                page.insert_text((460, 160), f"{115 + i}", fontname=BODY, fontsize=10)
+            y = 172  # 柱のすぐ下から本文（抽出で柱と 1 つのブロックにまとめられやすい）
+        write_paragraph(page, (140, 473), y, LOREM, 6)
+    return doc
+
+
+def test_numbered_section_heading_on_the_first_page_is_not_taken_as_authors():
+    a = analyze_document(_book_chapter())
+    heading = _find(a, "Optical Properties of a Mixed")
+    assert heading.translate and heading.kind == BlockKind.HEADING
+
+
+def test_running_headers_far_from_the_page_edge_are_found_by_repetition():
+    a = analyze_document(_book_chapter(7))
+    for pa in a.pages[1:]:
+        top = min(pa.decisions, key=lambda d: d.block.bbox[1])
+        assert top.skip == SkipReason.RUNNING_HEADER, pa.page
+        assert len(top.block.lines) == 1  # 下の段落とは別のブロック
+        body = [d for d in pa.decisions if d.translate]
+        assert body and all("Primer" not in d.block.text and "Things" not in d.block.text for d in body)
+    # 1 ページ目の大きな章題は、柱と同じ文言でも訳す
+    first = a.pages[0]
+    assert any(d.translate and "Transfer of Things" in d.block.text for d in first.decisions)
+
+
+def test_equation_number_pushed_below_a_long_equation_is_not_merged_into_the_next_paragraph():
+    from pdf_factory import BODY, LOREM, write_paragraph
+
+    doc = pymupdf.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_text((200, 300), "R = A + B + C + D + E", fontname="symb", fontsize=10)
+    page.insert_text((449, 312), "(6.80)", fontname=BODY, fontsize=10)  # 式の下の行に送られた式番号
+    write_paragraph(page, (140, 473), 324, LOREM, 3)
+    a = analyze_document(doc)
+    number = _find(a, "(6.80)")
+    assert not number.translate and len(number.block.lines) == 1
+    para = _find(a, "Deep neural networks")
+    assert para.translate and "(6.80)" not in para.block.text
+
+
+def _frag_span(text, font, size, x0, y_base, width=None):
+    from spectra.core.models import Span
+
+    w = width if width is not None else len(text) * size * 0.5
+    return Span(text, font, size, 0, 0, (x0, y_base - size * 0.8, x0 + w, y_base + size * 0.2), (x0, y_base))
+
+
+def _fragment_block(lines):
+    from spectra.core.models import Line, TextBlock
+
+    ls = []
+    for spans in lines:
+        box = (min(s.bbox[0] for s in spans), min(s.bbox[1] for s in spans), max(s.bbox[2] for s in spans), max(s.bbox[3] for s in spans))
+        ls.append(Line(spans=spans, bbox=box))
+    bbox = (min(ln.bbox[0] for ln in ls), min(ln.bbox[1] for ln in ls), max(ln.bbox[2] for ln in ls), max(ln.bbox[3] for ln in ls))
+    return TextBlock(page=0, index=0, bbox=bbox, lines=ls)
+
+
+def test_subscript_words_after_an_accented_variable_are_math():
+    """分母 "β_particle ω˜_particle" の添字の単語を本文の単語と数えない（"˜" は別のスパンで置かれる）。"""
+    from spectra.core.classify import _subscripts
+
+    after_accent = _frag_span("particle", "Times-Roman", 7, 316, 713, 21)
+    block = _fragment_block([[
+        _frag_span("β", "rtxmi", 10, 280, 710, 6),
+        _frag_span("particle", "Times-Roman", 7, 286, 713, 21),
+        _frag_span("ω", "rtxmi", 10, 310, 710, 6),
+        _frag_span("˜", "Times-Roman", 10, 310, 708, 4),
+        after_accent,
+    ]])
+    assert id(after_accent) in _subscripts(block)
+
+
+def test_subscript_on_a_line_split_off_at_the_same_height_is_math():
+    """上付きと下付きが重なる位置で行が分けられ、次の行が下付きの単語から始まる（"β^ext" / "_particle + β^ext"）。"""
+    from spectra.core.classify import _subscripts
+
+    split = _frag_span("particle", "Times-Roman", 7, 267, 647, 21)
+    block = _fragment_block([
+        [_frag_span("+", "rtxr", 10, 253, 644, 6), _frag_span("β", "rtxmi", 10, 260, 644, 7), _frag_span("ext", "Times-Roman", 7, 267, 640, 8)],
+        [split, _frag_span("+", "rtxr", 10, 291, 644, 6), _frag_span("β", "rtxmi", 10, 297, 644, 7), _frag_span("ext", "Times-Roman", 7, 304, 640, 8)],
+    ])
+    assert id(split) in _subscripts(block)
+    # 下の別の行（前の行の右端から続かない行）の先頭の小さな単語は、添字としない
+    below = _frag_span("note", "Times-Roman", 7, 140, 700, 14)
+    block = _fragment_block([[_frag_span("β", "rtxmi", 10, 260, 644, 7), _frag_span("ext", "Times-Roman", 7, 267, 640, 8)], [below]])
+    assert id(below) not in _subscripts(block)
+
+
+def test_equation_number_with_a_chapter_prefix_marks_an_equation_fragment():
+    from spectra.core.classify import _EQUATION_NUMBER
+
+    assert _EQUATION_NUMBER.search("gas(6.4)")
+    assert _EQUATION_NUMBER.search("x (2.10b)")
+    assert _EQUATION_NUMBER.search("y (7)")

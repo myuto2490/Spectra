@@ -218,6 +218,20 @@ class PageAnalysis:
     figure_rects: list[Rect] = field(default_factory=list)
     table_rects: list[Rect] = field(default_factory=list)
     drawing_rects: list[Rect] = field(default_factory=list)  # ベクター描画の範囲（領域拡張の障害物の判定に使う）
+    # 訳す段落の原文を消すと巻き込まれて消える、翻訳対象外の字形（字形の枠だけが段落にかかる大きな Σ など）。
+    # 消したあとに原文から切り抜いて戻す
+    restore: list[RestoreGlyph] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class RestoreGlyph:
+    """原文を消したあとに戻す、翻訳対象外の字形。"""
+
+    ink: Rect  # 字形の実際の範囲（戻すときの切り抜き）
+    span: Rect  # 字形の枠を含むスパンの範囲（消去の判定に使われる範囲）
+    block_index: int  # 消すと巻き込む、訳す段落のブロック番号
+    text: str = ""  # 字形の文字（消えたかどうかの確認に使う）
+    origin: Point | None = None  # 字形の原点（同上）
 
 
 @dataclass

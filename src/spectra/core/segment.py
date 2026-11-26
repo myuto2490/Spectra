@@ -10,6 +10,7 @@ from dataclasses import dataclass, replace
 from .fonts import base_name, decode_symbol_font, is_math_font, is_math_span, is_sans_font
 from .markup import BOLD_CLOSE, BOLD_OPEN, escape, placeholder, to_plain
 from .models import (
+    LINE_ART_FONT,
     Align,
     BlockDecision,
     BlockKind,
@@ -144,7 +145,7 @@ def _pieces_for_line(line: Line, base_size: float, body_font: str, has_math: boo
         prev = span
         raised = abs(span.origin[1] - baseline) > base_size * 0.15
         small = span.size < base_size * 0.8
-        math = is_math_font(span.font) or (
+        math = span.font == LINE_ART_FONT or is_math_font(span.font) or (
             is_math_span(span.font, span.text, body_font) and (has_math or len(span.text.strip()) <= 4)
         )
         if math or (raised and small):

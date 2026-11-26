@@ -14,7 +14,7 @@ from .classify import (
     find_running_headers,
 )
 from .extract import TEXT_FLAGS, extract_blocks
-from .fonts import find_text_fonts, has_numbered_adv_fonts, text_fonts
+from .fonts import find_text_fonts, has_numbered_adv_fonts, is_math_font, text_fonts
 from .models import (
     LINE_ART_CHAR,
     LINE_ART_FONT,
@@ -188,7 +188,7 @@ def attach_line_art(pa: PageAnalysis, page: pymupdf.Page) -> None:
     if not lines:
         return
     try:
-        drawings = page.get_drawings()
+        drawings = page.get_cdrawings()  # get_drawings より速い（範囲と線の太さだけを使う）
     except Exception:
         return
     inks = [_ink_rect(d) for d in drawings]
@@ -203,6 +203,10 @@ def attach_line_art(pa: PageAnalysis, page: pymupdf.Page) -> None:
         for a, b in zip(spans, spans[1:]):
             g0, g1 = a.bbox[2] - 0.5, b.bbox[0] + 0.5
             if g1 - g0 < 1:
+                continue
+            # 数式の中（数式フォントや斜体の変数名の間。下線で描いた "sky_trans_ν" の "_" など）の図形は、
+            # 数式と一緒に 1 つの保護要素として移す既存の処理に任せる（ここで分けると数式が途切れる）
+            if any(is_math_font(s.font) or s.is_italic for s in (a, b)):
                 continue
             found = [
                 r for r in inks
@@ -222,9 +226,9 @@ def attach_line_art(pa: PageAnalysis, page: pymupdf.Page) -> None:
 
 def _ink_rect(d: dict) -> tuple[float, float, float, float]:
     """図形の描かれる範囲（線は太さの分だけ広げる）。"""
-    r = d["rect"]
+    x0, y0, x1, y1 = d["rect"]
     w = (d.get("width") or 0.0) / 2 if d.get("color") is not None else 0.0
-    return (r.x0 - w, r.y0 - w, r.x1 + w, r.y1 + w)
+    return (x0 - w, y0 - w, x1 + w, y1 + w)
 
 
 _PROSE_WORD = re.compile(r"[A-Za-z]{3,}")

@@ -7,6 +7,12 @@
 
 ## [Unreleased]
 
+## [0.4.6] - 2026-11-26
+
+### 修正
+
+- txfonts の数式フォント（rtxmi・rtxr など）を使う論文（Grainger の "Equation of Radiative Transfer" など）で、独立した数式の一部（分数の分子、複数行の式の左辺など）が本文と判定されて訳され、訳文が式の上に重なって読めなくなる問題を修正しました。数式フォントの一覧に txfonts 系を加え、変数のすぐ後に続く小さな添字や、斜体の微分（dL・dx など）を数式の一部として扱います。本文の合字（ff・ffi）や、斜体の人名・小さな文字の脚注は、これまでどおり訳します
+
 ## [0.4.5] - 2026-11-26
 
 ### 修正
@@ -214,7 +220,7 @@
 **コマンドラインツール**
 - `spectra translate` / `spectra estimate` / `spectra key`
 
-[Unreleased]: https://github.com/myuto2490/Spectra/compare/v0.4.5...HEAD
+[Unreleased]: https://github.com/myuto2490/Spectra/compare/v0.4.6...HEAD
 [0.1.0]: https://github.com/myuto2490/Spectra/releases/tag/v0.1.0
 [0.1.1]: https://github.com/myuto2490/Spectra/compare/v0.1.0...v0.1.1
 [0.1.2]: https://github.com/myuto2490/Spectra/compare/v0.1.1...v0.1.2
@@ -229,3 +235,4 @@
 [0.4.3]: https://github.com/myuto2490/Spectra/compare/v0.4.2...v0.4.3
 [0.4.4]: https://github.com/myuto2490/Spectra/compare/v0.4.3...v0.4.4
 [0.4.5]: https://github.com/myuto2490/Spectra/compare/v0.4.4...v0.4.5
+[0.4.6]: https://github.com/myuto2490/Spectra/compare/v0.4.5...v0.4.6

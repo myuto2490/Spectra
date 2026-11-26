@@ -23,7 +23,7 @@ _MATH_FONT = re.compile(
     r"""^(
         CMMI | CMBSY | CMSY | CMEX | CMMIB | MSAM | MSBM | EUFM | EUFB | EUSM | EURM | RSFS |
         LMMathItalic | LMMathSymbols | LMMathExtension | LMMath |
-        txmi | txsy | txex | pxmi | pxsy | pxex | txsya | pxsya | ntxmi | ntxsy | ntxexx |
+        r?txmi | r?txbmi | r?txsy | r?txex | r?pxmi | r?pxbmi | r?pxsy | r?pxex | txsya | pxsya | ntxmi | ntxsy | ntxexx |
         stix.*math | xits.*math | cambria.?math | latinmodern.?math | asana.?math |
         tex.?gyre.*math | fira.?math | garamond.?math | libertinus.?math |
         MTSY | MTMI | MTEX | MT.?Extra | Euclid | esint | stmary | wasy | bbm | dsrom |
@@ -129,6 +129,9 @@ def math_char_ratio(text: str) -> float:
 _GARBLED = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\ue000-\uf8ff]")
 
 _CM_TEXT_FONT = re.compile(r"^(CMR|CMBX|CMB\d|CMSL|LMRoman|LMRomanSlant|CMU\s?Serif)", re.IGNORECASE)
+# txfonts・pxfonts の数式の立体（"+" "=" "(" や数字）。本文の合字 "ff" "ffi" や "Keck/LWS" の "/" もこのフォントで
+# 組まれるので、英字と単独の "/" は数式としない
+_TX_MATH_ROMAN = re.compile(r"^r[tp]xr$", re.IGNORECASE)
 
 
 def is_math_span(font: str, text: str, body_font: str) -> bool:
@@ -145,6 +148,8 @@ def is_math_span(font: str, text: str, body_font: str) -> bool:
     if t and len(t) <= 4 and math_char_ratio(t) >= 0.5:
         return True
     name = base_name(font)
+    if _TX_MATH_ROMAN.match(name):
+        return bool(t) and t != "/" and not any(c.isalpha() for c in t) and not _same_family(name, body_font)
     return bool(_CM_TEXT_FONT.match(name)) and not _same_family(name, body_font)
 
 

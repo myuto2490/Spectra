@@ -165,13 +165,14 @@ class BlockStats:
         has_math = self.has_math = any(is_math_font(s.font) for s in block.spans)
         upright = 0  # 立体（斜体でない）の英字の数
         main_size = _main_size(block) if has_math else 0.0
+        subscripts = _subscripts(block)
         for span in block.spans:
             t = span.text.strip()
             n = len(t)
             if not n:
                 continue
             self.chars += n
-            if is_math_font(span.font) or (
+            if id(span) in subscripts or is_math_font(span.font) or (
                 has_math and (is_math_span(span.font, span.text, body_font) or _variable_like(span, main_size))
             ):
                 self.math_chars += n
@@ -208,12 +209,44 @@ def _main_size(block: TextBlock) -> float:
 
 
 def _variable_like(span: Span, main_size: float) -> bool:
-    """数式の中の変数・添字らしいスパン（斜体の 1 文字、本文より小さい文字）。
+    """数式の中の変数・添字らしいスパン（斜体の 1 文字、斜体の微分 "dx"、本文より小さい文字）。
 
     数式フォントの記号を除くと、"y j F j" のような変数の並びが字間を空けた単語に見えるため。
     """
     t = span.text.strip()
-    return (span.is_italic and len(t) == 1 and t.isalpha()) or span.size < main_size * 0.8
+    return (span.is_italic and _VARIABLE.fullmatch(t) is not None) or span.size < main_size * 0.8
+
+
+# 斜体の変数 1 文字と、微分の "dx" "dL"（"do" "de" のような英単語にならないよう、d の後の小文字の母音は除く）
+_VARIABLE = re.compile(r"[^\W\d_]|d[^\W\d_aeiou]")
+
+
+def _subscripts(block: TextBlock) -> set[int]:
+    """変数（斜体の 1 文字・微分）や数式フォントの記号のすぐ後に続く、小さな文字のスパン（の id）。
+
+    "E" + "Sun"、"J" + "thermal"、"β" + "sca" のような添字は立体の英字なので、そのままでは単語に数えられ、
+    数式の断片（分数の分子など）が本文と判定されてしまう。
+    """
+    result: set[int] = set()
+    for ln in block.lines:
+        base: Span | None = None  # 添字が付く変数・記号
+        prev: Span | None = None
+        for span in ln.spans:
+            t = span.text.strip()
+            if not t:
+                continue
+            attached = prev is not None and span.bbox[0] - prev.bbox[2] < span.size * 0.5
+            # 添字は上下にずれていて、空白を含まない短い文字（"oversampling" ほどまで）。同じ高さの小さな文字は
+            # スモールキャップスや脚注の本文
+            shifted = base is not None and abs(span.origin[1] - base.origin[1]) > base.size * 0.1
+            if base is not None and attached and shifted and span.size < base.size * 0.8 and " " not in t and len(t) <= 15:
+                result.add(id(span))
+            elif is_math_font(span.font) or (span.is_italic and _VARIABLE.fullmatch(t)):
+                base = span
+            else:
+                base = None
+            prev = span
+    return result
 
 
 def estimate_body_size(blocks: Iterable[TextBlock]) -> float:

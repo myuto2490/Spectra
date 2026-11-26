@@ -1085,16 +1085,112 @@ def test_index_entries_after_an_index_heading_are_not_translated():
 
 
 def test_running_headers_with_roman_page_numbers_are_found():
-    """前付けの柱 "viii An Atmospheric Primer"（ローマ数字のページ番号が題名につながる）も、繰り返しで柱とする。"""
+    """前付けの柱 "viii     An Atmospheric Primer"（左端のローマ数字のページ番号と、離れた題名）も、繰り返しで柱とする。"""
     from pdf_factory import BODY, LOREM, write_paragraph
 
     doc = pymupdf.open()
     for roman in ["vi", "viii", "x", "xii"]:
         page = doc.new_page(width=595, height=842)
         page.insert_text((140, 160), roman, fontname=BODY, fontsize=10)
-        page.insert_text((140 + 4 * len(roman), 160), "An Atmospheric Primer", fontname=BODY, fontsize=10)
+        page.insert_text((300, 160), "An Atmospheric Primer", fontname=BODY, fontsize=10)  # ページ番号と題名は左右に離れる
         write_paragraph(page, (140, 473), 190, LOREM, 6)
     a = analyze_document(doc)
     for pa in a.pages[1:]:
         top = min(pa.decisions, key=lambda d: d.block.bbox[1])
         assert top.skip == SkipReason.RUNNING_HEADER, pa.page
+
+
+def test_chapter_line_and_header_on_a_contents_page_are_not_translated():
+    """目次のページの、リーダーの無い章の行（"3 Radiometric Basics 41"）と柱（"Table of Contents ix"）は訳さない。"""
+    from pdf_factory import BODY, BOLD
+
+    doc = pymupdf.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_text((140, 160), "Table of Contents", fontname=BODY, fontsize=10)
+    page.insert_text((462, 160), "ix", fontname=BODY, fontsize=10)
+    page.insert_text((140, 200), "3 Radiometric Basics", fontname=BOLD, fontsize=10)
+    page.insert_text((462, 200), "41", fontname=BOLD, fontsize=10)
+    for i, (num, title, pno) in enumerate([("3.1", "Solid Angle", "41"), ("3.2", "Radiant Quantities", "43")]):
+        page.insert_text((150, 230 + i * 12), f"{num} {title} " + ". " * 12 + pno, fontname=BODY, fontsize=10)
+    a = analyze_document(doc)
+    assert not _find(a, "Solid Angle").translate
+    assert not _find(a, "Radiometric Basics").translate
+    assert not _find(a, "Table of Contents").translate
+
+
+def test_two_line_equation_with_a_noun_label_is_math():
+    """分数を含む 2 行の独立数式 "Loss Rate = d[A]/dt = J[A]"（大文字の名詞のラベル付き）は数式。文は訳す。"""
+    from pdf_factory import BODY, LOREM, write_paragraph
+
+    doc = pymupdf.open()
+    page = doc.new_page(width=595, height=842)
+    write_paragraph(page, (140, 473), 200, LOREM, 3)
+    page.insert_text((253, 300), "Loss Rate = d [A] = J [A]", fontname=BODY, fontsize=10)
+    page.insert_text((322, 312), "dt", fontname=BODY, fontsize=10)
+    page.insert_text((140, 350), "Hence the rate is given by k = 2", fontname=BODY, fontsize=10)
+    page.insert_text((140, 362), "and so on", fontname=BODY, fontsize=10)
+    write_paragraph(page, (140, 473), 400, LOREM, 3)
+    a = analyze_document(doc)
+    assert _find(a, "Loss Rate").skip == SkipReason.MATH
+    assert _find(a, "Hence the rate").translate
+
+
+def test_short_paragraphs_after_a_section_named_index_are_translated():
+    """番号の無い見出し "Index"（指標の節）の後の短い本文と、次の見出しの後の本文は訳す。"""
+    from pdf_factory import BODY, BOLD, LOREM, write_paragraph
+
+    doc = pymupdf.open()
+    write_paragraph(doc.new_page(width=595, height=842), (140, 473), 150, LOREM, 10)
+    page = doc.new_page(width=595, height=842)
+    page.insert_text((140, 200), "Index", fontname=BOLD, fontsize=12)
+    page.insert_text((140, 220), "Both indices agree well.", fontname=BODY, fontsize=10)
+    page.insert_text((140, 260), "Results", fontname=BOLD, fontsize=12)
+    page.insert_text((140, 280), "We found three trends.", fontname=BODY, fontsize=10)
+    a = analyze_document(doc)
+    assert _find(a, "Both indices").translate
+    assert _find(a, "three trends").translate
+
+
+def test_two_line_paragraph_ending_in_leader_dots_and_a_number_is_translated():
+    """1 行目が ". . . . 0"、2 行目が数で終わる 2 行の本文（"…converges to the value 2"）は目次ではない。"""
+    from pdf_factory import BODY
+
+    doc = pymupdf.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_text((140, 200), "The terms of the series are 1, 1/2, 1/4, . . . . 0", fontname=BODY, fontsize=10)
+    page.insert_text((140, 212), "and the partial sums converges to the value 2", fontname=BODY, fontsize=10)
+    a = analyze_document(doc)
+    assert _find(a, "partial sums").translate
+
+
+def test_first_lines_differing_only_by_a_one_letter_variable_are_not_running_headers():
+    """各ページの先頭行が行末の 1 文字の変数（x, v, c, i）だけ違っても、題名と離れたページ番号ではないので柱としない。"""
+    from pdf_factory import BODY, LOREM, write_paragraph
+
+    doc = pymupdf.open()
+    for var in ["x", "v", "c", "i"]:
+        page = doc.new_page(width=595, height=842)
+        page.insert_text((140, 160), f"We now consider the dependence on the variable {var}", fontname=BODY, fontsize=10)
+        write_paragraph(page, (140, 473), 190, LOREM, 6)
+    a = analyze_document(doc)
+    for pa in a.pages:
+        top = min(pa.decisions, key=lambda d: d.block.bbox[1])
+        assert top.skip != SkipReason.RUNNING_HEADER, pa.page
+
+
+def test_numbered_bold_heading_on_every_page_is_not_a_running_header():
+    """各ページの先頭の、段落から離れた太字の見出し "Problem 1" "Problem 2" … は柱としない。"""
+    from pdf_factory import BOLD, LOREM, write_paragraph
+
+    doc = pymupdf.open()
+    for n in range(1, 6):
+        page = doc.new_page(width=595, height=842)
+        page.insert_text((140, 200), f"Problem {n}", fontname=BOLD, fontsize=12)
+        write_paragraph(page, (140, 473), 230, LOREM, 4)
+    a = analyze_document(doc)
+    for pa in a.pages[1:]:
+        assert _find_on(pa, "Problem").translate, pa.page
+
+
+def _find_on(pa, needle):
+    return next(d for d in pa.decisions if needle in d.block.text)

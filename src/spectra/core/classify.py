@@ -352,6 +352,18 @@ _ROMAN = r"(?<![A-Za-z])(?=[ivxlc])c{0,3}(?:xc|xl|l?x{0,3})(?:ix|iv|v?i{0,3})(?!
 _ENDS_WITH_PAGE = re.compile(rf"[A-Za-z].*?(?:\d{{1,4}}|{_ROMAN})\s*$")
 
 
+def _contents_title_line(text: str) -> bool:
+    """リーダーの無い目次の行: 番号（"1 " "3.2" "A."）の後に大文字で始まる題名か、大文字で始まる短い題名で、ページ番号で終わる。
+
+    本文の "…converges to the value 2" のような、数で終わる普通の行は当てはまらない。
+    """
+    t = text.strip()
+    if not _ENDS_WITH_PAGE.search(t):
+        return False
+    numbered = re.match(r"(?:\d{1,2}(?:\.\d{1,2})*|[A-Z])\.?\s*[A-Z]", t)
+    return bool(numbered) or (t[:1].isupper() and len(t.split()) <= 8)
+
+
 def _is_contents(block: TextBlock) -> bool:
     """目次（行の多くがリーダーとページ番号で終わる）。訳すと項目番号・リーダー・ページ番号が失われるので表として残す。"""
     lines = [ln for ln in block.lines if ln.text.strip()]
@@ -360,7 +372,7 @@ def _is_contents(block: TextBlock) -> bool:
         return False
     # 2 行以上のブロックでは 2 行以上（本文の 1 行がたまたま ". . . . 3" で終わることがある）。ただし残りの行が
     # すべてページ番号で終わる（リーダーの無い章の行 "1 The Earth’s Atmosphere 1"）なら 1 行でもよい
-    if hits < 2 and not all(_CONTENTS_LINE.search(ln.text) or _ENDS_WITH_PAGE.search(ln.text) for ln in lines):
+    if hits < 2 and not all(_CONTENTS_LINE.search(ln.text) or _contents_title_line(ln.text) for ln in lines):
         return False
     return hits >= len(lines) * 0.4
 
@@ -370,13 +382,13 @@ _INDEX = re.compile(r"^\s*(?:subject\s+|author\s+)?index\s*$", re.IGNORECASE)
 _INDEX_ENTRY = re.compile(r",\s*\d{1,4}(?:\s*[–-]\s*\d{1,4})?(?:\s*,\s*\d{1,4}(?:\s*[–-]\s*\d{1,4})?)*\s*$")
 
 
-def _index_entries(block: TextBlock) -> bool:
-    """索引の項目のブロック: 行の 3 割以上が ", ページ番号" で終わるか、項目の折り返し・親項目の短い 1〜2 行。"""
+def _index_entries(block: TextBlock) -> tuple[bool, bool]:
+    """索引の項目のブロックか: (行の 3 割以上が ", ページ番号" で終わる, 項目の折り返し・親項目らしい短い 1〜2 行)。"""
     lines = [ln for ln in block.lines if ln.text.strip()]
     if not lines:
-        return False
+        return False, False
     hits = sum(1 for ln in lines if _INDEX_ENTRY.search(ln.text))
-    return hits >= len(lines) * 0.3 or (len(lines) <= 2 and len(block.text.split()) <= 6)
+    return hits >= len(lines) * 0.3, len(lines) <= 2 and len(block.text.split()) <= 6
 
 
 # 式番号（"(3.90)" "(B.22)" "(2.10b)"）。行のどこにあってもよい（右端の式番号が行の先頭に取り出されることがある）
@@ -419,6 +431,13 @@ def _has_prose_word(text: str) -> bool:
     return any(w.lower() in _FUNCTION_WORDS for w in re.findall(r"(?<![A-Za-z])[A-Za-z][a-z]*(?![A-Za-z])", outside))
 
 
+def _has_lowercase_prose(text: str) -> bool:
+    """小文字の英単語（4 文字以上）か機能語（大文字始まりを含む）を含む。大文字で始まる名詞だけのラベルは含まない。"""
+    outside = re.sub(r"\[[^\]]*\]", " ", text)
+    words = re.findall(r"(?<![A-Za-z])[A-Za-z][a-z]*(?![A-Za-z])", outside)
+    return any((w.islower() and len(w) >= 4) or w.lower() in _FUNCTION_WORDS for w in words)
+
+
 def _short_sentence(b: TextBlock, st: BlockStats) -> bool:
     """数式の記号を含む、短い本物の文（"If ω̃ = 1 then" "where E is the flux"）。数式と判定しない。
 
@@ -433,7 +452,34 @@ def _short_sentence(b: TextBlock, st: BlockStats) -> bool:
         return w.lower() in _FUNCTION_WORDS or (len(w) >= 4 and w[1:].islower())
 
     first = re.match(r"\s*([A-Za-z][a-z]*)(?![A-Za-z0-9])", st.text)
-    return bool(first) and prose(first.group(1)) and sum(map(prose, words)) >= 2
+    # 文には小文字の語か機能語がある。大文字で始まる名詞だけの "Loss Rate = d[A]/dt" は式のラベル
+    return bool(first) and prose(first.group(1)) and sum(map(prose, words)) >= 2 and _has_lowercase_prose(st.text)
+
+
+def _keep_contents_page_lines(decisions: list[BlockDecision]) -> None:
+    """目次のページで、題名とページ番号の 1 行（リーダーの無い章の行 "3 Radiometric Basics 41"、
+    柱 "Table of Contents ix"）を、目次の一部として訳さない。
+
+    目次のブロック（リーダーとページ番号で終わる行が続くもの）があるページに限る。
+    """
+    if not any(d.skip == SkipReason.TABLE and _is_contents(d.block) for d in decisions):
+        return
+    for d in decisions:
+        if d.translate and d.kind != BlockKind.TITLE and len(d.block.lines) == 1 and _ends_with_page_number(d.block.text):
+            d.skip = SkipReason.TABLE
+
+
+_ROMAN_NUMBER = re.compile(r"c{0,3}(?:xc|xl|l?x{0,3})(?:ix|iv|v?i{0,3})")
+
+
+def _ends_with_page_number(text: str) -> bool:
+    """算用数字か、ローマ数字（抽出で前の語とつながった "Contentsix" も含む）のページ番号で終わる。目次のページでだけ使う。"""
+    t = text.strip()
+    if re.search(r"\d{1,4}$", t):
+        return True
+    m = re.search(r"[ivxlc]{1,6}$", t)
+    # 末尾のローマ数字の候補を短くしながら、正しい形のローマ数字が取れるか（"Contentsix" → "ix"）
+    return bool(m) and any(_ROMAN_NUMBER.fullmatch(t[k:]) for k in range(m.start(), len(t)))
 
 
 def _absorb_equation_fragments(decisions: list[BlockDecision], stats: dict[int, BlockStats], body_size: float) -> None:
@@ -487,14 +533,28 @@ def graphic_rects(page: pymupdf.Page, drawings: list[dict]) -> list:
 
 
 def _header_key(text: str) -> str:
-    """柱の比較用の文字列（ページ番号などの数字と空白を除き、小文字にする）。
-
-    前付けの柱のローマ数字のページ番号（"viii An Atmospheric …" "Table of Contents ix"）も、行の先頭・末尾にあれば除く。
-    """
-    # 先頭のローマ数字は、抽出で次の語とつながる（"viiiAn"）ことがあるので、大文字が続く場合も除く
-    text = re.sub(r"^(?=[ivxlc])c{0,3}(?:xc|xl|l?x{0,3})(?:ix|iv|v?i{0,3})(?=[A-Z\s])", "", text.strip())
-    text = re.sub(rf"{_ROMAN}\s*$", "", text)
+    """柱の比較用の文字列（ページ番号などの数字と空白を除き、小文字にする）。"""
     return re.sub(r"[\d\s]+", "", text).lower()
+
+
+def _line_header_key(line) -> str:
+    """行の柱の比較用の文字列。前付けの柱のローマ数字のページ番号（"viii      An Atmospheric …"
+    "Table of Contents      ix"）は、行の端の独立したスパンで、題名から大きく離れているときだけ除く。
+
+    行頭・行末の 1 文字の変数（"c Speed of light" の "c"）や語（"li Wang notes"）は、題名と離れていないので除かない。
+    """
+    spans = [s for s in line.spans if s.text.strip()]
+    if len(spans) >= 2:
+        size = _line_size(line)
+        first, second = spans[0], spans[1]
+        if _ROMAN_NUMBER.fullmatch(first.text.strip()) and second.bbox[0] - first.bbox[2] >= size * 2:
+            spans = spans[1:]
+    if len(spans) >= 2:
+        size = _line_size(line)
+        last, before = spans[-1], spans[-2]
+        if _ROMAN_NUMBER.fullmatch(last.text.strip()) and last.bbox[0] - before.bbox[2] >= size * 2:
+            spans = spans[:-1]
+    return _header_key("".join(s.text for s in spans))
 
 
 def find_running_headers(blocks_by_page: dict[int, list[TextBlock]]) -> set[tuple[int, int]]:
@@ -513,7 +573,7 @@ def find_running_headers(blocks_by_page: dict[int, list[TextBlock]]) -> set[tupl
         first = min(flat, key=lambda b: b.lines[0].bbox[1])
         last = max(flat, key=lambda b: b.lines[-1].bbox[3])
         for b, at in ((first, 0), (last, -1)):
-            key = _header_key(b.lines[at].text)
+            key = _line_header_key(b.lines[at])
             if len(key) >= 4:
                 found.setdefault(key, []).append((pno, b, at))
     need = max(3, len(blocks_by_page) * 0.2)
@@ -636,6 +696,7 @@ class DocumentClassifier:
         self.body_font = body_font
         self.in_references = False
         self.in_index = False  # 索引（"Index" の見出しの後）
+        self.index_entries_seen = False  # 索引の中で ", ページ番号" の項目を見たか
         # 1 ページ目のタイトル〜概要の間（著者・所属）
         self.seen_title = False
         self.seen_abstract = False
@@ -666,6 +727,7 @@ class DocumentClassifier:
                 skip = self._skip(b, st, kind, figures, tables, b.index in tabular)
             decisions.append(BlockDecision(block=b, kind=kind, skip=skip))
         _absorb_equation_fragments(decisions, stats, self.body_size)
+        _keep_contents_page_lines(decisions)
         return PageAnalysis(
             page=page.number,
             width=float(page.rect.width),
@@ -759,7 +821,9 @@ class DocumentClassifier:
         ):
             return SkipReason.RUNNING_HEADER
 
-        if (b.page, b.index) in self.running_headers:
+        # 繰り返しで見つけた柱。ただし、ページ番号と題名が左右に離れていない見出し（各ページの先頭の太字の
+        # "Problem 1" "Problem 2" …）は、文言が繰り返されても柱ではない
+        if (b.page, b.index) in self.running_headers and not (kind == BlockKind.HEADING and not _split_header(b, st.size)):
             return SkipReason.RUNNING_HEADER
 
         if b.page == 0 and not self.seen_abstract:
@@ -787,14 +851,21 @@ class DocumentClassifier:
                 return SkipReason.REFERENCES
 
         # 索引の開始・終了。索引の項目（"angular frequency, 13"）を訳すと、ページ番号と項目の並びが失われる
-        if len(b.lines) == 1 and _INDEX.match(st.text):
+        # 見出し（表の見出しのセルの "Index" ではない）で始まり、次の見出し・題名で終わる
+        if kind in (BlockKind.HEADING, BlockKind.TITLE) and len(b.lines) == 1 and _INDEX.match(st.text):
             self.in_index = True
+            self.index_entries_seen = False
             return None  # 見出し自体は訳す
         if self.in_index:
-            if kind == BlockKind.TITLE or (kind == BlockKind.HEADING and _NUMBERED_SECTION.match(st.text)):
+            if kind in (BlockKind.HEADING, BlockKind.TITLE):
                 self.in_index = False
-            elif kind in (BlockKind.BODY, BlockKind.FOOTNOTE) and _index_entries(b):
-                return SkipReason.TABLE
+            elif kind in (BlockKind.BODY, BlockKind.FOOTNOTE):
+                full, short = _index_entries(b)
+                # 項目の折り返し・親項目の短いブロックは、", ページ番号" の項目を一度見た後だけ（"Index" という名前の
+                # 指標の節の短い本文 "Both indices agree well." を項目と見なさないため）
+                if full or (short and self.index_entries_seen):
+                    self.index_entries_seen = True
+                    return SkipReason.TABLE
 
         fig_overlap = max((overlap_ratio(b.bbox, inflate(r, 4)) for r in figures), default=0.0)
         if kind == BlockKind.CAPTION:
@@ -831,6 +902,17 @@ class DocumentClassifier:
         if not sentence and st.chars and st.math_chars / st.chars > 0.5:
             return SkipReason.MATH
         if not sentence and _looks_like_equation(b, st):
+            return SkipReason.MATH
+        # 1〜3 行の独立数式（分数の "mv²/r = ke²/r²"、ラベル付きの "Loss Rate = d[A]/dt = J[A]"）。等号があり、語が 4 つ以下で、
+        # 小文字の英単語・機能語が無い（大文字で始まる名詞のラベルは数式の一部）
+        if (
+            not sentence
+            and kind in (BlockKind.BODY, BlockKind.FOOTNOTE)
+            and len(b.lines) <= 3
+            and _EQUATION_SIGN.search(st.text)
+            and st.words <= 4
+            and not _has_lowercase_prose(st.text)
+        ):
             return SkipReason.MATH
         # 本文のフォントだけで組まれた独立数式（"f(r, t) = A0/r cos(kr − ωt). (2.16)"）。等号と章番号付きの式番号があり、
         # 英単語の無い 1〜2 行は、横に数式のブロックが無くても数式

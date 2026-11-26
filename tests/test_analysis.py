@@ -780,3 +780,60 @@ def test_equation_number_pushed_below_a_long_equation_is_not_merged_into_the_nex
     assert not number.translate and len(number.block.lines) == 1
     para = _find(a, "Deep neural networks")
     assert para.translate and "(6.80)" not in para.block.text
+
+
+def _frag_span(text, font, size, x0, y_base, width=None):
+    from spectra.core.models import Span
+
+    w = width if width is not None else len(text) * size * 0.5
+    return Span(text, font, size, 0, 0, (x0, y_base - size * 0.8, x0 + w, y_base + size * 0.2), (x0, y_base))
+
+
+def _fragment_block(lines):
+    from spectra.core.models import Line, TextBlock
+
+    ls = []
+    for spans in lines:
+        box = (min(s.bbox[0] for s in spans), min(s.bbox[1] for s in spans), max(s.bbox[2] for s in spans), max(s.bbox[3] for s in spans))
+        ls.append(Line(spans=spans, bbox=box))
+    bbox = (min(ln.bbox[0] for ln in ls), min(ln.bbox[1] for ln in ls), max(ln.bbox[2] for ln in ls), max(ln.bbox[3] for ln in ls))
+    return TextBlock(page=0, index=0, bbox=bbox, lines=ls)
+
+
+def test_subscript_words_after_an_accented_variable_are_math():
+    """分母 "β_particle ω˜_particle" の添字の単語を本文の単語と数えない（"˜" は別のスパンで置かれる）。"""
+    from spectra.core.classify import _subscripts
+
+    after_accent = _frag_span("particle", "Times-Roman", 7, 316, 713, 21)
+    block = _fragment_block([[
+        _frag_span("β", "rtxmi", 10, 280, 710, 6),
+        _frag_span("particle", "Times-Roman", 7, 286, 713, 21),
+        _frag_span("ω", "rtxmi", 10, 310, 710, 6),
+        _frag_span("˜", "Times-Roman", 10, 310, 708, 4),
+        after_accent,
+    ]])
+    assert id(after_accent) in _subscripts(block)
+
+
+def test_subscript_on_a_line_split_off_at_the_same_height_is_math():
+    """上付きと下付きが重なる位置で行が分けられ、次の行が下付きの単語から始まる（"β^ext" / "_particle + β^ext"）。"""
+    from spectra.core.classify import _subscripts
+
+    split = _frag_span("particle", "Times-Roman", 7, 267, 647, 21)
+    block = _fragment_block([
+        [_frag_span("+", "rtxr", 10, 253, 644, 6), _frag_span("β", "rtxmi", 10, 260, 644, 7), _frag_span("ext", "Times-Roman", 7, 267, 640, 8)],
+        [split, _frag_span("+", "rtxr", 10, 291, 644, 6), _frag_span("β", "rtxmi", 10, 297, 644, 7), _frag_span("ext", "Times-Roman", 7, 304, 640, 8)],
+    ])
+    assert id(split) in _subscripts(block)
+    # 下の別の行（前の行の右端から続かない行）の先頭の小さな単語は、添字としない
+    below = _frag_span("note", "Times-Roman", 7, 140, 700, 14)
+    block = _fragment_block([[_frag_span("β", "rtxmi", 10, 260, 644, 7), _frag_span("ext", "Times-Roman", 7, 267, 640, 8)], [below]])
+    assert id(below) not in _subscripts(block)
+
+
+def test_equation_number_with_a_chapter_prefix_marks_an_equation_fragment():
+    from spectra.core.classify import _EQUATION_NUMBER
+
+    assert _EQUATION_NUMBER.search("gas(6.4)")
+    assert _EQUATION_NUMBER.search("x (2.10b)")
+    assert _EQUATION_NUMBER.search("y (7)")

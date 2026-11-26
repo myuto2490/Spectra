@@ -24,6 +24,7 @@ from .fonts import base_name, is_math_font, is_math_span, is_mono_font, math_cha
 from .models import (
     BlockDecision,
     BlockKind,
+    Line,
     PageAnalysis,
     SkipReason,
     Span,
@@ -67,7 +68,7 @@ _PAGE_OF = re.compile(r"page\s+\d+\s+of\s+\d+", re.IGNORECASE)
 # 擬似コード（アルゴリズムの枠）の行： "1:" "12:" や "Input:" "Require:" で始まる
 _PSEUDOCODE = re.compile(r"^\s*(\d{1,2}:|(input|output|require|ensure|return)\s*:)", re.IGNORECASE)
 _EQUATION_SIGN = re.compile(r"[=≈≤≥<>∝≡]")
-_EQUATION_NUMBER = re.compile(r"\S\s*\(\d{1,3}[a-z]?\)\s*$")
+_EQUATION_NUMBER = re.compile(r"\S\s*\(\d{1,3}(\.\d{1,3}){0,2}[a-z]?\)\s*$")  # "(7)" "(6.4)" "(2.10b)"
 _LONG_WORD = re.compile(r"[A-Za-z]{4,}")
 _ABSTRACT = re.compile(r"^\s*(abstract|summary)\b", re.IGNORECASE)
 _ABSTRACT_HEADING = re.compile(r"^\s*(abstract|summary)\s*[.:—-]?\s*$", re.IGNORECASE)
@@ -231,9 +232,21 @@ def _subscripts(block: TextBlock) -> set[int]:
     数式の断片（分数の分子など）が本文と判定されてしまう。
     """
     result: set[int] = set()
+    base: Span | None = None  # 添字が付く変数・記号
+    prev: Span | None = None
+    prev_line: Line | None = None
     for ln in block.lines:
-        base: Span | None = None  # 添字が付く変数・記号
-        prev: Span | None = None
+        # 上付きと下付きが重なる位置で、同じ高さの並びが別の行に分けられることがある（"β" + "ext" の次の行が
+        # 下付きの "particle" から始まる）。前の行の右端から続く行なら、添字の判定を引き継ぐ
+        continues = (
+            prev_line is not None
+            and prev is not None
+            and min(ln.bbox[3], prev_line.bbox[3]) - max(ln.bbox[1], prev_line.bbox[1]) > 0
+            and prev_line.bbox[0] < ln.bbox[0] <= prev.bbox[2] + prev.size * 0.5
+        )
+        if not continues:
+            base = prev = None
+        prev_line = ln
         for span in ln.spans:
             t = span.text.strip()
             if not t:
@@ -246,10 +259,14 @@ def _subscripts(block: TextBlock) -> set[int]:
                 result.add(id(span))
             elif is_math_font(span.font) or (span.is_italic and _VARIABLE.fullmatch(t)):
                 base = span
-            else:
+            elif t not in _ACCENTS:  # 変数の上のアクセント（ω˜ の "˜"）は変数の一部なので、添字の判定を続ける
                 base = None
             prev = span
     return result
+
+
+# 変数の上に別のスパンとして置かれるアクセント記号
+_ACCENTS = frozenset("˜ˆ¯˙¨´`˘ˇ~^\u0303\u0302\u0304\u0307\u0308\u20d7")
 
 
 def estimate_body_size(blocks: Iterable[TextBlock]) -> float:

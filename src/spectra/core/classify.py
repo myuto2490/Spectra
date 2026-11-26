@@ -352,6 +352,18 @@ _ROMAN = r"(?<![A-Za-z])(?=[ivxlc])c{0,3}(?:xc|xl|l?x{0,3})(?:ix|iv|v?i{0,3})(?!
 _ENDS_WITH_PAGE = re.compile(rf"[A-Za-z].*?(?:\d{{1,4}}|{_ROMAN})\s*$")
 
 
+def _contents_title_line(text: str) -> bool:
+    """リーダーの無い目次の行: 番号（"1 " "3.2" "A."）の後に大文字で始まる題名か、大文字で始まる短い題名で、ページ番号で終わる。
+
+    本文の "…converges to the value 2" のような、数で終わる普通の行は当てはまらない。
+    """
+    t = text.strip()
+    if not _ENDS_WITH_PAGE.search(t):
+        return False
+    numbered = re.match(r"(?:\d{1,2}(?:\.\d{1,2})*|[A-Z])\.?\s*[A-Z]", t)
+    return bool(numbered) or (t[:1].isupper() and len(t.split()) <= 8)
+
+
 def _is_contents(block: TextBlock) -> bool:
     """目次（行の多くがリーダーとページ番号で終わる）。訳すと項目番号・リーダー・ページ番号が失われるので表として残す。"""
     lines = [ln for ln in block.lines if ln.text.strip()]
@@ -360,7 +372,7 @@ def _is_contents(block: TextBlock) -> bool:
         return False
     # 2 行以上のブロックでは 2 行以上（本文の 1 行がたまたま ". . . . 3" で終わることがある）。ただし残りの行が
     # すべてページ番号で終わる（リーダーの無い章の行 "1 The Earth’s Atmosphere 1"）なら 1 行でもよい
-    if hits < 2 and not all(_CONTENTS_LINE.search(ln.text) or _ENDS_WITH_PAGE.search(ln.text) for ln in lines):
+    if hits < 2 and not all(_CONTENTS_LINE.search(ln.text) or _contents_title_line(ln.text) for ln in lines):
         return False
     return hits >= len(lines) * 0.4
 

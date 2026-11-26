@@ -1149,3 +1149,15 @@ def test_short_paragraphs_after_a_section_named_index_are_translated():
     a = analyze_document(doc)
     assert _find(a, "Both indices").translate
     assert _find(a, "three trends").translate
+
+
+def test_two_line_paragraph_ending_in_leader_dots_and_a_number_is_translated():
+    """1 行目が ". . . . 0"、2 行目が数で終わる 2 行の本文（"…converges to the value 2"）は目次ではない。"""
+    from pdf_factory import BODY
+
+    doc = pymupdf.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_text((140, 200), "The terms of the series are 1, 1/2, 1/4, . . . . 0", fontname=BODY, fontsize=10)
+    page.insert_text((140, 212), "and the partial sums converges to the value 2", fontname=BODY, fontsize=10)
+    a = analyze_document(doc)
+    assert _find(a, "partial sums").translate

@@ -24,6 +24,20 @@ def test_subset_prefix_removed():
     assert base_name("QWERTY+CMMI10") == "CMMI10"
 
 
+@pytest.mark.parametrize("name", ["rtxmi", "ABCDEF+rtxmi", "rtxsy", "rpxmi", "txsy"])
+def test_txfonts_raw_math_fonts(name):
+    assert is_math_font(name)
+
+
+def test_txfonts_math_roman_is_math_only_for_symbols():
+    """rtxr は数式の "+" "=" や数字を組むが、本文の合字 "ff" "ffi" も組むので、英字は数式としない。"""
+    assert not is_math_font("rtxr")
+    for text in ("+", "=", "(2)", "/"):
+        assert is_math_span("rtxr", text, body_font="Times-Roman"), text
+    for text in ("ff", "ffi", "fl"):
+        assert not is_math_span("rtxr", text, body_font="Times-Roman"), text
+
+
 def test_cmr_is_math_only_when_body_is_not_cm():
     assert is_math_span("CMR10", "softmax", body_font="NimbusRomNo9L-Regu")
     assert not is_math_span("CMR10", "softmax", body_font="CMR10")

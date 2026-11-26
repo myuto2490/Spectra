@@ -422,6 +422,37 @@ def test_display_equation_fragments_are_not_translated():
     assert has_column_gaps(header, 8)
 
 
+def _skip_of(block, body_font="Times-Roman"):
+    from spectra.core.classify import BlockStats, DocumentClassifier
+    from spectra.core.options import AnalysisOptions
+
+    classifier = DocumentClassifier(AnalysisOptions(), 10.0, body_font)
+    return classifier._skip(block, BlockStats(block, body_font), BlockKind.BODY, [], [], False)
+
+
+def test_txfonts_equation_fragments_are_not_translated():
+    """txfonts（rtxmi・rtxr）で組まれた独立数式の断片（分数の分子など）を本文と判定しない。"""
+    it, rm, mi, sy = "Times-Italic", "Times-Roman", "rtxmi", "txsy"
+    # 分子の dL_λ(x + dx, y + dy, …)：微分 "dL" "dx" は単語ではない
+    spans = [("dL", it, 10), ("λ", mi, 7), ("(", rm, 10), ("x", it, 10), (" +", "rtxr", 10), (" dx", it, 10), (",", mi, 10), (" y", it, 10), (" +", "rtxr", 10), (" dy", it, 10), (")", rm, 10)]
+    numerator = _block(_line(*[_span(t, f, s, 200 + 10 * i, 208 + 10 * i, 630.0) for i, (t, f, s) in enumerate(spans)]))
+    assert _skip_of(numerator) == SkipReason.MATH
+    # μ E_Sun：立体の小さな添字 "Sun" は単語ではない
+    sun = _block(_line(_span("µ", mi, 10, 210.0, 216.0, 712.0), _span("Sun", rm, 7, 216.2, 226.0, 714.0), _span("E", it, 10, 226.5, 233.0, 712.0), _span("0", rm, 7, 233.2, 236.0, 714.0)))
+    assert _skip_of(sun) == SkipReason.MATH
+    # 2 行の分数 dE↓ / 2
+    frac = _block(_line(_span("dE", it, 10, 218.0, 230.0, 210.0), _span("↓", sy, 7, 230.2, 236.0, 206.0)), _line(_span("2", rm, 10, 226.0, 231.0, 222.0)))
+    assert _skip_of(frac) == SkipReason.MATH
+
+
+def test_subscripted_variables_in_a_sentence_are_still_translated():
+    """文中の E_Sun のような添字付きの変数があっても、文章は訳す。"""
+    it, rm = "Times-Italic", "Times-Roman"
+    words = "The solar irradiance at the top of the atmosphere is written as"
+    line = _line(_span(words, rm, 10, 72.0, 380.0, 300.0), _span("E", it, 10, 383.0, 390.0, 300.0), _span("Sun", rm, 7, 390.2, 401.0, 302.0), _span(" and is assumed constant.", rm, 10, 401.5, 520.0, 300.0))
+    assert _skip_of(_block(line)) is None
+
+
 def test_caption_covered_by_a_white_figure_background_is_translated():
     """図とキャプションをまとめて覆う白い背景があっても、キャプションは訳す（図の中の文字は原文のまま）。"""
     from pdf_factory import make_figure_on_white_background

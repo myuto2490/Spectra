@@ -1116,3 +1116,20 @@ def test_chapter_line_and_header_on_a_contents_page_are_not_translated():
     assert not _find(a, "Solid Angle").translate
     assert not _find(a, "Radiometric Basics").translate
     assert not _find(a, "Table of Contents").translate
+
+
+def test_two_line_equation_with_a_noun_label_is_math():
+    """分数を含む 2 行の独立数式 "Loss Rate = d[A]/dt = J[A]"（大文字の名詞のラベル付き）は数式。文は訳す。"""
+    from pdf_factory import BODY, LOREM, write_paragraph
+
+    doc = pymupdf.open()
+    page = doc.new_page(width=595, height=842)
+    write_paragraph(page, (140, 473), 200, LOREM, 3)
+    page.insert_text((253, 300), "Loss Rate = d [A] = J [A]", fontname=BODY, fontsize=10)
+    page.insert_text((322, 312), "dt", fontname=BODY, fontsize=10)
+    page.insert_text((140, 350), "Hence the rate is given by k = 2", fontname=BODY, fontsize=10)
+    page.insert_text((140, 362), "and so on", fontname=BODY, fontsize=10)
+    write_paragraph(page, (140, 473), 400, LOREM, 3)
+    a = analyze_document(doc)
+    assert _find(a, "Loss Rate").skip == SkipReason.MATH
+    assert _find(a, "Hence the rate").translate

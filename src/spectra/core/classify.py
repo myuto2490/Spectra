@@ -419,6 +419,13 @@ def _has_prose_word(text: str) -> bool:
     return any(w.lower() in _FUNCTION_WORDS for w in re.findall(r"(?<![A-Za-z])[A-Za-z][a-z]*(?![A-Za-z])", outside))
 
 
+def _has_lowercase_prose(text: str) -> bool:
+    """小文字の英単語（4 文字以上）か機能語（大文字始まりを含む）を含む。大文字で始まる名詞だけのラベルは含まない。"""
+    outside = re.sub(r"\[[^\]]*\]", " ", text)
+    words = re.findall(r"(?<![A-Za-z])[A-Za-z][a-z]*(?![A-Za-z])", outside)
+    return any((w.islower() and len(w) >= 4) or w.lower() in _FUNCTION_WORDS for w in words)
+
+
 def _short_sentence(b: TextBlock, st: BlockStats) -> bool:
     """数式の記号を含む、短い本物の文（"If ω̃ = 1 then" "where E is the flux"）。数式と判定しない。
 
@@ -433,7 +440,8 @@ def _short_sentence(b: TextBlock, st: BlockStats) -> bool:
         return w.lower() in _FUNCTION_WORDS or (len(w) >= 4 and w[1:].islower())
 
     first = re.match(r"\s*([A-Za-z][a-z]*)(?![A-Za-z0-9])", st.text)
-    return bool(first) and prose(first.group(1)) and sum(map(prose, words)) >= 2
+    # 文には小文字の語か機能語がある。大文字で始まる名詞だけの "Loss Rate = d[A]/dt" は式のラベル
+    return bool(first) and prose(first.group(1)) and sum(map(prose, words)) >= 2 and _has_lowercase_prose(st.text)
 
 
 def _keep_contents_page_lines(decisions: list[BlockDecision]) -> None:
@@ -858,6 +866,17 @@ class DocumentClassifier:
         if not sentence and st.chars and st.math_chars / st.chars > 0.5:
             return SkipReason.MATH
         if not sentence and _looks_like_equation(b, st):
+            return SkipReason.MATH
+        # 1〜3 行の独立数式（分数の "mv²/r = ke²/r²"、ラベル付きの "Loss Rate = d[A]/dt = J[A]"）。等号があり、語が 4 つ以下で、
+        # 小文字の英単語・機能語が無い（大文字で始まる名詞のラベルは数式の一部）
+        if (
+            not sentence
+            and kind in (BlockKind.BODY, BlockKind.FOOTNOTE)
+            and len(b.lines) <= 3
+            and _EQUATION_SIGN.search(st.text)
+            and st.words <= 4
+            and not _has_lowercase_prose(st.text)
+        ):
             return SkipReason.MATH
         # 本文のフォントだけで組まれた独立数式（"f(r, t) = A0/r cos(kr − ωt). (2.16)"）。等号と章番号付きの式番号があり、
         # 英単語の無い 1〜2 行は、横に数式のブロックが無くても数式

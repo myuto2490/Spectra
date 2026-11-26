@@ -498,6 +498,71 @@ def _split_off_line(blocks: list[TextBlock], block: TextBlock, at: int) -> TextB
     return head
 
 
+def _glossary_entry_start(line, size: float) -> bool:
+    """記号表の項目の先頭行か: 記号（1 文字の英字・ギリシャ文字か数式フォントの記号と、その添字）の後に
+    空白があり、説明の英字が続く（"σ Stephan-Boltzmann constant" "kB Boltzmann’s constant"）。
+
+    箇条書きの "•"、番号付きの "1."、所属の "1 LESIA"、本文の "is the …" は記号とみなさない。
+    """
+    spans = [s for s in line.spans if s.text.strip()]
+    if not spans:
+        return False
+    first = spans[0]
+    t = first.text.strip()
+    sym, _, rest = t.partition(" ")
+    # 英語の 1 文字の語（"A small …" "a depth …" "I …"）は、数式フォントか斜体でなければ記号ではない
+    english_word = sym in ("A", "a", "I") and not (is_math_font(first.font) or first.is_italic)
+    if rest:  # 記号と説明が 1 つのスパン（"h Planck’s constant"）
+        return len(sym) == 1 and sym.isalpha() and rest[:1].isalpha() and not english_word
+    if english_word or t[:1] in "•·∙◦▪–—-*∗" or not (is_math_font(first.font) or (len(t) == 1 and t.isalpha())):
+        return False
+    for a, b in zip(spans, spans[1:]):
+        if b.bbox[0] - a.bbox[2] >= size * 0.4:
+            return b.text.strip()[:1].isalpha()
+        # 記号に続く添字（小さい文字）か数式フォントの記号だけを、記号の一部とする
+        if not (is_math_font(b.font) or b.size < first.size * 0.85):
+            return False
+    return False
+
+
+def split_glossary_blocks(blocks: list[TextBlock]) -> None:
+    """記号表（"σ Stephan-Boltzmann constant" のような、記号と説明の行を広い行間で並べたもの）の
+    ブロックを、項目ごとのブロックに分ける（blocks を書き換える）。
+
+    複数の項目が 1 つのブロックにまとめられると、1 つの段落として訳され、項目の区切りと記号の位置が失われる。
+    行間が文字の 1.45 倍以上（普通の段落は 1.2 倍ほど）で、ほとんどの行が「短い記号＋空白＋説明」のものに限る。
+    字下げされた行（説明の折り返し）は前の項目に含める。
+    """
+    for block in list(blocks):
+        lines = block.lines
+        if len(lines) < 2:
+            continue
+        size = _line_size(lines[0])
+        pitches = [b.baseline - a.baseline for a, b in zip(lines, lines[1:])]
+        if sorted(pitches)[len(pitches) // 2] < size * 1.45:
+            continue  # 普通の行間の段落
+        x0 = block.bbox[0]
+        starts = [not (ln.bbox[0] > x0 + size) and _glossary_entry_start(ln, size) for ln in lines]
+        # 先頭の行が、前のブロックの項目の説明の折り返しのこともある（その行は 1 つのまとまりとして残す）
+        # 項目が 2 つだけのブロックは、すべての行が項目のときに限る
+        if sum(starts) < 2 or sum(starts) < (len(lines) - (not starts[0])) * (0.6 if sum(starts) >= 3 else 1.0):
+            continue
+        entries: list[list] = []
+        for ln, start in zip(lines, starts):
+            if start or not entries:
+                entries.append([ln])
+            else:
+                entries[-1].append(ln)
+        pos = blocks.index(block)
+        next_index = max(b.index for b in blocks) + 1
+        block.lines = entries[0]
+        block.bbox = _lines_bbox(entries[0])
+        for k, group in enumerate(entries[1:], start=1):
+            nb = TextBlock(page=block.page, index=next_index, bbox=_lines_bbox(group), lines=group)
+            next_index += 1
+            blocks.insert(pos + k, nb)
+
+
 def _lines_bbox(lines: list) -> tuple[float, float, float, float]:
     return (
         min(ln.bbox[0] for ln in lines),
@@ -525,6 +590,7 @@ class DocumentClassifier:
 
     def analyze_page(self, page: pymupdf.Page, blocks: list[TextBlock] | None = None) -> PageAnalysis:
         blocks = extract_blocks(page) if blocks is None else blocks
+        split_glossary_blocks(blocks)
         drawings = read_drawings(page)
         figures = find_figure_rects(page, drawings)
         tables = find_table_rects(page, drawings)

@@ -951,3 +951,43 @@ def test_paragraph_with_one_line_ending_in_leader_dots_is_translated():
     page.insert_text((140, 212), "and so on until the remaining terms become negligible in practice.", fontname=BODY, fontsize=10)
     a = analyze_document(doc)
     assert _find(a, "remaining terms").translate
+
+
+def test_nomenclature_entries_are_translated_one_by_one():
+    """記号表（記号と説明の行を広い行間で並べたもの）は、項目ごとに訳す。段の最後と次の段の最初の項目もつなげない。"""
+    from pdf_factory import BODY
+
+    doc = pymupdf.open()
+    page = doc.new_page(width=595, height=842)
+    left = [("s", "Stephan-Boltzmann constant"), ("c", "velocity of light"), ("h", "Planck constant"), ("f", "azimuth angle")]
+    right = [("r", "mass density"), ("t", "optical depth"), ("w", "single scatter albedo")]
+    for col, entries in ((140, left), (320, right)):
+        for i, (sym, desc) in enumerate(entries):
+            y = 260 + i * 20  # 行間 20pt（文字の 2 倍）
+            page.insert_text((col, y), sym, fontname="symb", fontsize=10)
+            page.insert_text((col + 14, y), desc, fontname=BODY, fontsize=10)
+    a = analyze_document(doc)
+    for _, desc in left + right:
+        d = _find(a, desc)
+        assert d.translate and len(d.block.lines) == 1, desc
+    seg = next(s for s in a.segments if "azimuth" in s.source)
+    assert "mass density" not in seg.source
+
+
+def test_double_spaced_paragraph_starting_lines_with_a_is_not_split_as_nomenclature():
+    """行間の広い（ダブルスペースの）段落で、行頭が "A small" "a depth" でも、記号表として分けない。"""
+    from pdf_factory import BODY
+
+    doc = pymupdf.open()
+    page = doc.new_page(width=595, height=842)
+    lines = [
+        "A small fraction of the incident radiation is absorbed by",
+        "a depth of the atmosphere that depends on the wavelength",
+        "a mass of air that is large compared with the cloud layer",
+        "and the remainder is scattered back towards the observer.",
+    ]
+    for i, line in enumerate(lines):
+        page.insert_text((140, 200 + i * 22), line, fontname=BODY, fontsize=10)  # 行間 2.2 倍
+    a = analyze_document(doc)
+    d = _find(a, "A small fraction")
+    assert d.translate and len(d.block.lines) == 4

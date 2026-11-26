@@ -888,3 +888,40 @@ def test_prose_word_beside_a_display_equation_is_still_translated():
     _absorb_equation_fragments(decisions, stats, 10.0)
     assert decisions[1].translate and decisions[2].translate
     assert decisions[3].skip == SkipReason.MATH
+
+
+def test_equation_with_a_chapter_number_in_a_text_font_is_math():
+    """式と同じ高さの "M or E (3.11)" "[dimensionless] (3.119)" "(B.22) dx" は数式。式と並ばない同じ形の行は訳す。"""
+    from spectra.core.classify import BlockStats, _absorb_equation_fragments
+    from spectra.core.models import BlockDecision, TextBlock
+
+    def block(index, spans):
+        b = _fragment_block([spans])
+        return TextBlock(page=0, index=index, bbox=b.bbox, lines=b.lines)
+
+    equation = block(0, [_frag_span("=", "rtxr", 10, 200, 300, 6), _frag_span("∂Φ", "rtxmi", 10, 210, 300, 12)])
+    beside = block(1, [_frag_span("M or E", "Times-Roman", 10, 160, 300, 30), _frag_span("(3.11)", "Times-Roman", 10, 440, 300, 24)])
+    unit = block(2, [_frag_span("[dimensionless]", "Times-Roman", 10, 240, 300, 60)])
+    alone = block(3, [_frag_span("M or E", "Times-Roman", 10, 140, 500, 30), _frag_span("(3.11)", "Times-Roman", 10, 180, 500, 24)])
+    decisions = [BlockDecision(equation, BlockKind.BODY, SkipReason.MATH)] + [
+        BlockDecision(b, BlockKind.BODY, None) for b in (beside, unit, alone)
+    ]
+    stats = {b.index: BlockStats(b) for b in (equation, beside, unit, alone)}
+    _absorb_equation_fragments(decisions, stats, 10.0)
+    assert decisions[1].skip == SkipReason.MATH and decisions[2].skip == SkipReason.MATH
+    assert decisions[3].translate
+
+
+def test_body_line_citing_a_number_without_an_equation_beside_it_is_translated():
+    """数式と並ばない 1 行の "Bond albedo (0.77)" "See Eq. (3.4)" "Appendix (A.1)" は本文。"""
+    from pdf_factory import BODY, LOREM, write_paragraph
+
+    doc = pymupdf.open()
+    page = doc.new_page(width=595, height=842)
+    write_paragraph(page, (140, 473), 200, LOREM, 3)
+    for i, line in enumerate(["Bond albedo (0.77)", "See Eq. (3.4)", "Appendix (A.1)"]):
+        page.insert_text((140, 270 + i * 30), line, fontname=BODY, fontsize=10)
+    write_paragraph(page, (140, 473), 400, LOREM, 3)
+    a = analyze_document(doc)
+    for line in ("Bond albedo", "See Eq.", "Appendix"):
+        assert _find(a, line).translate, line

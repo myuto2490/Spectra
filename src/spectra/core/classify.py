@@ -70,6 +70,8 @@ _PSEUDOCODE = re.compile(r"^\s*(\d{1,2}:|(input|output|require|ensure|return)\s*
 _EQUATION_SIGN = re.compile(r"[=≈≤≥<>∝≡]")
 _EQUATION_NUMBER = re.compile(r"\S\s*\(\d{1,3}(\.\d{1,3}){0,2}[a-z]?\)\s*$")  # "(7)" "(6.4)" "(2.10b)"
 _LONG_WORD = re.compile(r"[A-Za-z]{4,}")
+# 式・図・節などの番号を引用する語（"See Eq. (3.4)" "cf. Fig. (2)"）
+_CITATION = re.compile(r"\b(see|cf|eqs?|equations?|figs?|figures?|sec|sections?|appendix|table|chapter)\b", re.IGNORECASE)
 _ABSTRACT = re.compile(r"^\s*(abstract|summary)\b", re.IGNORECASE)
 _ABSTRACT_HEADING = re.compile(r"^\s*(abstract|summary)\s*[.:—-]?\s*$", re.IGNORECASE)
 _SENTENCE = re.compile(r"[a-z]{2,}[,;]?\s+[a-z]{2,}\s+[a-z]{2,}.*[.]\s*$")
@@ -331,7 +333,8 @@ def _looks_like_equation(block: TextBlock, st: BlockStats) -> bool:
     if st.has_math and st.italic_only and st.words <= 2:
         return True
     # 式番号で終わる、長い単語の無い 1 行（独立数式の右端の断片。例: "s′ exp(−τ s′) ds′ (7)"）
-    if _EQUATION_NUMBER.search(st.text) and not _LONG_WORD.search(st.text) and st.words <= 2:
+    # ただし "See Eq. (3.4)" のような式番号の引用は本文
+    if _EQUATION_NUMBER.search(st.text) and not _LONG_WORD.search(st.text) and st.words <= 2 and not _CITATION.search(st.text):
         return True
     if not _EQUATION_SIGN.search(st.text):
         return False
@@ -340,6 +343,22 @@ def _looks_like_equation(block: TextBlock, st: BlockStats) -> bool:
     # 記号が大半の行（OCR の読み取りで崩れた数式の "p ( y ) = (2,)n/»|LALT|i/a e x p < - ^ …" など）は、
     # 字間を詰めて長い単語ができても数式とする
     return len(_LONG_WORD.findall(st.text)) <= 1 or st.letters < st.chars * 0.45
+
+
+# 式番号（"(3.90)" "(B.22)" "(2.10b)"）。行のどこにあってもよい（右端の式番号が行の先頭に取り出されることがある）
+_EQUATION_NUMBER_ANYWHERE = re.compile(r"\((?:[A-Z]|[1-9]\d{0,2})\.\d{1,3}(?:\.\d{1,3})?[a-z]?\)")
+
+
+def _numbered_equation_fragment(b: TextBlock, st: BlockStats) -> bool:
+    """章番号付きの式番号を含み、語が 3 つ以下で、文として終わらない 1〜2 行（"M or E = ∂Φ/∂A (3.11)" "(B.22) dx"）。
+
+    独立数式の右端の断片で、式の記号が立体の英字なので数式と判定されなかったもの。数式のブロックと
+    同じ高さに並ぶときだけ数式とする（_absorb_equation_fragments）。本文の "See Eq. (3.4)" "Appendix (A.1)" は
+    数式と並ばないので訳す。"(1)" のような番号だけの式番号は箇条書きの番号と、"(0.77)" は小数と区別できないので対象にしない。
+    """
+    if len(b.lines) > 2:
+        return False
+    return bool(_EQUATION_NUMBER_ANYWHERE.search(st.text)) and st.words <= 3 and not _SENTENCE_END.search(st.text)
 
 
 _SKIPPED_AS_MATH = (SkipReason.MATH, SkipReason.NO_WORDS, SkipReason.NUMERIC)
@@ -381,7 +400,9 @@ def _absorb_equation_fragments(decisions: list[BlockDecision], stats: dict[int, 
         if not d.translate or d.kind not in (BlockKind.BODY, BlockKind.FOOTNOTE):
             continue
         b, st = d.block, stats[d.block.index]
-        if len(b.lines) > 2 or st.words > 3 or _SENTENCE_END.search(st.text) or _has_prose_word(st.text):
+        numbered = _numbered_equation_fragment(b, st)
+        small = not (len(b.lines) > 2 or st.words > 3 or _SENTENCE_END.search(st.text) or _has_prose_word(st.text))
+        if not (small or numbered):
             continue
         x0, y0, x1, y1 = b.bbox
         height = max(y1 - y0, 1.0)
@@ -392,7 +413,8 @@ def _absorb_equation_fragments(decisions: list[BlockDecision], stats: dict[int, 
             v_gap = max(m[1] - y1, y0 - m[3])
             same_row = v_overlap >= height * 0.5 and h_gap <= body_size * 3
             stacked = h_overlap >= (x1 - x0) * 0.5 and v_gap <= body_size * 0.6
-            if same_row or stacked:
+            # 語を含む式番号付きの断片（"M or E (3.11)"）は、数式と同じ高さに並ぶときだけ
+            if same_row or (stacked and small):
                 d.skip = SkipReason.MATH
                 break
 

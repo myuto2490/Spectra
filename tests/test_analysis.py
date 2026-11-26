@@ -1031,3 +1031,20 @@ def test_short_sentence_with_a_symbol_beside_equations_is_translated():
     assert _short_sentence(sentence, BlockStats(sentence))
     assert not _short_sentence(fragment, BlockStats(fragment))
     assert not _short_sentence(labelled, BlockStats(labelled))
+
+
+def test_numbered_equation_set_in_a_text_font_is_math_without_a_neighbor():
+    """等号と章番号付きの式番号があり、英単語の無い 2 行の式（分子が別の行の "mvr = nh/2π (4.9)"）は数式。"See Eq. (3.4)" は本文。"""
+    from pdf_factory import BODY, LOREM, write_paragraph
+
+    doc = pymupdf.open()
+    page = doc.new_page(width=595, height=842)
+    write_paragraph(page, (140, 473), 200, LOREM, 3)
+    page.insert_text((282, 274), "nh", fontname=BODY, fontsize=10)  # 分子（2 行の式）
+    page.insert_text((250, 284), "mvr = 2p = nk", fontname=BODY, fontsize=10)
+    page.insert_text((440, 284), "(4.9)", fontname=BODY, fontsize=10)
+    page.insert_text((140, 320), "See Eq. (3.4)", fontname=BODY, fontsize=10)
+    write_paragraph(page, (140, 473), 360, LOREM, 3)
+    a = analyze_document(doc)
+    assert not _find(a, "(4.9)").translate
+    assert _find(a, "See Eq.").translate

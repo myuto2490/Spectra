@@ -793,6 +793,10 @@ class DocumentClassifier:
             return SkipReason.MATH
         if not sentence and _looks_like_equation(b, st):
             return SkipReason.MATH
+        # 本文のフォントだけで組まれた独立数式（"f(r, t) = A0/r cos(kr − ωt). (2.16)"）。等号と章番号付きの式番号があり、
+        # 英単語の無い 1〜2 行は、横に数式のブロックが無くても数式
+        if _numbered_equation_fragment(b, st) and _EQUATION_SIGN.search(st.text) and not _has_prose_word(st.text):
+            return SkipReason.MATH
         if st.cjk > max(3, st.letters * 0.3):
             return SkipReason.ALREADY_JAPANESE
         if st.words == 0:

@@ -230,7 +230,9 @@ def test_errors_do_not_contain_absolute_paths(tmp_path):
     assert "taro@example.com" not in str(info.value)
 
 
-def test_device_name_is_not_the_hostname(tmp_path):
+def test_device_name_is_not_the_hostname(tmp_path, monkeypatch):
+    # 実機のホスト名が短いと既定の名前に含まれてしまうので、固有のホスト名にする
+    monkeypatch.setattr(platform, "node", lambda: "taro-secret-pc.local")
     info = load_device(tmp_path / "device.json")
     assert platform.node() not in info.name or not platform.node()
     raw = json.loads((tmp_path / "device.json").read_text())

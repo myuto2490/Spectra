@@ -347,14 +347,36 @@ def _looks_like_equation(block: TextBlock, st: BlockStats) -> bool:
 
 # 目次の行の終わり：リーダー（". . . ."）とページ番号（算用数字かローマ数字）
 _CONTENTS_LINE = re.compile(r"(?:\.\s?){4,}\s*(?:\d{1,4}|[ivxlc]{1,6})\s*$")
+# 題名とページ番号で終わる行（抽出で "Atmosphere1" のように数字がつながることがある。ローマ数字は独立した語に限る）
+_ROMAN = r"(?<![A-Za-z])(?=[ivxlc])c{0,3}(?:xc|xl|l?x{0,3})(?:ix|iv|v?i{0,3})(?![A-Za-z])"
+_ENDS_WITH_PAGE = re.compile(rf"[A-Za-z].*?(?:\d{{1,4}}|{_ROMAN})\s*$")
 
 
 def _is_contents(block: TextBlock) -> bool:
     """目次（行の多くがリーダーとページ番号で終わる）。訳すと項目番号・リーダー・ページ番号が失われるので表として残す。"""
     lines = [ln for ln in block.lines if ln.text.strip()]
     hits = sum(1 for ln in lines if _CONTENTS_LINE.search(ln.text))
-    # 2 行以上のブロックでは 2 行以上（本文の 1 行がたまたま ". . . . 3" で終わることがある）
-    return hits >= min(2, len(lines)) and hits >= len(lines) * 0.4
+    if hits == 0:
+        return False
+    # 2 行以上のブロックでは 2 行以上（本文の 1 行がたまたま ". . . . 3" で終わることがある）。ただし残りの行が
+    # すべてページ番号で終わる（リーダーの無い章の行 "1 The Earth’s Atmosphere 1"）なら 1 行でもよい
+    if hits < 2 and not all(_CONTENTS_LINE.search(ln.text) or _ENDS_WITH_PAGE.search(ln.text) for ln in lines):
+        return False
+    return hits >= len(lines) * 0.4
+
+
+_INDEX = re.compile(r"^\s*(?:subject\s+|author\s+)?index\s*$", re.IGNORECASE)
+# 索引の項目の行の終わり：", 13" ", 13–15" ", 22, 87"
+_INDEX_ENTRY = re.compile(r",\s*\d{1,4}(?:\s*[–-]\s*\d{1,4})?(?:\s*,\s*\d{1,4}(?:\s*[–-]\s*\d{1,4})?)*\s*$")
+
+
+def _index_entries(block: TextBlock) -> bool:
+    """索引の項目のブロック: 行の 3 割以上が ", ページ番号" で終わるか、項目の折り返し・親項目の短い 1〜2 行。"""
+    lines = [ln for ln in block.lines if ln.text.strip()]
+    if not lines:
+        return False
+    hits = sum(1 for ln in lines if _INDEX_ENTRY.search(ln.text))
+    return hits >= len(lines) * 0.3 or (len(lines) <= 2 and len(block.text.split()) <= 6)
 
 
 # 式番号（"(3.90)" "(B.22)" "(2.10b)"）。行のどこにあってもよい（右端の式番号が行の先頭に取り出されることがある）
@@ -465,7 +487,13 @@ def graphic_rects(page: pymupdf.Page, drawings: list[dict]) -> list:
 
 
 def _header_key(text: str) -> str:
-    """柱の比較用の文字列（ページ番号などの数字と空白を除き、小文字にする）。"""
+    """柱の比較用の文字列（ページ番号などの数字と空白を除き、小文字にする）。
+
+    前付けの柱のローマ数字のページ番号（"viii An Atmospheric …" "Table of Contents ix"）も、行の先頭・末尾にあれば除く。
+    """
+    # 先頭のローマ数字は、抽出で次の語とつながる（"viiiAn"）ことがあるので、大文字が続く場合も除く
+    text = re.sub(r"^(?=[ivxlc])c{0,3}(?:xc|xl|l?x{0,3})(?:ix|iv|v?i{0,3})(?=[A-Z\s])", "", text.strip())
+    text = re.sub(rf"{_ROMAN}\s*$", "", text)
     return re.sub(r"[\d\s]+", "", text).lower()
 
 
@@ -607,6 +635,7 @@ class DocumentClassifier:
         self.body_size = body_size
         self.body_font = body_font
         self.in_references = False
+        self.in_index = False  # 索引（"Index" の見出しの後）
         # 1 ページ目のタイトル〜概要の間（著者・所属）
         self.seen_title = False
         self.seen_abstract = False
@@ -756,6 +785,16 @@ class DocumentClassifier:
                 self.in_references = False
             elif opts.skip_references:
                 return SkipReason.REFERENCES
+
+        # 索引の開始・終了。索引の項目（"angular frequency, 13"）を訳すと、ページ番号と項目の並びが失われる
+        if len(b.lines) == 1 and _INDEX.match(st.text):
+            self.in_index = True
+            return None  # 見出し自体は訳す
+        if self.in_index:
+            if kind == BlockKind.TITLE or (kind == BlockKind.HEADING and _NUMBERED_SECTION.match(st.text)):
+                self.in_index = False
+            elif kind in (BlockKind.BODY, BlockKind.FOOTNOTE) and _index_entries(b):
+                return SkipReason.TABLE
 
         fig_overlap = max((overlap_ratio(b.bbox, inflate(r, 4)) for r in figures), default=0.0)
         if kind == BlockKind.CAPTION:

@@ -1048,3 +1048,53 @@ def test_numbered_equation_set_in_a_text_font_is_math_without_a_neighbor():
     a = analyze_document(doc)
     assert not _find(a, "(4.9)").translate
     assert _find(a, "See Eq.").translate
+
+
+def test_contents_block_with_a_chapter_line_without_leaders_is_not_translated():
+    """目次の 1 ブロックが「リーダー付きの 1 行＋リーダーの無い章の行（"1 The Earth’s Atmosphere 1"）」でも目次。"""
+    from pdf_factory import BODY, BOLD
+
+    doc = pymupdf.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_text((150, 200), "Nomenclature " + ". " * 20 + "xii", fontname=BODY, fontsize=10)
+    page.insert_text((140, 214), "1 The Earth’s Atmosphere", fontname=BOLD, fontsize=10)
+    page.insert_text((460, 214), "1", fontname=BOLD, fontsize=10)
+    a = analyze_document(doc)
+    assert not _find(a, "Nomenclature").translate
+
+
+def test_index_entries_after_an_index_heading_are_not_translated():
+    """"Index" の見出しの後の項目（"angular frequency, 13"）は、次のページも含めて訳さない。見出しと前の本文は訳す。"""
+    from pdf_factory import BODY, BOLD, LOREM, write_paragraph
+
+    doc = pymupdf.open()
+    write_paragraph(doc.new_page(width=595, height=842), (140, 473), 150, LOREM, 10)  # 本文のページ
+    page = doc.new_page(width=595, height=842)
+    write_paragraph(page, (140, 473), 150, LOREM, 3)
+    page.insert_text((140, 230), "Index", fontname=BOLD, fontsize=16)
+    entries = ["absorption coefficient, 74", "air", "molar mass, 3", "angular frequency, 13", "angular wavenumber, 13"]
+    for i, e in enumerate(entries):
+        page.insert_text((140 if e != "molar mass, 3" else 150, 270 + i * 12), e, fontname=BODY, fontsize=9)
+    page2 = doc.new_page(width=595, height=842)
+    for i, e in enumerate(["phase velocity, 14", "plane of scattering, 40", "quantum yield, 81"]):
+        page2.insert_text((140, 200 + i * 12), e, fontname=BODY, fontsize=9)
+    a = analyze_document(doc)
+    assert _find(a, "Index").translate and _find(a, "Deep neural networks").translate
+    assert not _find(a, "angular frequency").translate
+    assert not _find(a, "quantum yield").translate
+
+
+def test_running_headers_with_roman_page_numbers_are_found():
+    """前付けの柱 "viii An Atmospheric Primer"（ローマ数字のページ番号が題名につながる）も、繰り返しで柱とする。"""
+    from pdf_factory import BODY, LOREM, write_paragraph
+
+    doc = pymupdf.open()
+    for roman in ["vi", "viii", "x", "xii"]:
+        page = doc.new_page(width=595, height=842)
+        page.insert_text((140, 160), roman, fontname=BODY, fontsize=10)
+        page.insert_text((140 + 4 * len(roman), 160), "An Atmospheric Primer", fontname=BODY, fontsize=10)
+        write_paragraph(page, (140, 473), 190, LOREM, 6)
+    a = analyze_document(doc)
+    for pa in a.pages[1:]:
+        top = min(pa.decisions, key=lambda d: d.block.bbox[1])
+        assert top.skip == SkipReason.RUNNING_HEADER, pa.page

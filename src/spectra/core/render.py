@@ -54,6 +54,8 @@ class RenderReport:
     segments: list[SegmentReport] = field(default_factory=list)
     # 訳文が収まらない・他の訳文と重なるため、原文のまま残した段落
     kept_original: list[SegmentReport] = field(default_factory=list)
+    # 消去に巻き込まれた翻訳対象外の記号を、原文から戻せなかったページ（0 始まり）
+    restore_failed: list[int] = field(default_factory=list)
 
     @property
     def shrunk(self) -> list[SegmentReport]:
@@ -232,6 +234,7 @@ class Renderer:
         self._regions_by_page: dict[int, list[tuple[str, Rect]]] = {}
         self._pa = {pa.page: pa for pa in analysis.pages}
         self._scanned: dict[int, bool] = {}
+        self.restore_failed: list[int] = []  # 消去に巻き込まれた記号を戻せなかったページ
 
     def geometry(self, pno: int) -> PageGeometry:
         if pno not in self._geo:
@@ -417,6 +420,7 @@ class Renderer:
             done += 1
             if progress:
                 progress(done, total)
+        report.restore_failed = sorted(set(self.restore_failed))
         return report
 
     def _can_transplant(self, run: InlineRun) -> bool:
@@ -446,12 +450,28 @@ class Renderer:
                 if sid is None:
                     continue
                 box = _restore_box(g)
-                if self.source is None or any(rect_area(rect_intersect(box, inflate(d, 0.3))) > 0 for d in drawn[pno]):
+                if (
+                    self.source is None
+                    or any(rect_area(rect_intersect(box, inflate(d, 0.3))) > 0 for d in drawn[pno])
+                    or not self._can_restore(pno, box)
+                ):
                     log.warning("render %s: a kept glyph would be lost or overlapped; kept the original", sid)
                     clash.add(sid)
                     continue
                 found.append((pno, g, sid))
         return found, clash
+
+    def _can_restore(self, pno: int, box: Rect) -> bool:
+        """原文から字形を切り抜いて貼れるか、消す前に試す（貼れないまま消すと記号が失われるため）。"""
+        try:
+            trial = pymupdf.open()
+            page = trial.new_page(width=self.source[pno].rect.width, height=self.source[pno].rect.height)  # type: ignore[index]
+            r = pymupdf.Rect(box)
+            page.show_pdf_page(r, self.source, pno, clip=r, keep_proportion=False, overlay=True)
+            return True
+        except Exception:
+            log.debug("page %d: cannot restore kept glyphs", pno + 1, exc_info=True)
+            return False
 
     def _restore(
         self, page: pymupdf.Page, glyphs: list[RestoreGlyph], stamps: dict[int, tuple[pymupdf.Document, int]]
@@ -467,13 +487,18 @@ class Renderer:
             if self._glyph_lost(page, g):
                 box = _restore_box(g)
                 boxes[g.span] = rect_union(boxes[g.span], box) if g.span in boxes else box
-        src_doc, src_page = stamps.get(page.number, (self.source, page.number))
+        sources = [stamps.get(page.number, (self.source, page.number)), (self.source, page.number)]
         for box in boxes.values():
-            try:
-                r = pymupdf.Rect(box)
-                page.show_pdf_page(r, src_doc, src_page, clip=r, keep_proportion=False, overlay=True)
-            except Exception:
-                log.warning("page %d: could not restore a kept glyph", page.number + 1, exc_info=True)
+            r = pymupdf.Rect(box)
+            for src_doc, src_page in sources:  # 切り抜き用のページで失敗したら、元の文書から直接貼る
+                try:
+                    page.show_pdf_page(r, src_doc, src_page, clip=r, keep_proportion=False, overlay=True)
+                    break
+                except Exception:
+                    log.debug("page %d: could not restore a kept glyph", page.number + 1, exc_info=True)
+            else:
+                log.warning("page %d: could not restore a kept glyph", page.number + 1)
+                self.restore_failed.append(page.number)
 
     @staticmethod
     def _glyph_lost(page: pymupdf.Page, glyph: RestoreGlyph) -> bool:

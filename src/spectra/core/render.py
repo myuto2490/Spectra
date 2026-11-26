@@ -29,7 +29,7 @@ from .models import (
     rect_intersect,
 )
 from .options import RenderOptions
-from .redact import erase_text, stub_forms
+from .redact import apply_redactions, erase_text, stub_forms
 from .scan import cover, cover_rect, image_dpi, is_scanned, paper_color
 from .textnorm import normalize_translation
 
@@ -420,7 +420,8 @@ class Renderer:
             stub_forms(stamp_doc, sp)
             for r in _complement(tuple(sp.rect), keep):
                 sp.add_redact_annot(pymupdf.Rect(r), fill=False, cross_out=False)
-            sp.apply_redactions(
+            apply_redactions(
+                sp,
                 images=pymupdf.PDF_REDACT_IMAGE_REMOVE,
                 graphics=pymupdf.PDF_REDACT_LINE_ART_REMOVE_IF_TOUCHED,
                 text=pymupdf.PDF_REDACT_TEXT_REMOVE,
@@ -492,7 +493,8 @@ class Renderer:
             r = pymupdf.Rect(d["rect"])
             w = (d.get("width") or 1.0) / 2 + 0.3
             page.add_redact_annot(pymupdf.Rect(r.x0 - w, r.y0 - w, r.x1 + w, r.y1 + w), fill=False, cross_out=False)
-        page.apply_redactions(
+        apply_redactions(
+            page,
             images=pymupdf.PDF_REDACT_IMAGE_NONE,
             graphics=pymupdf.PDF_REDACT_LINE_ART_REMOVE_IF_COVERED,
             text=pymupdf.PDF_REDACT_TEXT_NONE,

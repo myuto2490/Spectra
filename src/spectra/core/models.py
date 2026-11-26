@@ -47,6 +47,12 @@ def _name_has(font: str, keys: tuple[str, ...]) -> bool:
     return any(k in low for k in keys)
 
 
+# 段落の行の中（語と語の間）に描かれた小さなベクター図形を、訳文と一緒に動かすための仮のスパン。
+# 文字ではないので、フォントで描かずに原文の見た目のまま移す
+LINE_ART_FONT = "SpectraLineArt"
+LINE_ART_CHAR = "\ufffc"
+
+
 @dataclass
 class Line:
     spans: list[Span]

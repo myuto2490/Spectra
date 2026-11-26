@@ -110,6 +110,10 @@ def _overlapping(layouts: list[tuple[Segment, LayoutResult]]) -> set[str]:
     return out
 
 
+def _same_rect(a: Rect, b: Rect, tol: float = 0.3) -> bool:
+    return all(abs(x - y) <= tol for x, y in zip(a, b))
+
+
 def _restore_box(glyph: RestoreGlyph) -> Rect:
     """戻す字形の切り抜き範囲。字の輪郭から求めた範囲はぎりぎりなので、にじみの分だけ少し広げる
     （縦に積んだ大きな括弧の部品の継ぎ目が欠けないように）。"""
@@ -610,16 +614,31 @@ class Renderer:
 
     @staticmethod
     def _erase_vectors(page: pymupdf.Page, drawings: list[dict]) -> None:
-        for d in drawings:
-            r = pymupdf.Rect(d["rect"])
-            w = (d.get("width") or 1.0) / 2 + 0.3
-            page.add_redact_annot(pymupdf.Rect(r.x0 - w, r.y0 - w, r.x1 + w, r.y1 + w), fill=False, cross_out=False)
-        apply_redactions(
-            page,
-            images=pymupdf.PDF_REDACT_IMAGE_NONE,
-            graphics=pymupdf.PDF_REDACT_LINE_ART_REMOVE_IF_COVERED,
-            text=pymupdf.PDF_REDACT_TEXT_NONE,
-        )
+        """drawings（移す数式の線など）を消す。
+
+        MuPDF は、並んだ複数の線を 1 回の消去でまとめて消せず、一部が残ることがある（2 本の太い横線のうち
+        1 本だけが消える）。残ったものだけを指定し直して、消えなくなるまで繰り返す。
+        """
+        remaining = list(drawings)
+        for _ in range(8):
+            for d in remaining:
+                r = pymupdf.Rect(d["rect"])
+                w = (d.get("width") or 1.0) / 2 + 0.3
+                page.add_redact_annot(pymupdf.Rect(r.x0 - w, r.y0 - w, r.x1 + w, r.y1 + w), fill=False, cross_out=False)
+            apply_redactions(
+                page,
+                images=pymupdf.PDF_REDACT_IMAGE_NONE,
+                graphics=pymupdf.PDF_REDACT_LINE_ART_REMOVE_IF_COVERED,
+                text=pymupdf.PDF_REDACT_TEXT_NONE,
+            )
+            try:
+                now = [tuple(x["rect"]) for x in page.get_drawings()]
+            except Exception:
+                return
+            left = [d for d in remaining if any(_same_rect(tuple(d["rect"]), r) for r in now)]
+            if not left or len(left) == len(remaining):
+                return
+            remaining = left
 
     @staticmethod
     def _redraw(page: pymupdf.Page, d: dict, run: InlineRun, pr: PlacedRun) -> None:

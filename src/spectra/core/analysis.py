@@ -16,10 +16,13 @@ from .classify import (
 from .extract import TEXT_FLAGS, extract_blocks
 from .fonts import find_text_fonts, has_numbered_adv_fonts, text_fonts
 from .models import (
+    LINE_ART_CHAR,
+    LINE_ART_FONT,
     DocumentAnalysis,
     PageAnalysis,
     RestoreGlyph,
     SkipReason,
+    Span,
     erase_rect,
     inflate,
     rect_area,
@@ -86,6 +89,7 @@ def _analyze(
     for pa in analyses:
         drop_duplicate_layers(pa)
         guard_overlaps(pa, doc[pa.page])
+        attach_line_art(pa, doc[pa.page])
     segments = build_segments(
         [(pa.width, pa.decisions) for pa in analyses],
         merge=options.merge_split_paragraphs,
@@ -171,6 +175,56 @@ def guard_overlaps(pa: PageAnalysis, page: pymupdf.Page | None = None) -> None:
                     pa.restore.append(
                         RestoreGlyph(ink=box, span=s.bbox, block_index=d.block.index, text=ch, origin=origin)
                     )
+
+
+def attach_line_art(pa: PageAnalysis, page: pymupdf.Page) -> None:
+    """訳す段落の行で、語と語の間の空きに描かれた小さなベクター図形を、仮のスパンとして行に加える。
+
+    元の組版で記号の代わりに描かれた図形（黒い四角・線で描いた記号など）は、訳文に置き換えると元の位置に残って
+    訳文と重なる。段落中の数式と同じく保護要素として扱い、訳文の中の位置へ原文の見た目のまま移す。
+    図・表・罫線を巻き込まないよう、行の高さに収まり、語の間の空きの内側にある、小さな図形だけを対象にする。
+    """
+    lines = [ln for d in pa.decisions if d.translate for ln in d.block.lines]
+    if not lines:
+        return
+    try:
+        drawings = page.get_drawings()
+    except Exception:
+        return
+    inks = [_ink_rect(d) for d in drawings]
+    blocked = list(pa.figure_rects) + list(pa.table_rects)
+    for ln in lines:
+        spans = [s for s in ln.spans if s.text.strip()]
+        if len(spans) < 2:
+            continue
+        size = max(s.size for s in spans)
+        height = ln.bbox[3] - ln.bbox[1]
+        added = []
+        for a, b in zip(spans, spans[1:]):
+            g0, g1 = a.bbox[2] - 0.5, b.bbox[0] + 0.5
+            if g1 - g0 < 1:
+                continue
+            found = [
+                r for r in inks
+                if g0 <= r[0] and r[2] <= g1
+                and ln.bbox[1] - 1 <= r[1] and r[3] <= ln.bbox[3] + 1
+                and r[2] - r[0] <= size * 4 and r[3] - r[1] <= height
+            ]
+            if not found or len(found) > 4:
+                continue
+            box = (min(r[0] for r in found), min(r[1] for r in found), max(r[2] for r in found), max(r[3] for r in found))
+            if any(rect_area(rect_intersect(inflate(box, 1), f)) > 0 for f in blocked):
+                continue
+            added.append(Span(LINE_ART_CHAR, LINE_ART_FONT, size, 0, 0, box, (box[0], ln.baseline)))
+        if added:
+            ln.spans = sorted([*ln.spans, *added], key=lambda s: s.bbox[0])
+
+
+def _ink_rect(d: dict) -> tuple[float, float, float, float]:
+    """図形の描かれる範囲（線は太さの分だけ広げる）。"""
+    r = d["rect"]
+    w = (d.get("width") or 0.0) / 2 if d.get("color") is not None else 0.0
+    return (r.x0 - w, r.y0 - w, r.x1 + w, r.y1 + w)
 
 
 _PROSE_WORD = re.compile(r"[A-Za-z]{3,}")

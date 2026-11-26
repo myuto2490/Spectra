@@ -6,7 +6,12 @@ from collections.abc import Callable
 
 import pymupdf
 
-from .classify import DocumentClassifier, estimate_body_font, estimate_body_size
+from .classify import (
+    DocumentClassifier,
+    estimate_body_font,
+    estimate_body_size,
+    find_running_headers,
+)
 from .extract import TEXT_FLAGS, extract_blocks
 from .fonts import find_text_fonts, has_numbered_adv_fonts, text_fonts
 from .models import (
@@ -68,6 +73,7 @@ def _analyze(
     body_size = estimate_body_size(all_blocks)
     body_font = estimate_body_font(all_blocks)
     classifier = DocumentClassifier(options, body_size, body_font)
+    classifier.running_headers = find_running_headers(blocks)
     analyses: list[PageAnalysis] = []
     for i, pno in enumerate(pages):
         if should_cancel and should_cancel():

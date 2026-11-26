@@ -186,7 +186,10 @@ def _expand(region: Region, geo: PageGeometry, own_blocks: set[int], horizontal:
             x1 = max(x1, right_limit)
 
     if vertical:
-        below = [o[1] for o in obstacles if o[1] >= y1 - 0.5 and o[0] < x1 - 0.5 and o[2] > x0 + 0.5]
+        # 下にある障害物。上端が枠の下端より少し上にはみ出しているもの（表の隣の行など）も含め、その場合は広げない
+        below = [
+            max(o[1], y1) for o in obstacles if o[3] > y1 + 0.5 and o[1] > y0 + 0.5 and o[0] < x1 - 0.5 and o[2] > x0 + 0.5
+        ]
         bottom = min(below + [geo.content[3] + 0.5])
         limit = y1 + region.style.line_pitch * 3
         y1 = max(y1, min(bottom - size * 0.5, limit))

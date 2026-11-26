@@ -722,3 +722,61 @@ def test_table_sentence_in_label_font_position_is_not_caption():
     # 番号の後が小文字で続く文（"Table 1 shows …"）は、ラベルの書式でもキャプションにしない
     a = analyze_document(_elsevier_table_page("Table 1", "shows the wind speed of Titan."))
     assert _find(a, "shows the wind speed").kind != BlockKind.CAPTION
+
+
+def _book_chapter(pages: int = 5) -> pymupdf.Document:
+    """余白の広い本の章（概要が無く、柱がページの上端から離れている）。"""
+    from pdf_factory import BODY, BOLD, LOREM, write_paragraph
+
+    doc = pymupdf.open()
+    for i in range(pages):
+        page = doc.new_page(width=595, height=842)
+        if i == 0:
+            page.insert_text((140, 200), "6", fontname=BOLD, fontsize=24)
+            page.insert_text((140, 230), "Transfer of Things", fontname=BODY, fontsize=18)
+            page.insert_text((140, 320), "6.1   Optical Properties of a Mixed Volume", fontname=BOLD, fontsize=12)
+            y = 345
+        else:
+            if i % 2:
+                page.insert_text((140, 160), f"{115 + i}", fontname=BODY, fontsize=10)
+                page.insert_text((320, 160), "A Primer on Transfer", fontname=BODY, fontsize=10)
+            else:
+                page.insert_text((140, 160), "Transfer of Things", fontname=BODY, fontsize=10)
+                page.insert_text((460, 160), f"{115 + i}", fontname=BODY, fontsize=10)
+            y = 172  # 柱のすぐ下から本文（抽出で柱と 1 つのブロックにまとめられやすい）
+        write_paragraph(page, (140, 473), y, LOREM, 6)
+    return doc
+
+
+def test_numbered_section_heading_on_the_first_page_is_not_taken_as_authors():
+    a = analyze_document(_book_chapter())
+    heading = _find(a, "Optical Properties of a Mixed")
+    assert heading.translate and heading.kind == BlockKind.HEADING
+
+
+def test_running_headers_far_from_the_page_edge_are_found_by_repetition():
+    a = analyze_document(_book_chapter(7))
+    for pa in a.pages[1:]:
+        top = min(pa.decisions, key=lambda d: d.block.bbox[1])
+        assert top.skip == SkipReason.RUNNING_HEADER, pa.page
+        assert len(top.block.lines) == 1  # 下の段落とは別のブロック
+        body = [d for d in pa.decisions if d.translate]
+        assert body and all("Primer" not in d.block.text and "Things" not in d.block.text for d in body)
+    # 1 ページ目の大きな章題は、柱と同じ文言でも訳す
+    first = a.pages[0]
+    assert any(d.translate and "Transfer of Things" in d.block.text for d in first.decisions)
+
+
+def test_equation_number_pushed_below_a_long_equation_is_not_merged_into_the_next_paragraph():
+    from pdf_factory import BODY, LOREM, write_paragraph
+
+    doc = pymupdf.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_text((200, 300), "R = A + B + C + D + E", fontname="symb", fontsize=10)
+    page.insert_text((449, 312), "(6.80)", fontname=BODY, fontsize=10)  # 式の下の行に送られた式番号
+    write_paragraph(page, (140, 473), 324, LOREM, 3)
+    a = analyze_document(doc)
+    number = _find(a, "(6.80)")
+    assert not number.translate and len(number.block.lines) == 1
+    para = _find(a, "Deep neural networks")
+    assert para.translate and "(6.80)" not in para.block.text

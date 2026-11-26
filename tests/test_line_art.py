@@ -95,3 +95,4 @@ def test_pages_without_translated_text_are_untouched():
     before = [[s.font for s in ln.spans] for d in pa.decisions for ln in d.block.lines]
     attach_line_art(pa, doc[0])
     assert [[s.font for s in ln.spans] for d in pa.decisions for ln in d.block.lines] == before
+

@@ -239,6 +239,7 @@ class Renderer:
         self._pa = {pa.page: pa for pa in analysis.pages}
         self._scanned: dict[int, bool] = {}
         self.restore_failed: list[int] = []  # 消去に巻き込まれた記号を戻せなかったページ
+        self._trial: pymupdf.Document | None = None  # 記号を貼れるかを試すための文書
 
     def geometry(self, pno: int) -> PageGeometry:
         if pno not in self._geo:
@@ -468,7 +469,11 @@ class Renderer:
     def _can_restore(self, pno: int, box: Rect) -> bool:
         """原文から字形を切り抜いて貼れるか、消す前に試す（貼れないまま消すと記号が失われるため）。"""
         try:
-            trial = pymupdf.open()
+            if self._trial is None:
+                self._trial = pymupdf.open()
+            trial = self._trial
+            if trial.page_count > 50:  # 試しに貼ったページが溜まらないよう、ときどき作り直す
+                trial = self._trial = pymupdf.open()
             page = trial.new_page(width=self.source[pno].rect.width, height=self.source[pno].rect.height)  # type: ignore[index]
             r = pymupdf.Rect(box)
             page.show_pdf_page(r, self.source, pno, clip=r, keep_proportion=False, overlay=True)
@@ -631,8 +636,10 @@ class Renderer:
                 graphics=pymupdf.PDF_REDACT_LINE_ART_REMOVE_IF_COVERED,
                 text=pymupdf.PDF_REDACT_TEXT_NONE,
             )
+            if len(remaining) < 2:  # 1 本だけなら 1 回で消える（確かめるためにページ全体の図形を読まない）
+                return
             try:
-                now = [tuple(x["rect"]) for x in page.get_drawings()]
+                now = [tuple(x["rect"]) for x in page.get_cdrawings()]
             except Exception:
                 return
             left = [d for d in remaining if any(_same_rect(tuple(d["rect"]), r) for r in now)]

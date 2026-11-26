@@ -217,8 +217,8 @@ def _variable_like(span: Span, main_size: float) -> bool:
     return (span.is_italic and _VARIABLE.fullmatch(t) is not None) or span.size < main_size * 0.8
 
 
-# 斜体の変数 1 文字と、微分の "dx" "dL"
-_VARIABLE = re.compile(r"d?[^\W\d_]")
+# 斜体の変数 1 文字と、微分の "dx" "dL"（"do" "de" のような英単語にならないよう、d の後の小文字の母音は除く）
+_VARIABLE = re.compile(r"[^\W\d_]|d[^\W\d_aeiou]")
 
 
 def _subscripts(block: TextBlock) -> set[int]:
@@ -236,7 +236,10 @@ def _subscripts(block: TextBlock) -> set[int]:
             if not t:
                 continue
             attached = prev is not None and span.bbox[0] - prev.bbox[2] < span.size * 0.5
-            if base is not None and attached and span.size < base.size * 0.8:
+            # 添字は上下にずれていて、空白を含まない短い文字（"oversampling" ほどまで）。同じ高さの小さな文字は
+            # スモールキャップスや脚注の本文
+            shifted = base is not None and abs(span.origin[1] - base.origin[1]) > base.size * 0.1
+            if base is not None and attached and shifted and span.size < base.size * 0.8 and " " not in t and len(t) <= 15:
                 result.add(id(span))
             elif is_math_font(span.font) or (span.is_italic and _VARIABLE.fullmatch(t)):
                 base = span

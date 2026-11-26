@@ -453,6 +453,36 @@ def test_subscripted_variables_in_a_sentence_are_still_translated():
     assert _skip_of(_block(line)) is None
 
 
+def _run(*items, base=300.0):
+    """(文字列, フォント, 大きさ, 前との隙間, ベースラインのずれ) を左から並べた 1 行。"""
+    spans, x = [], 72.0
+    for text, font, size, gap, shift in items:
+        width = len(text) * size * 0.5
+        spans.append(_span(text, font, size, x + gap, x + gap + width, base + shift))
+        x += gap + width
+    return _block(_line(*spans))
+
+
+_SMALL_TEXT_CASES = {
+    # 斜体のスモールキャップスの人名（"S" + 小さな "MITH" が同じ高さ）
+    "small caps names": _run(("J.", "Times-Roman", 10, 0, 0), (" S", "Times-Italic", 10, 1, 0), ("MITH", "Times-Italic", 7, 0, 0), (" and", "Times-Roman", 10, 0, 0), (" J", "Times-Italic", 10, 1, 0), ("ONES", "Times-Italic", 7, 0, 0)),
+    # 斜体の 1 文字のすぐ後に続く、小さな文字の文
+    "small sentence after a letter": _run(("Note", "Times-Roman", 10, 0, 0), (" a", "Times-Italic", 10, 0, 0), ("see the appendix for details", "Times-Roman", 7, 1, 0)),
+    # 記号 "∗" のすぐ後に続く、小さな文字の脚注
+    "footnote after an asterisk": _run(("∗", "txsy", 10, 0, 0), ("Corresponding author address", "Times-Roman", 7, 0.5, 0)),
+    # 数式フォントのあるブロックの、斜体の短い英単語（微分の "dx" と取り違えない）
+    "italic short words": _run(("di", "Times-Italic", 10, 0, 0), (" de", "Times-Italic", 10, 0, 0), (" do", "Times-Italic", 10, 0, 0), (" µ", "rtxmi", 10, 0, 0)),
+    # 合字 "ff" "ffi" を rtxr で組んだ本文
+    "ligatures in rtxr": _run(("The", "Times-Roman", 10, 0, 0), (" e", "Times-Roman", 10, 0, 0), ("ﬀ", "rtxr", 10, 0, 0), ("ect", "Times-Roman", 10, 0, 0), (" of", "Times-Roman", 10, 0, 0), (" e", "Times-Roman", 10, 0, 0), ("ﬃ", "rtxr", 10, 0, 0), ("ciency", "Times-Roman", 10, 0, 0)),
+}
+
+
+@pytest.mark.parametrize("name", list(_SMALL_TEXT_CASES))
+def test_small_text_next_to_a_letter_is_not_a_subscript(name):
+    """同じ高さに並ぶ小さな文字や、空白を含む小さな文は添字ではない（文章として訳す）。"""
+    assert _skip_of(_SMALL_TEXT_CASES[name]) is None
+
+
 def test_caption_covered_by_a_white_figure_background_is_translated():
     """図とキャプションをまとめて覆う白い背景があっても、キャプションは訳す（図の中の文字は原文のまま）。"""
     from pdf_factory import make_figure_on_white_background

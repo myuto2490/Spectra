@@ -347,14 +347,22 @@ def _looks_like_equation(block: TextBlock, st: BlockStats) -> bool:
 
 # 目次の行の終わり：リーダー（". . . ."）とページ番号（算用数字かローマ数字）
 _CONTENTS_LINE = re.compile(r"(?:\.\s?){4,}\s*(?:\d{1,4}|[ivxlc]{1,6})\s*$")
+# 題名とページ番号で終わる行（抽出で "Atmosphere1" のように数字がつながることがある。ローマ数字は独立した語に限る）
+_ROMAN = r"(?<![A-Za-z])(?=[ivxlc])c{0,3}(?:xc|xl|l?x{0,3})(?:ix|iv|v?i{0,3})(?![A-Za-z])"
+_ENDS_WITH_PAGE = re.compile(rf"[A-Za-z].*?(?:\d{{1,4}}|{_ROMAN})\s*$")
 
 
 def _is_contents(block: TextBlock) -> bool:
     """目次（行の多くがリーダーとページ番号で終わる）。訳すと項目番号・リーダー・ページ番号が失われるので表として残す。"""
     lines = [ln for ln in block.lines if ln.text.strip()]
     hits = sum(1 for ln in lines if _CONTENTS_LINE.search(ln.text))
-    # 2 行以上のブロックでは 2 行以上（本文の 1 行がたまたま ". . . . 3" で終わることがある）
-    return hits >= min(2, len(lines)) and hits >= len(lines) * 0.4
+    if hits == 0:
+        return False
+    # 2 行以上のブロックでは 2 行以上（本文の 1 行がたまたま ". . . . 3" で終わることがある）。ただし残りの行が
+    # すべてページ番号で終わる（リーダーの無い章の行 "1 The Earth’s Atmosphere 1"）なら 1 行でもよい
+    if hits < 2 and not all(_CONTENTS_LINE.search(ln.text) or _ENDS_WITH_PAGE.search(ln.text) for ln in lines):
+        return False
+    return hits >= len(lines) * 0.4
 
 
 # 式番号（"(3.90)" "(B.22)" "(2.10b)"）。行のどこにあってもよい（右端の式番号が行の先頭に取り出されることがある）

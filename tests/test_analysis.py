@@ -1048,3 +1048,16 @@ def test_numbered_equation_set_in_a_text_font_is_math_without_a_neighbor():
     a = analyze_document(doc)
     assert not _find(a, "(4.9)").translate
     assert _find(a, "See Eq.").translate
+
+
+def test_contents_block_with_a_chapter_line_without_leaders_is_not_translated():
+    """目次の 1 ブロックが「リーダー付きの 1 行＋リーダーの無い章の行（"1 The Earth’s Atmosphere 1"）」でも目次。"""
+    from pdf_factory import BODY, BOLD
+
+    doc = pymupdf.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_text((150, 200), "Nomenclature " + ". " * 20 + "xii", fontname=BODY, fontsize=10)
+    page.insert_text((140, 214), "1 The Earth’s Atmosphere", fontname=BOLD, fontsize=10)
+    page.insert_text((460, 214), "1", fontname=BOLD, fontsize=10)
+    a = analyze_document(doc)
+    assert not _find(a, "Nomenclature").translate

@@ -1098,3 +1098,21 @@ def test_running_headers_with_roman_page_numbers_are_found():
     for pa in a.pages[1:]:
         top = min(pa.decisions, key=lambda d: d.block.bbox[1])
         assert top.skip == SkipReason.RUNNING_HEADER, pa.page
+
+
+def test_chapter_line_and_header_on_a_contents_page_are_not_translated():
+    """目次のページの、リーダーの無い章の行（"3 Radiometric Basics 41"）と柱（"Table of Contents ix"）は訳さない。"""
+    from pdf_factory import BODY, BOLD
+
+    doc = pymupdf.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_text((140, 160), "Table of Contents", fontname=BODY, fontsize=10)
+    page.insert_text((462, 160), "ix", fontname=BODY, fontsize=10)
+    page.insert_text((140, 200), "3 Radiometric Basics", fontname=BOLD, fontsize=10)
+    page.insert_text((462, 200), "41", fontname=BOLD, fontsize=10)
+    for i, (num, title, pno) in enumerate([("3.1", "Solid Angle", "41"), ("3.2", "Radiant Quantities", "43")]):
+        page.insert_text((150, 230 + i * 12), f"{num} {title} " + ". " * 12 + pno, fontname=BODY, fontsize=10)
+    a = analyze_document(doc)
+    assert not _find(a, "Solid Angle").translate
+    assert not _find(a, "Radiometric Basics").translate
+    assert not _find(a, "Table of Contents").translate

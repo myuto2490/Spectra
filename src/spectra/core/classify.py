@@ -436,6 +436,32 @@ def _short_sentence(b: TextBlock, st: BlockStats) -> bool:
     return bool(first) and prose(first.group(1)) and sum(map(prose, words)) >= 2
 
 
+def _keep_contents_page_lines(decisions: list[BlockDecision]) -> None:
+    """目次のページで、題名とページ番号の 1 行（リーダーの無い章の行 "3 Radiometric Basics 41"、
+    柱 "Table of Contents ix"）を、目次の一部として訳さない。
+
+    目次のブロック（リーダーとページ番号で終わる行が続くもの）があるページに限る。
+    """
+    if not any(d.skip == SkipReason.TABLE and _is_contents(d.block) for d in decisions):
+        return
+    for d in decisions:
+        if d.translate and d.kind != BlockKind.TITLE and len(d.block.lines) == 1 and _ends_with_page_number(d.block.text):
+            d.skip = SkipReason.TABLE
+
+
+_ROMAN_NUMBER = re.compile(r"c{0,3}(?:xc|xl|l?x{0,3})(?:ix|iv|v?i{0,3})")
+
+
+def _ends_with_page_number(text: str) -> bool:
+    """算用数字か、ローマ数字（抽出で前の語とつながった "Contentsix" も含む）のページ番号で終わる。目次のページでだけ使う。"""
+    t = text.strip()
+    if re.search(r"\d{1,4}$", t):
+        return True
+    m = re.search(r"[ivxlc]{1,6}$", t)
+    # 末尾のローマ数字の候補を短くしながら、正しい形のローマ数字が取れるか（"Contentsix" → "ix"）
+    return bool(m) and any(_ROMAN_NUMBER.fullmatch(t[k:]) for k in range(m.start(), len(t)))
+
+
 def _absorb_equation_fragments(decisions: list[BlockDecision], stats: dict[int, BlockStats], body_size: float) -> None:
     """独立数式の中に置かれた、語の少ない小さなブロック（分数の分子 "hc"、式の右端の "dx (B.22)" など）を数式とする。
 
@@ -666,6 +692,7 @@ class DocumentClassifier:
                 skip = self._skip(b, st, kind, figures, tables, b.index in tabular)
             decisions.append(BlockDecision(block=b, kind=kind, skip=skip))
         _absorb_equation_fragments(decisions, stats, self.body_size)
+        _keep_contents_page_lines(decisions)
         return PageAnalysis(
             page=page.number,
             width=float(page.rect.width),

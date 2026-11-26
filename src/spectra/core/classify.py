@@ -342,6 +342,61 @@ def _looks_like_equation(block: TextBlock, st: BlockStats) -> bool:
     return len(_LONG_WORD.findall(st.text)) <= 1 or st.letters < st.chars * 0.45
 
 
+_SKIPPED_AS_MATH = (SkipReason.MATH, SkipReason.NO_WORDS, SkipReason.NUMERIC)
+# 文の終わり（ピリオド・コロン）。数式の断片ではなく、短い文や見出し
+_SENTENCE_END = re.compile(r"[A-Za-z]{2,}\s*[.:]\s*$")
+
+
+_PROSE_WORD = re.compile(r"(?<![A-Za-z])(?:[a-z]{4,}|[A-Z][a-z]{3,})(?![A-Za-z])")
+_FUNCTION_WORDS = {
+    "if", "so", "or", "and", "as", "at", "is", "of", "to", "in", "on", "by", "the", "for", "with", "then",
+    "thus", "hence", "where", "since", "but", "also", "now", "let",
+}
+
+
+def _has_prose_word(text: str) -> bool:
+    """英単語（4 文字以上の小文字の語・大文字で始まる語か、"if" "so" "Thus" などの機能語）を含む。
+
+    数式の横の "where"、式の下の "Hence" "Thus"、箇条書きの "well-posed m = n" など。
+    角括弧の中の単位・条件（"[isotropic]" "[dimensionless]"）は式の一部なので数えない。
+    """
+    outside = re.sub(r"\[[^\]]*\]", " ", text)
+    if _PROSE_WORD.search(outside):
+        return True
+    return any(w.lower() in _FUNCTION_WORDS for w in re.findall(r"(?<![A-Za-z])[A-Za-z][a-z]*(?![A-Za-z])", outside))
+
+
+def _absorb_equation_fragments(decisions: list[BlockDecision], stats: dict[int, BlockStats], body_size: float) -> None:
+    """独立数式の中に置かれた、語の少ない小さなブロック（分数の分子 "hc"、式の右端の "dx (B.22)" など）を数式とする。
+
+    独立数式は、分子・分母・指数・式番号などが別々のブロックに分かれる。そのうち立体の英字だけのもの
+    （"hc" "2hc" "dL" "kB T"）は単語に数えられ、本文として訳されて式が崩れる。
+    数式と判定したブロックと同じ高さに並ぶか、数式のブロックのすぐ上下で左右に重なるものは、数式の一部とする。
+    数式の間の "giving" "where" のような左端の短い文は、数式と左右に重ならないので訳す。
+    """
+    math = [d.block.bbox for d in decisions if d.skip in _SKIPPED_AS_MATH]
+    if not math:
+        return
+    for d in decisions:
+        if not d.translate or d.kind not in (BlockKind.BODY, BlockKind.FOOTNOTE):
+            continue
+        b, st = d.block, stats[d.block.index]
+        if len(b.lines) > 2 or st.words > 3 or _SENTENCE_END.search(st.text) or _has_prose_word(st.text):
+            continue
+        x0, y0, x1, y1 = b.bbox
+        height = max(y1 - y0, 1.0)
+        for m in math:
+            v_overlap = min(y1, m[3]) - max(y0, m[1])
+            h_overlap = min(x1, m[2]) - max(x0, m[0])
+            h_gap = max(m[0] - x1, x0 - m[2])
+            v_gap = max(m[1] - y1, y0 - m[3])
+            same_row = v_overlap >= height * 0.5 and h_gap <= body_size * 3
+            stacked = h_overlap >= (x1 - x0) * 0.5 and v_gap <= body_size * 0.6
+            if same_row or stacked:
+                d.skip = SkipReason.MATH
+                break
+
+
 def _is_background_fill(d: dict) -> bool:
     """枠線のない白（紙の色）の塗りつぶし。図の背景に敷かれるもので、図の中身ではない。"""
     if d.get("type") != "f" or d.get("color") is not None:
@@ -454,6 +509,7 @@ class DocumentClassifier:
             else:
                 skip = self._skip(b, st, kind, figures, tables, b.index in tabular)
             decisions.append(BlockDecision(block=b, kind=kind, skip=skip))
+        _absorb_equation_fragments(decisions, stats, self.body_size)
         return PageAnalysis(
             page=page.number,
             width=float(page.rect.width),

@@ -837,3 +837,54 @@ def test_equation_number_with_a_chapter_prefix_marks_an_equation_fragment():
     assert _EQUATION_NUMBER.search("gas(6.4)")
     assert _EQUATION_NUMBER.search("x (2.10b)")
     assert _EQUATION_NUMBER.search("y (7)")
+
+
+def test_upright_fragments_inside_a_display_equation_are_math():
+    """分数の分子 "hc" や、式の右の "[isotropic] (3.90)" は数式の一部として訳さない。"""
+    from pdf_factory import BODY, LOREM, write_paragraph
+
+    doc = pymupdf.open()
+    page = doc.new_page(width=595, height=842)
+    write_paragraph(page, (140, 473), 200, LOREM, 3)
+    page.insert_text((300, 300), "hc", fontname=BODY, fontsize=10)  # 分子（立体の英字）
+    page.insert_text((290, 314), "l = k + m", fontname="symb", fontsize=10)  # 分母（数式フォント）
+    page.insert_text((360, 340), "a = b + c", fontname="symb", fontsize=10)
+    page.insert_text((420, 340), "[isotropic] (3.90)", fontname=BODY, fontsize=10)
+    write_paragraph(page, (140, 473), 380, LOREM, 3)
+    a = analyze_document(doc)
+    assert _find(a, "hc").skip == SkipReason.MATH
+    assert _find(a, "[isotropic]").skip == SkipReason.MATH
+    assert all(d.translate for d in _decisions(a) if "Deep neural" in d.block.text)
+
+
+def test_capitalized_connective_below_a_display_equation_is_translated():
+    """式の真下で左右に重なる 1 語の "Hence" "Thus" も、文のつなぎとして訳す。"""
+    from spectra.core.classify import _has_prose_word
+
+    assert _has_prose_word("Hence") and _has_prose_word("Thus") and _has_prose_word("Then")
+    assert not _has_prose_word("hc kB T") and not _has_prose_word("dLi") and not _has_prose_word("[isotropic] (3.90)")
+
+
+def test_prose_word_beside_a_display_equation_is_still_translated():
+    """行列の左の "where" や箇条書きの "underconstrained m < n" は、数式と同じ高さでも本文。"""
+    from spectra.core.classify import BlockStats, _absorb_equation_fragments
+    from spectra.core.models import BlockDecision, TextBlock
+
+    def block(index, spans):
+        b = _fragment_block([spans])
+        return TextBlock(page=0, index=index, bbox=b.bbox, lines=b.lines)
+
+    matrix = block(0, [_frag_span("S", "rtxmi", 10, 220, 400, 6), _frag_span("0", "rtxr", 10, 240, 400, 6)])
+    where = block(1, [_frag_span("where", "Times-Roman", 10, 180, 400, 24)])
+    bullet = block(2, [_frag_span("well-posed", "Times-Roman", 10, 180, 412, 45), _frag_span("m", "rtxmi", 10, 228, 412, 6)])
+    numerator = block(3, [_frag_span("hc", "Times-Roman", 10, 222, 390, 10)])
+    decisions = [
+        BlockDecision(matrix, BlockKind.BODY, SkipReason.MATH),
+        BlockDecision(where, BlockKind.BODY, None),
+        BlockDecision(bullet, BlockKind.BODY, None),
+        BlockDecision(numerator, BlockKind.BODY, None),
+    ]
+    stats = {b.index: BlockStats(b) for b in (matrix, where, bullet, numerator)}
+    _absorb_equation_fragments(decisions, stats, 10.0)
+    assert decisions[1].translate and decisions[2].translate
+    assert decisions[3].skip == SkipReason.MATH

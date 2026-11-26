@@ -70,6 +70,8 @@ _PSEUDOCODE = re.compile(r"^\s*(\d{1,2}:|(input|output|require|ensure|return)\s*
 _EQUATION_SIGN = re.compile(r"[=≈≤≥<>∝≡]")
 _EQUATION_NUMBER = re.compile(r"\S\s*\(\d{1,3}(\.\d{1,3}){0,2}[a-z]?\)\s*$")  # "(7)" "(6.4)" "(2.10b)"
 _LONG_WORD = re.compile(r"[A-Za-z]{4,}")
+# 式・図・節などの番号を引用する語（"See Eq. (3.4)" "cf. Fig. (2)"）
+_CITATION = re.compile(r"\b(see|cf|eqs?|equations?|figs?|figures?|sec|sections?|appendix|table|chapter)\b", re.IGNORECASE)
 _ABSTRACT = re.compile(r"^\s*(abstract|summary)\b", re.IGNORECASE)
 _ABSTRACT_HEADING = re.compile(r"^\s*(abstract|summary)\s*[.:—-]?\s*$", re.IGNORECASE)
 _SENTENCE = re.compile(r"[a-z]{2,}[,;]?\s+[a-z]{2,}\s+[a-z]{2,}.*[.]\s*$")
@@ -331,7 +333,8 @@ def _looks_like_equation(block: TextBlock, st: BlockStats) -> bool:
     if st.has_math and st.italic_only and st.words <= 2:
         return True
     # 式番号で終わる、長い単語の無い 1 行（独立数式の右端の断片。例: "s′ exp(−τ s′) ds′ (7)"）
-    if _EQUATION_NUMBER.search(st.text) and not _LONG_WORD.search(st.text) and st.words <= 2:
+    # ただし "See Eq. (3.4)" のような式番号の引用は本文
+    if _EQUATION_NUMBER.search(st.text) and not _LONG_WORD.search(st.text) and st.words <= 2 and not _CITATION.search(st.text):
         return True
     if not _EQUATION_SIGN.search(st.text):
         return False
@@ -340,6 +343,109 @@ def _looks_like_equation(block: TextBlock, st: BlockStats) -> bool:
     # 記号が大半の行（OCR の読み取りで崩れた数式の "p ( y ) = (2,)n/»|LALT|i/a e x p < - ^ …" など）は、
     # 字間を詰めて長い単語ができても数式とする
     return len(_LONG_WORD.findall(st.text)) <= 1 or st.letters < st.chars * 0.45
+
+
+# 目次の行の終わり：リーダー（". . . ."）とページ番号（算用数字かローマ数字）
+_CONTENTS_LINE = re.compile(r"(?:\.\s?){4,}\s*(?:\d{1,4}|[ivxlc]{1,6})\s*$")
+
+
+def _is_contents(block: TextBlock) -> bool:
+    """目次（行の多くがリーダーとページ番号で終わる）。訳すと項目番号・リーダー・ページ番号が失われるので表として残す。"""
+    lines = [ln for ln in block.lines if ln.text.strip()]
+    hits = sum(1 for ln in lines if _CONTENTS_LINE.search(ln.text))
+    # 2 行以上のブロックでは 2 行以上（本文の 1 行がたまたま ". . . . 3" で終わることがある）
+    return hits >= min(2, len(lines)) and hits >= len(lines) * 0.4
+
+
+# 式番号（"(3.90)" "(B.22)" "(2.10b)"）。行のどこにあってもよい（右端の式番号が行の先頭に取り出されることがある）
+_EQUATION_NUMBER_ANYWHERE = re.compile(r"\((?:[A-Z]|[1-9]\d{0,2})\.\d{1,3}(?:\.\d{1,3})?[a-z]?\)")
+
+
+def _numbered_equation_fragment(b: TextBlock, st: BlockStats) -> bool:
+    """章番号付きの式番号を含み、語が 3 つ以下で、文として終わらない 1〜2 行（"M or E = ∂Φ/∂A (3.11)" "(B.22) dx"）。
+
+    独立数式の右端の断片で、式の記号が立体の英字なので数式と判定されなかったもの。数式のブロックと
+    同じ高さに並ぶときだけ数式とする（_absorb_equation_fragments）。本文の "See Eq. (3.4)" "Appendix (A.1)" は
+    数式と並ばないので訳す。"(1)" のような番号だけの式番号は箇条書きの番号と、"(0.77)" は小数と区別できないので対象にしない。
+    """
+    if len(b.lines) > 2:
+        return False
+    return bool(_EQUATION_NUMBER_ANYWHERE.search(st.text)) and st.words <= 3 and not _SENTENCE_END.search(st.text)
+
+
+_SKIPPED_AS_MATH = (SkipReason.MATH, SkipReason.NO_WORDS, SkipReason.NUMERIC)
+# 文の終わり（ピリオド・コロン）。数式の断片ではなく、短い文や見出し
+_SENTENCE_END = re.compile(r"[A-Za-z]{2,}\s*[.:]\s*$")
+
+
+_PROSE_WORD = re.compile(r"(?<![A-Za-z])(?:[a-z]{4,}|[A-Z][a-z]{3,})(?![A-Za-z])")
+_FUNCTION_WORDS = {
+    "if", "so", "or", "and", "as", "at", "is", "of", "to", "in", "on", "by", "the", "for", "with", "then",
+    "thus", "hence", "where", "since", "but", "also", "now", "let",
+}
+
+
+def _has_prose_word(text: str) -> bool:
+    """英単語（4 文字以上の小文字の語・大文字で始まる語か、"if" "so" "Thus" などの機能語）を含む。
+
+    数式の横の "where"、式の下の "Hence" "Thus"、箇条書きの "well-posed m = n" など。
+    角括弧の中の単位・条件（"[isotropic]" "[dimensionless]"）は式の一部なので数えない。
+    """
+    outside = re.sub(r"\[[^\]]*\]", " ", text)
+    if _PROSE_WORD.search(outside):
+        return True
+    return any(w.lower() in _FUNCTION_WORDS for w in re.findall(r"(?<![A-Za-z])[A-Za-z][a-z]*(?![A-Za-z])", outside))
+
+
+def _short_sentence(b: TextBlock, st: BlockStats) -> bool:
+    """数式の記号を含む、短い本物の文（"If ω̃ = 1 then" "where E is the flux"）。数式と判定しない。
+
+    1〜2 行で、英単語（機能語か 4 文字以上の語）から始まり、そのような語を 2 つ以上含むもの。
+    式の断片は記号・変数から始まるか（"M or E = ∂Φ/∂A"）、語が 1 つだけ（"Directional ε(∆λ) = …"）。
+    """
+    if len(b.lines) > 2:
+        return False
+    words = [w for w in re.findall(r"(?<![A-Za-z])[A-Za-z][a-z]*(?![A-Za-z])", st.text) if w.lower() not in _MATH_FUNCTIONS]
+
+    def prose(w: str) -> bool:
+        return w.lower() in _FUNCTION_WORDS or (len(w) >= 4 and w[1:].islower())
+
+    first = re.match(r"\s*([A-Za-z][a-z]*)(?![A-Za-z0-9])", st.text)
+    return bool(first) and prose(first.group(1)) and sum(map(prose, words)) >= 2
+
+
+def _absorb_equation_fragments(decisions: list[BlockDecision], stats: dict[int, BlockStats], body_size: float) -> None:
+    """独立数式の中に置かれた、語の少ない小さなブロック（分数の分子 "hc"、式の右端の "dx (B.22)" など）を数式とする。
+
+    独立数式は、分子・分母・指数・式番号などが別々のブロックに分かれる。そのうち立体の英字だけのもの
+    （"hc" "2hc" "dL" "kB T"）は単語に数えられ、本文として訳されて式が崩れる。
+    数式と判定したブロックと同じ高さに並ぶか、数式のブロックのすぐ上下で左右に重なるものは、数式の一部とする。
+    数式の間の "giving" "where" のような左端の短い文は、数式と左右に重ならないので訳す。
+    """
+    math = [d.block.bbox for d in decisions if d.skip in _SKIPPED_AS_MATH]
+    if not math:
+        return
+    for d in decisions:
+        if not d.translate or d.kind not in (BlockKind.BODY, BlockKind.FOOTNOTE):
+            continue
+        b, st = d.block, stats[d.block.index]
+        numbered = _numbered_equation_fragment(b, st)
+        small = not (len(b.lines) > 2 or st.words > 3 or _SENTENCE_END.search(st.text) or _has_prose_word(st.text))
+        if not (small or numbered):
+            continue
+        x0, y0, x1, y1 = b.bbox
+        height = max(y1 - y0, 1.0)
+        for m in math:
+            v_overlap = min(y1, m[3]) - max(y0, m[1])
+            h_overlap = min(x1, m[2]) - max(x0, m[0])
+            h_gap = max(m[0] - x1, x0 - m[2])
+            v_gap = max(m[1] - y1, y0 - m[3])
+            same_row = v_overlap >= height * 0.5 and h_gap <= body_size * 3
+            stacked = h_overlap >= (x1 - x0) * 0.5 and v_gap <= body_size * 0.6
+            # 語を含む式番号付きの断片（"M or E (3.11)"）は、数式と同じ高さに並ぶときだけ
+            if same_row or (stacked and small):
+                d.skip = SkipReason.MATH
+                break
 
 
 def _is_background_fill(d: dict) -> bool:
@@ -394,6 +500,16 @@ def find_running_headers(blocks_by_page: dict[int, list[TextBlock]]) -> set[tupl
             if _line_size(b.lines[at]) > usual + 1.0:
                 continue
             if len(b.lines) > 1:
+                # 柱は本文から離れて置かれる（0.45 文字分以上）か、ページ番号と題名が左右に大きく離れている。
+                # 普通の行間で段落に続く 1 行目（各ページの先頭の "Problem 1" "Problem 2" …）は、
+                # 文言が繰り返されても柱ではない
+                line, nxt = (b.lines[0], b.lines[1]) if at == 0 else (b.lines[-1], b.lines[-2])
+                gap = nxt.bbox[1] - line.bbox[3] if at == 0 else line.bbox[1] - nxt.bbox[3]
+                size = _line_size(line)
+                spans = [s for s in line.spans if s.text.strip()]
+                spread = any(q.bbox[0] - p.bbox[2] > size * 4 for p, q in zip(spans, spans[1:]))
+                if gap < size * 0.45 and not spread:
+                    continue
                 b = _split_off_line(blocks_by_page[pno], b, at)
             result.add((pno, b.index))
     return result
@@ -407,6 +523,71 @@ def _split_off_line(blocks: list[TextBlock], block: TextBlock, at: int) -> TextB
     pos = blocks.index(block)
     blocks.insert(pos if at == 0 else pos + 1, head)
     return head
+
+
+def _glossary_entry_start(line, size: float) -> bool:
+    """記号表の項目の先頭行か: 記号（1 文字の英字・ギリシャ文字か数式フォントの記号と、その添字）の後に
+    空白があり、説明の英字が続く（"σ Stephan-Boltzmann constant" "kB Boltzmann’s constant"）。
+
+    箇条書きの "•"、番号付きの "1."、所属の "1 LESIA"、本文の "is the …" は記号とみなさない。
+    """
+    spans = [s for s in line.spans if s.text.strip()]
+    if not spans:
+        return False
+    first = spans[0]
+    t = first.text.strip()
+    sym, _, rest = t.partition(" ")
+    # 英語の 1 文字の語（"A small …" "a depth …" "I …"）は、数式フォントか斜体でなければ記号ではない
+    english_word = sym in ("A", "a", "I") and not (is_math_font(first.font) or first.is_italic)
+    if rest:  # 記号と説明が 1 つのスパン（"h Planck’s constant"）
+        return len(sym) == 1 and sym.isalpha() and rest[:1].isalpha() and not english_word
+    if english_word or t[:1] in "•·∙◦▪–—-*∗" or not (is_math_font(first.font) or (len(t) == 1 and t.isalpha())):
+        return False
+    for a, b in zip(spans, spans[1:]):
+        if b.bbox[0] - a.bbox[2] >= size * 0.4:
+            return b.text.strip()[:1].isalpha()
+        # 記号に続く添字（小さい文字）か数式フォントの記号だけを、記号の一部とする
+        if not (is_math_font(b.font) or b.size < first.size * 0.85):
+            return False
+    return False
+
+
+def split_glossary_blocks(blocks: list[TextBlock]) -> None:
+    """記号表（"σ Stephan-Boltzmann constant" のような、記号と説明の行を広い行間で並べたもの）の
+    ブロックを、項目ごとのブロックに分ける（blocks を書き換える）。
+
+    複数の項目が 1 つのブロックにまとめられると、1 つの段落として訳され、項目の区切りと記号の位置が失われる。
+    行間が文字の 1.45 倍以上（普通の段落は 1.2 倍ほど）で、ほとんどの行が「短い記号＋空白＋説明」のものに限る。
+    字下げされた行（説明の折り返し）は前の項目に含める。
+    """
+    for block in list(blocks):
+        lines = block.lines
+        if len(lines) < 2:
+            continue
+        size = _line_size(lines[0])
+        pitches = [b.baseline - a.baseline for a, b in zip(lines, lines[1:])]
+        if sorted(pitches)[len(pitches) // 2] < size * 1.45:
+            continue  # 普通の行間の段落
+        x0 = block.bbox[0]
+        starts = [not (ln.bbox[0] > x0 + size) and _glossary_entry_start(ln, size) for ln in lines]
+        # 先頭の行が、前のブロックの項目の説明の折り返しのこともある（その行は 1 つのまとまりとして残す）
+        # 項目が 2 つだけのブロックは、すべての行が項目のときに限る
+        if sum(starts) < 2 or sum(starts) < (len(lines) - (not starts[0])) * (0.6 if sum(starts) >= 3 else 1.0):
+            continue
+        entries: list[list] = []
+        for ln, start in zip(lines, starts):
+            if start or not entries:
+                entries.append([ln])
+            else:
+                entries[-1].append(ln)
+        pos = blocks.index(block)
+        next_index = max(b.index for b in blocks) + 1
+        block.lines = entries[0]
+        block.bbox = _lines_bbox(entries[0])
+        for k, group in enumerate(entries[1:], start=1):
+            nb = TextBlock(page=block.page, index=next_index, bbox=_lines_bbox(group), lines=group)
+            next_index += 1
+            blocks.insert(pos + k, nb)
 
 
 def _lines_bbox(lines: list) -> tuple[float, float, float, float]:
@@ -436,6 +617,7 @@ class DocumentClassifier:
 
     def analyze_page(self, page: pymupdf.Page, blocks: list[TextBlock] | None = None) -> PageAnalysis:
         blocks = extract_blocks(page) if blocks is None else blocks
+        split_glossary_blocks(blocks)
         drawings = read_drawings(page)
         figures = find_figure_rects(page, drawings)
         tables = find_table_rects(page, drawings)
@@ -454,6 +636,7 @@ class DocumentClassifier:
             else:
                 skip = self._skip(b, st, kind, figures, tables, b.index in tabular)
             decisions.append(BlockDecision(block=b, kind=kind, skip=skip))
+        _absorb_equation_fragments(decisions, stats, self.body_size)
         return PageAnalysis(
             page=page.number,
             width=float(page.rect.width),
@@ -599,14 +782,20 @@ class DocumentClassifier:
                 return SkipReason.FIGURE
         if kind != BlockKind.CAPTION and (
             tabular
+            or _is_contents(b)
             or any(overlap_ratio(b.bbox, r) >= 0.5 for r in tables)
             or has_column_gaps(b, st.size)
         ):
             return SkipReason.TABLE
 
-        if st.chars and st.math_chars / st.chars > 0.5:
+        sentence = _short_sentence(b, st)
+        if not sentence and st.chars and st.math_chars / st.chars > 0.5:
             return SkipReason.MATH
-        if _looks_like_equation(b, st):
+        if not sentence and _looks_like_equation(b, st):
+            return SkipReason.MATH
+        # 本文のフォントだけで組まれた独立数式（"f(r, t) = A0/r cos(kr − ωt). (2.16)"）。等号と章番号付きの式番号があり、
+        # 英単語の無い 1〜2 行は、横に数式のブロックが無くても数式
+        if _numbered_equation_fragment(b, st) and _EQUATION_SIGN.search(st.text) and not _has_prose_word(st.text):
             return SkipReason.MATH
         if st.cjk > max(3, st.letters * 0.3):
             return SkipReason.ALREADY_JAPANESE

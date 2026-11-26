@@ -353,6 +353,10 @@ def _continues(prev: _Unit, nxt: _Unit) -> bool:
         return False
     if _SENTENCE_END.search(prev.markup):
         return False
+    # 記号表の項目（記号で始まる 1 行）どうし。段の最後の項目と次の段の最初の項目は別の項目
+    one_line = all(u.region.rect[3] - u.region.rect[1] <= u.region.style.size * 2 for u in (prev, nxt))
+    if one_line and prev.markup.startswith("<x") and nxt.markup.startswith("<x"):
+        return False
     head = to_plain(nxt.markup).lstrip()
     # 文の途中で切れた段落の続き: 小文字・数式で始まるか、括弧で始まる（"… profile" の次ページが "(3–7 K rather …"）
     if not head or not (head[0].islower() or nxt.markup.startswith("<x") or head[0] in "(["):

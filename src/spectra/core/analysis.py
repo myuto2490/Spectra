@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 
 import pymupdf
@@ -17,6 +18,7 @@ from .fonts import find_text_fonts, has_numbered_adv_fonts, text_fonts
 from .models import (
     DocumentAnalysis,
     PageAnalysis,
+    RestoreGlyph,
     SkipReason,
     erase_rect,
     inflate,
@@ -83,7 +85,7 @@ def _analyze(
             progress(i + 1, len(pages))
     for pa in analyses:
         drop_duplicate_layers(pa)
-        guard_overlaps(pa)
+        guard_overlaps(pa, doc[pa.page])
     segments = build_segments(
         [(pa.width, pa.decisions) for pa in analyses],
         merge=options.merge_split_paragraphs,
@@ -112,14 +114,17 @@ def _same_place(a, b) -> bool:
     return rect_area(rect_intersect(a, b)) >= max(rect_area(a), rect_area(b)) * 0.8
 
 
-def guard_overlaps(pa: PageAnalysis) -> None:
+def guard_overlaps(pa: PageAnalysis, page: pymupdf.Page | None = None) -> None:
     """消す範囲が翻訳対象外の文字に重なる段落を処理する（図表・数式を守ることを優先する）。
 
     - 重なりは文字の並び（スパン）単位で判定する（独立数式の外枠は分数などで縦に大きく広がるため）
     - 重なる相手が 1〜3 文字の小さな数式の断片なら、段落に取り込んで訳文と一緒に動かす
+    - 重なりが字形の枠だけで、実際の字形（大きな Σ や括弧の上半分など）が段落の外にあるなら、訳したうえで
+      消去に巻き込まれる字形を pa.restore に記録する（描画時に原文から切り抜いて戻す）。page が必要
     - それ以外の重なりがある段落は訳さない
     1 つを訳さないことにすると、その段落が新たに他の段落の障害になり得るため、変化が無くなるまで繰り返す。
     """
+    ink = _InkFinder(page)
     changed = True
     while changed:
         changed = False
@@ -132,26 +137,118 @@ def guard_overlaps(pa: PageAnalysis) -> None:
             hits = [k for k in kept if _overlaps(rects, k)]
             if not hits:
                 continue
-            if all(_is_fragment(k) or _is_paragraph_tail(k, d) for k in hits):
-                for k in hits:
+            # 字形の枠だけが重なる（実際の字形は段落の外にある）相手は、取り込まずにその場に残し、消えたら戻す。
+            # これを許すのは文章の段落だけ（数式の断片を本文と取り違えたブロックは、従来どおり訳さない）
+            prose = _prose(d)
+            clear = [
+                k for k in hits
+                if prose and not _is_paragraph_tail(k, d) and ink.clear(_hit_spans(rects, k), d.block.bbox, rects)
+            ]
+            merge = [k for k in hits if k not in clear and (_is_fragment(k) or _is_paragraph_tail(k, d))]
+            others = [k for k in hits if k not in clear and k not in merge]
+            if others:
+                d.skip = SkipReason.OVERLAP
+                changed = True
+                break
+            if merge:
+                for k in merge:
                     d.block.lines.extend(k.block.lines)
                     d.block.lines.sort(key=lambda ln: (round(ln.baseline, 1), ln.bbox[0]))
                     d.block.bbox = rect_union(d.block.bbox, k.block.bbox)
                     pa.decisions.remove(k)
-            else:
-                d.skip = SkipReason.OVERLAP
-            changed = True
-            break
+                changed = True
+                break
+    # 訳すことにした段落の消去に巻き込まれる字形を記録する
+    pa.restore = []
+    kept = [d for d in pa.decisions if not d.translate]
+    for d in pa.decisions:
+        if not d.translate:
+            continue
+        rects = [erase_rect(s.bbox) for s in d.block.spans if s.text.strip()]
+        for k in kept:
+            for s in _hit_spans(rects, k):
+                for ch, box, origin in ink.glyphs(s):
+                    pa.restore.append(
+                        RestoreGlyph(ink=box, span=s.bbox, block_index=d.block.index, text=ch, origin=origin)
+                    )
+
+
+_PROSE_WORD = re.compile(r"[A-Za-z]{3,}")
+
+
+def _prose(d) -> bool:
+    """文章の段落らしいか（3 文字以上の英単語が 6 語以上）。"""
+    return len(_PROSE_WORD.findall(d.block.text)) >= 6
 
 
 def _overlaps(rects: list, other) -> bool:
+    return bool(_hit_spans(rects, other))
+
+
+def _hit_spans(rects: list, other) -> list:
+    hits = []
     for s in other.block.spans:
         if not s.text.strip():
             continue
         sb = inflate(s.bbox, -0.5)
         if any(rect_area(rect_intersect(r, sb)) > 0.5 for r in rects):
-            return True
-    return False
+            hits.append(s)
+    return hits
+
+
+class _InkFinder:
+    """スパンの実際の字形の範囲（フォントの枠ではなく、字の輪郭から求めた範囲）を調べる。"""
+
+    def __init__(self, page: pymupdf.Page | None):
+        self.page = page
+        self._cache: dict = {}
+
+    def glyphs(self, span) -> list[tuple[str, tuple[float, float, float, float], tuple[float, float]]]:
+        """スパンの字形ごとの (文字, 実際の範囲, 原点)。調べられなければ空。"""
+        if self.page is None:
+            return []
+        key = (span.bbox, span.text)
+        if key not in self._cache:
+            self._cache[key] = self._find(span)
+        return self._cache[key]
+
+    def of(self, span) -> tuple[float, float, float, float] | None:
+        boxes = [box for _, box, _ in self.glyphs(span)]
+        if not boxes:
+            return None
+        return (min(r[0] for r in boxes), min(r[1] for r in boxes), max(r[2] for r in boxes), max(r[3] for r in boxes))
+
+    def _find(self, span):
+        try:
+            clip = pymupdf.Rect(inflate(span.bbox, 1.0))
+            data = self.page.get_text("rawdict", flags=TEXT_FLAGS | pymupdf.TEXT_ACCURATE_BBOXES, clip=clip)
+        except Exception:
+            return []
+        want = {c for c in span.text if not c.isspace()}
+        zone = inflate(span.bbox, 0.5)
+        found = []
+        for b in data.get("blocks", ()):
+            for ln in b.get("lines", ()):
+                for s in ln["spans"]:
+                    for c in s.get("chars", ()):
+                        x, y = c["origin"]
+                        r = tuple(c["bbox"])
+                        if c["c"] in want and zone[0] <= x <= zone[2] and zone[1] <= y <= zone[3] and r[2] > r[0] and r[3] > r[1]:
+                            found.append((c["c"], r, (x, y)))
+        return found
+
+    def clear(self, spans: list, para: tuple, erase: list) -> bool:
+        """spans の実際の字形が、段落の範囲にも消す範囲にも重ならないか（字形の枠だけが重なっているか）。"""
+        if not spans:
+            return False
+        zone = inflate(para, 0.5)
+        for s in spans:
+            box = self.of(s)
+            if box is None or rect_area(rect_intersect(box, zone)) > 0:
+                return False
+            if any(rect_area(rect_intersect(box, r)) > 0 for r in erase):
+                return False
+        return True
 
 
 def _is_paragraph_tail(k, para) -> bool:

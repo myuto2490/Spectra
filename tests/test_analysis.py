@@ -1006,3 +1006,28 @@ def test_double_spaced_paragraph_starting_lines_with_a_is_not_split_as_nomenclat
     a = analyze_document(doc)
     d = _find(a, "A small fraction")
     assert d.translate and len(d.block.lines) == 4
+
+
+def test_short_sentence_with_a_symbol_beside_equations_is_translated():
+    """数式の記号を含む短い文 "If ω = 1 then" は訳す。記号から始まる式の断片や、語が 1 つの式は訳さない。"""
+    from spectra.core.classify import BlockStats, _short_sentence
+
+    sentence = _fragment_block([[
+        _frag_span("If", "Times-Roman", 10, 140, 300, 8),
+        _frag_span("ω", "rtxmi", 10, 150, 300, 6),
+        _frag_span("=", "rtxr", 10, 158, 300, 6),
+        _frag_span("1", "rtxr", 10, 166, 300, 5),
+        _frag_span("then", "Times-Roman", 10, 174, 300, 16),
+    ]])
+    fragment = _fragment_block([[
+        _frag_span("M or E", "Times-Roman", 10, 140, 300, 26),
+        _frag_span("=", "rtxr", 10, 170, 300, 6),
+        _frag_span("∂Φ", "rtxmi", 10, 178, 300, 12),
+    ]])
+    labelled = _fragment_block([[
+        _frag_span("Directional", "Times-Roman", 10, 140, 300, 44),
+        _frag_span("ε(∆λ, ω) =", "rtxmi", 10, 190, 300, 40),
+    ]])
+    assert _short_sentence(sentence, BlockStats(sentence))
+    assert not _short_sentence(fragment, BlockStats(fragment))
+    assert not _short_sentence(labelled, BlockStats(labelled))

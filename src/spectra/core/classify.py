@@ -397,6 +397,23 @@ def _has_prose_word(text: str) -> bool:
     return any(w.lower() in _FUNCTION_WORDS for w in re.findall(r"(?<![A-Za-z])[A-Za-z][a-z]*(?![A-Za-z])", outside))
 
 
+def _short_sentence(b: TextBlock, st: BlockStats) -> bool:
+    """数式の記号を含む、短い本物の文（"If ω̃ = 1 then" "where E is the flux"）。数式と判定しない。
+
+    1〜2 行で、英単語（機能語か 4 文字以上の語）から始まり、そのような語を 2 つ以上含むもの。
+    式の断片は記号・変数から始まるか（"M or E = ∂Φ/∂A"）、語が 1 つだけ（"Directional ε(∆λ) = …"）。
+    """
+    if len(b.lines) > 2:
+        return False
+    words = [w for w in re.findall(r"(?<![A-Za-z])[A-Za-z][a-z]*(?![A-Za-z])", st.text) if w.lower() not in _MATH_FUNCTIONS]
+
+    def prose(w: str) -> bool:
+        return w.lower() in _FUNCTION_WORDS or (len(w) >= 4 and w[1:].islower())
+
+    first = re.match(r"\s*([A-Za-z][a-z]*)(?![A-Za-z0-9])", st.text)
+    return bool(first) and prose(first.group(1)) and sum(map(prose, words)) >= 2
+
+
 def _absorb_equation_fragments(decisions: list[BlockDecision], stats: dict[int, BlockStats], body_size: float) -> None:
     """独立数式の中に置かれた、語の少ない小さなブロック（分数の分子 "hc"、式の右端の "dx (B.22)" など）を数式とする。
 
@@ -771,9 +788,10 @@ class DocumentClassifier:
         ):
             return SkipReason.TABLE
 
-        if st.chars and st.math_chars / st.chars > 0.5:
+        sentence = _short_sentence(b, st)
+        if not sentence and st.chars and st.math_chars / st.chars > 0.5:
             return SkipReason.MATH
-        if _looks_like_equation(b, st):
+        if not sentence and _looks_like_equation(b, st):
             return SkipReason.MATH
         if st.cjk > max(3, st.letters * 0.3):
             return SkipReason.ALREADY_JAPANESE

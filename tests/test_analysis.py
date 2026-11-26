@@ -1176,3 +1176,21 @@ def test_first_lines_differing_only_by_a_one_letter_variable_are_not_running_hea
     for pa in a.pages:
         top = min(pa.decisions, key=lambda d: d.block.bbox[1])
         assert top.skip != SkipReason.RUNNING_HEADER, pa.page
+
+
+def test_numbered_bold_heading_on_every_page_is_not_a_running_header():
+    """各ページの先頭の、段落から離れた太字の見出し "Problem 1" "Problem 2" … は柱としない。"""
+    from pdf_factory import BOLD, LOREM, write_paragraph
+
+    doc = pymupdf.open()
+    for n in range(1, 6):
+        page = doc.new_page(width=595, height=842)
+        page.insert_text((140, 200), f"Problem {n}", fontname=BOLD, fontsize=12)
+        write_paragraph(page, (140, 473), 230, LOREM, 4)
+    a = analyze_document(doc)
+    for pa in a.pages[1:]:
+        assert _find_on(pa, "Problem").translate, pa.page
+
+
+def _find_on(pa, needle):
+    return next(d for d in pa.decisions if needle in d.block.text)

@@ -821,7 +821,9 @@ class DocumentClassifier:
         ):
             return SkipReason.RUNNING_HEADER
 
-        if (b.page, b.index) in self.running_headers:
+        # 繰り返しで見つけた柱。ただし、ページ番号と題名が左右に離れていない見出し（各ページの先頭の太字の
+        # "Problem 1" "Problem 2" …）は、文言が繰り返されても柱ではない
+        if (b.page, b.index) in self.running_headers and not (kind == BlockKind.HEADING and not _split_header(b, st.size)):
             return SkipReason.RUNNING_HEADER
 
         if b.page == 0 and not self.seen_abstract:

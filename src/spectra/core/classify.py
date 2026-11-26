@@ -370,13 +370,13 @@ _INDEX = re.compile(r"^\s*(?:subject\s+|author\s+)?index\s*$", re.IGNORECASE)
 _INDEX_ENTRY = re.compile(r",\s*\d{1,4}(?:\s*[–-]\s*\d{1,4})?(?:\s*,\s*\d{1,4}(?:\s*[–-]\s*\d{1,4})?)*\s*$")
 
 
-def _index_entries(block: TextBlock) -> bool:
-    """索引の項目のブロック: 行の 3 割以上が ", ページ番号" で終わるか、項目の折り返し・親項目の短い 1〜2 行。"""
+def _index_entries(block: TextBlock) -> tuple[bool, bool]:
+    """索引の項目のブロックか: (行の 3 割以上が ", ページ番号" で終わる, 項目の折り返し・親項目らしい短い 1〜2 行)。"""
     lines = [ln for ln in block.lines if ln.text.strip()]
     if not lines:
-        return False
+        return False, False
     hits = sum(1 for ln in lines if _INDEX_ENTRY.search(ln.text))
-    return hits >= len(lines) * 0.3 or (len(lines) <= 2 and len(block.text.split()) <= 6)
+    return hits >= len(lines) * 0.3, len(lines) <= 2 and len(block.text.split()) <= 6
 
 
 # 式番号（"(3.90)" "(B.22)" "(2.10b)"）。行のどこにあってもよい（右端の式番号が行の先頭に取り出されることがある）
@@ -670,6 +670,7 @@ class DocumentClassifier:
         self.body_font = body_font
         self.in_references = False
         self.in_index = False  # 索引（"Index" の見出しの後）
+        self.index_entries_seen = False  # 索引の中で ", ページ番号" の項目を見たか
         # 1 ページ目のタイトル〜概要の間（著者・所属）
         self.seen_title = False
         self.seen_abstract = False
@@ -822,14 +823,21 @@ class DocumentClassifier:
                 return SkipReason.REFERENCES
 
         # 索引の開始・終了。索引の項目（"angular frequency, 13"）を訳すと、ページ番号と項目の並びが失われる
-        if len(b.lines) == 1 and _INDEX.match(st.text):
+        # 見出し（表の見出しのセルの "Index" ではない）で始まり、次の見出し・題名で終わる
+        if kind in (BlockKind.HEADING, BlockKind.TITLE) and len(b.lines) == 1 and _INDEX.match(st.text):
             self.in_index = True
+            self.index_entries_seen = False
             return None  # 見出し自体は訳す
         if self.in_index:
-            if kind == BlockKind.TITLE or (kind == BlockKind.HEADING and _NUMBERED_SECTION.match(st.text)):
+            if kind in (BlockKind.HEADING, BlockKind.TITLE):
                 self.in_index = False
-            elif kind in (BlockKind.BODY, BlockKind.FOOTNOTE) and _index_entries(b):
-                return SkipReason.TABLE
+            elif kind in (BlockKind.BODY, BlockKind.FOOTNOTE):
+                full, short = _index_entries(b)
+                # 項目の折り返し・親項目の短いブロックは、", ページ番号" の項目を一度見た後だけ（"Index" という名前の
+                # 指標の節の短い本文 "Both indices agree well." を項目と見なさないため）
+                if full or (short and self.index_entries_seen):
+                    self.index_entries_seen = True
+                    return SkipReason.TABLE
 
         fig_overlap = max((overlap_ratio(b.bbox, inflate(r, 4)) for r in figures), default=0.0)
         if kind == BlockKind.CAPTION:

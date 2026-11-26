@@ -1133,3 +1133,19 @@ def test_two_line_equation_with_a_noun_label_is_math():
     a = analyze_document(doc)
     assert _find(a, "Loss Rate").skip == SkipReason.MATH
     assert _find(a, "Hence the rate").translate
+
+
+def test_short_paragraphs_after_a_section_named_index_are_translated():
+    """番号の無い見出し "Index"（指標の節）の後の短い本文と、次の見出しの後の本文は訳す。"""
+    from pdf_factory import BODY, BOLD, LOREM, write_paragraph
+
+    doc = pymupdf.open()
+    write_paragraph(doc.new_page(width=595, height=842), (140, 473), 150, LOREM, 10)
+    page = doc.new_page(width=595, height=842)
+    page.insert_text((140, 200), "Index", fontname=BOLD, fontsize=12)
+    page.insert_text((140, 220), "Both indices agree well.", fontname=BODY, fontsize=10)
+    page.insert_text((140, 260), "Results", fontname=BOLD, fontsize=12)
+    page.insert_text((140, 280), "We found three trends.", fontname=BODY, fontsize=10)
+    a = analyze_document(doc)
+    assert _find(a, "Both indices").translate
+    assert _find(a, "three trends").translate

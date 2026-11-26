@@ -483,6 +483,16 @@ def find_running_headers(blocks_by_page: dict[int, list[TextBlock]]) -> set[tupl
             if _line_size(b.lines[at]) > usual + 1.0:
                 continue
             if len(b.lines) > 1:
+                # 柱は本文から離れて置かれる（0.45 文字分以上）か、ページ番号と題名が左右に大きく離れている。
+                # 普通の行間で段落に続く 1 行目（各ページの先頭の "Problem 1" "Problem 2" …）は、
+                # 文言が繰り返されても柱ではない
+                line, nxt = (b.lines[0], b.lines[1]) if at == 0 else (b.lines[-1], b.lines[-2])
+                gap = nxt.bbox[1] - line.bbox[3] if at == 0 else line.bbox[1] - nxt.bbox[3]
+                size = _line_size(line)
+                spans = [s for s in line.spans if s.text.strip()]
+                spread = any(q.bbox[0] - p.bbox[2] > size * 4 for p, q in zip(spans, spans[1:]))
+                if gap < size * 0.45 and not spread:
+                    continue
                 b = _split_off_line(blocks_by_page[pno], b, at)
             result.add((pno, b.index))
     return result

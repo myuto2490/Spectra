@@ -767,6 +767,21 @@ def test_running_headers_far_from_the_page_edge_are_found_by_repetition():
     assert any(d.translate and "Transfer of Things" in d.block.text for d in first.decisions)
 
 
+def test_numbered_first_line_repeated_on_every_page_is_not_a_running_header():
+    """各ページの先頭が "Problem 1" "Problem 2" … で、普通の行間で段落に続くなら、柱として切り離さずに訳す。"""
+    from pdf_factory import BODY, LOREM, write_paragraph
+
+    doc = pymupdf.open()
+    for n in range(1, 6):
+        page = doc.new_page(width=595, height=842)
+        page.insert_text((140, 200), f"Problem {n} Show that the following relation holds for any medium", fontname=BODY, fontsize=10)
+        write_paragraph(page, (140, 473), 212, LOREM, 4)
+    a = analyze_document(doc)
+    for pa in a.pages:
+        top = min(pa.decisions, key=lambda d: d.block.bbox[1])
+        assert top.translate and len(top.block.lines) > 1, pa.page
+
+
 def test_equation_number_pushed_below_a_long_equation_is_not_merged_into_the_next_paragraph():
     from pdf_factory import BODY, LOREM, write_paragraph
 

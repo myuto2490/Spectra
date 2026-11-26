@@ -1061,3 +1061,24 @@ def test_contents_block_with_a_chapter_line_without_leaders_is_not_translated():
     page.insert_text((460, 214), "1", fontname=BOLD, fontsize=10)
     a = analyze_document(doc)
     assert not _find(a, "Nomenclature").translate
+
+
+def test_index_entries_after_an_index_heading_are_not_translated():
+    """"Index" の見出しの後の項目（"angular frequency, 13"）は、次のページも含めて訳さない。見出しと前の本文は訳す。"""
+    from pdf_factory import BODY, BOLD, LOREM, write_paragraph
+
+    doc = pymupdf.open()
+    write_paragraph(doc.new_page(width=595, height=842), (140, 473), 150, LOREM, 10)  # 本文のページ
+    page = doc.new_page(width=595, height=842)
+    write_paragraph(page, (140, 473), 150, LOREM, 3)
+    page.insert_text((140, 230), "Index", fontname=BOLD, fontsize=16)
+    entries = ["absorption coefficient, 74", "air", "molar mass, 3", "angular frequency, 13", "angular wavenumber, 13"]
+    for i, e in enumerate(entries):
+        page.insert_text((140 if e != "molar mass, 3" else 150, 270 + i * 12), e, fontname=BODY, fontsize=9)
+    page2 = doc.new_page(width=595, height=842)
+    for i, e in enumerate(["phase velocity, 14", "plane of scattering, 40", "quantum yield, 81"]):
+        page2.insert_text((140, 200 + i * 12), e, fontname=BODY, fontsize=9)
+    a = analyze_document(doc)
+    assert _find(a, "Index").translate and _find(a, "Deep neural networks").translate
+    assert not _find(a, "angular frequency").translate
+    assert not _find(a, "quantum yield").translate

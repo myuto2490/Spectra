@@ -345,6 +345,18 @@ def _looks_like_equation(block: TextBlock, st: BlockStats) -> bool:
     return len(_LONG_WORD.findall(st.text)) <= 1 or st.letters < st.chars * 0.45
 
 
+# 目次の行の終わり：リーダー（". . . ."）とページ番号（算用数字かローマ数字）
+_CONTENTS_LINE = re.compile(r"(?:\.\s?){4,}\s*(?:\d{1,4}|[ivxlc]{1,6})\s*$")
+
+
+def _is_contents(block: TextBlock) -> bool:
+    """目次（行の多くがリーダーとページ番号で終わる）。訳すと項目番号・リーダー・ページ番号が失われるので表として残す。"""
+    lines = [ln for ln in block.lines if ln.text.strip()]
+    hits = sum(1 for ln in lines if _CONTENTS_LINE.search(ln.text))
+    # 2 行以上のブロックでは 2 行以上（本文の 1 行がたまたま ". . . . 3" で終わることがある）
+    return hits >= min(2, len(lines)) and hits >= len(lines) * 0.4
+
+
 # 式番号（"(3.90)" "(B.22)" "(2.10b)"）。行のどこにあってもよい（右端の式番号が行の先頭に取り出されることがある）
 _EQUATION_NUMBER_ANYWHERE = re.compile(r"\((?:[A-Z]|[1-9]\d{0,2})\.\d{1,3}(?:\.\d{1,3})?[a-z]?\)")
 
@@ -677,6 +689,7 @@ class DocumentClassifier:
                 return SkipReason.FIGURE
         if kind != BlockKind.CAPTION and (
             tabular
+            or _is_contents(b)
             or any(overlap_ratio(b.bbox, r) >= 0.5 for r in tables)
             or has_column_gaps(b, st.size)
         ):

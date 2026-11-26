@@ -925,3 +925,29 @@ def test_body_line_citing_a_number_without_an_equation_beside_it_is_translated()
     a = analyze_document(doc)
     for line in ("Bond albedo", "See Eq.", "Appendix"):
         assert _find(a, line).translate, line
+
+
+def test_table_of_contents_with_leaders_is_not_translated():
+    """目次の項目（リーダーとページ番号で終わる行）は訳さない。訳すと番号・リーダー・ページ番号が消える。"""
+    from pdf_factory import BODY
+
+    doc = pymupdf.open()
+    page = doc.new_page(width=595, height=842)
+    entries = [("2.1", "The Nature of Light", "11"), ("2.2", "Wave Equation", "13"), ("2.3", "Light Waves in a Vacuum", "18")]
+    for i, (num, title, pno) in enumerate(entries):
+        # 番号・題名・リーダー・ページ番号が 1 つながりの行（列の間隔が無いので、表とは判定されない）
+        page.insert_text((140, 200 + i * 12), f"{num} {title} " + ". " * 12 + pno, fontname=BODY, fontsize=10)
+    a = analyze_document(doc)
+    assert not _find(a, "Nature of Light").translate
+
+
+def test_paragraph_with_one_line_ending_in_leader_dots_is_translated():
+    """2 行の本文の 1 行目が ". . . . 3" で終わっても、目次ではない。"""
+    from pdf_factory import BODY
+
+    doc = pymupdf.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_text((140, 200), "The series continues as 1, 2, . . . . 3", fontname=BODY, fontsize=10)
+    page.insert_text((140, 212), "and so on until the remaining terms become negligible in practice.", fontname=BODY, fontsize=10)
+    a = analyze_document(doc)
+    assert _find(a, "remaining terms").translate

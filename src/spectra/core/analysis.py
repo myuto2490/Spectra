@@ -88,6 +88,7 @@ def _analyze(
             progress(i + 1, len(pages))
     for pa in analyses:
         drop_duplicate_layers(pa)
+        mark_figure_and_table_text(pa, doc[pa.page])
         guard_overlaps(pa, doc[pa.page])
         attach_line_art(pa, doc[pa.page])
     segments = build_segments(
@@ -175,6 +176,138 @@ def guard_overlaps(pa: PageAnalysis, page: pymupdf.Page | None = None) -> None:
                     pa.restore.append(
                         RestoreGlyph(ink=box, span=s.bbox, block_index=d.block.index, text=ch, origin=origin)
                     )
+
+
+# ---- 図・表の中の文字（本文として訳さない） ---------------------------------------------
+
+_TABLE_CAPTION = re.compile(r"^\s*table\s*([A-Z]?\d+|[ivxlc]+)", re.IGNORECASE)
+
+
+def mark_figure_and_table_text(pa: PageAnalysis, page: pymupdf.Page) -> None:
+    """図・表として検出されなかった図表の中の文字を、訳さないことにする（訳す側に変えることはしない）。
+
+    - 語と語の間に長い矢印・線が引かれた 1 行（"measurand ──→ measurement(s)" のような図の中のラベル）
+    - "TABLE x" の見出しのすぐ下の横線と、同じ幅の下の横線に挟まれた、表の行（罫線の少ない表）
+    - 表のすぐ上下に切り離された、表と同じ左端・同じ列の位置を持つ 1 行（表の最後の行など）
+    """
+    try:
+        drawings = page.get_cdrawings()
+    except Exception:
+        return
+    rules = [_hrule(d) for d in drawings]
+    rules = [r for r in rules if r is not None]
+    _mark_diagram_lines(pa, drawings)
+    _mark_ruled_tables(pa, rules)
+    _join_table_rows(pa)
+
+
+def _hrule(d: dict) -> tuple[float, float, float] | None:
+    """横線なら (左端, 右端, 高さの位置)。線（太さのある直線）と、細い塗りの四角を横線とみなす。"""
+    x0, y0, x1, y1 = d["rect"]
+    if x1 - x0 < 20:
+        return None
+    if d.get("type") == "s" and y1 - y0 < 0.5 or d.get("type") == "f" and y1 - y0 < 1.5:
+        return (x0, x1, (y0 + y1) / 2)
+    return None
+
+
+def _mark_diagram_lines(pa: PageAnalysis, drawings: list[dict]) -> None:
+    for d in pa.decisions:
+        if not d.translate or len(d.block.lines) != 1:
+            continue
+        ln = d.block.lines[0]
+        spans = [s for s in ln.spans if s.text.strip()]
+        size = max((s.size for s in spans), default=10.0)
+        top, bottom = ln.bbox[1], ln.bbox[3]
+        for a, b in zip(spans, spans[1:]):
+            g0, g1 = a.bbox[2] - 1, b.bbox[0] + 1
+            if g1 - g0 < size * 2:
+                continue
+            for dr in drawings:
+                x0, y0, x1, y1 = dr["rect"]
+                if g0 <= x0 and x1 <= g1 and x1 - x0 >= size * 2 and top <= y0 and y1 <= bottom:
+                    d.skip = SkipReason.FIGURE
+                    break
+            if d.skip is not None:
+                break
+
+
+def _mark_ruled_tables(pa: PageAnalysis, rules: list[tuple[float, float, float]]) -> None:
+    for cap in pa.decisions:
+        if not _TABLE_CAPTION.match(cap.block.text):
+            continue
+        cb = cap.block.bbox
+        size = max((s.size for s in cap.block.spans), default=10.0)
+        # 見出し（と、そのすぐ下の表題の行）の下、数行以内にある横線を表の上端とする
+        tops = sorted((r for r in rules if cb[3] - 1 <= r[2] <= cb[3] + size * 4), key=lambda r: r[2])
+        if not tops:
+            continue
+        x0, x1, top = tops[0]
+        same = sorted((r for r in rules if r[2] > top + size and abs(r[0] - x0) < 1.5 and abs(r[1] - x1) < 1.5), key=lambda r: r[2])
+        if not same:
+            continue
+        bottom = same[-1][2]
+        # 横線の間にあるブロック。文章の段落（4 行以上、または文が続くもの）が 1 つでもあれば表とみなさない
+        inside = [
+            d for d in pa.decisions
+            if d is not cap and x0 - 2 <= d.block.bbox[0] and d.block.bbox[2] <= x1 + 2
+            and top - size * 0.5 <= d.block.bbox[1] and d.block.bbox[3] <= bottom + size * 0.5
+        ]
+        if not inside or any(len(d.block.lines) > 3 for d in inside):
+            continue
+        # 訳すと列がつながって崩れる、複数の列を 1 行にまとめたブロックだけを訳さない（1 つのセルは従来どおり訳す）。
+        # 列の間が狭い行も、他の行で分かった列の位置から始まる部分があれば、複数の列をまとめた行とみなす
+        columns = {x for d in inside for x in _column_starts(d.block)}
+        for d in inside:
+            if d.translate and (_spans_columns(d.block) or _starts_at_column(d.block, columns)):
+                d.skip = SkipReason.TABLE
+
+
+def _column_starts(block) -> list[float]:
+    """列の間ほどの大きな空き（字の 1.5 倍以上）の後に始まる部分の左端。"""
+    starts = []
+    for ln in block.lines:
+        spans = [s for s in ln.spans if s.text.strip()]
+        size = max((s.size for s in spans), default=10.0)
+        starts += [b.bbox[0] for a, b in zip(spans, spans[1:]) if b.bbox[0] - a.bbox[2] > size * 1.5]
+    return starts
+
+
+def _spans_columns(block) -> bool:
+    return bool(_column_starts(block))
+
+
+def _starts_at_column(block, columns: set[float]) -> bool:
+    """行の途中に、表の列の位置（columns）から始まる部分があるか。"""
+    for ln in block.lines:
+        spans = [s for s in ln.spans if s.text.strip()]
+        for a, b in zip(spans, spans[1:]):
+            if b.bbox[0] - a.bbox[2] > 0.5 and any(abs(b.bbox[0] - c) <= 2 for c in columns):
+                return True
+    return False
+
+
+def _join_table_rows(pa: PageAnalysis) -> None:
+    tables = [d for d in pa.decisions if d.skip == SkipReason.TABLE and len(d.block.lines) >= 2]
+    for d in pa.decisions:
+        if not d.translate or len(d.block.lines) != 1:
+            continue
+        ln = d.block.lines[0]
+        spans = [s for s in ln.spans if s.text.strip()]
+        size = max((s.size for s in spans), default=10.0)
+        starts = [s.bbox[0] for a, s in zip(spans, spans[1:]) if s.bbox[0] - a.bbox[2] > size * 1.5]
+        if not starts:
+            continue
+        for t in tables:
+            tb = t.block.bbox
+            touching = -size <= d.block.bbox[1] - tb[3] <= size or -size <= tb[1] - d.block.bbox[3] <= size
+            if not touching or abs(d.block.bbox[0] - tb[0]) > 2:
+                continue
+            # 表の各行の、2 列目以降の始まりの位置と揃っているか
+            cols = {round(s.bbox[0]) for tl in t.block.lines for s in tl.spans[1:] if s.text.strip()}
+            if all(any(abs(x - c) <= 2 for c in cols) for x in starts):
+                d.skip = SkipReason.TABLE
+                break
 
 
 def attach_line_art(pa: PageAnalysis, page: pymupdf.Page) -> None:

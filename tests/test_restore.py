@@ -108,3 +108,73 @@ def test_a_lone_big_symbol_is_left_in_place_rather_than_merged_into_the_paragrap
     assert para.translate and formula in a.pages[0].decisions
     assert para.block.bbox[1] > 300  # 段落の枠は記号まで広がらない
     assert a.pages[0].restore
+
+
+def _fail_show_pdf_page(monkeypatch, when):
+    real = pymupdf.Page.show_pdf_page
+
+    def fake(self, rect, src, pno=0, **kw):
+        if when(self, src):
+            raise RuntimeError("injected")
+        return real(self, rect, src, pno, **kw)
+
+    monkeypatch.setattr(pymupdf.Page, "show_pdf_page", fake)
+
+
+def test_paragraph_is_kept_when_glyphs_cannot_be_put_back(monkeypatch):
+    """字形を原文から貼れない環境では、消す前にそれが分かるので、段落を原文のまま残す（記号を失わない）。"""
+    original = _page()
+    before = _pixels(original)
+    doc = pymupdf.open(stream=original.tobytes(), filetype="pdf")
+    a = _analysis(original)
+    _fail_show_pdf_page(monkeypatch, lambda page, src: True)
+    report = Renderer(doc, a, RenderOptions(), source=original).render()
+    assert [k.segment_id for k in report.kept_original] == [a.segments[0].id]
+    assert "これは" not in doc[0].get_text()
+    assert _pixels(doc) == before
+
+
+def test_glyphs_are_put_back_from_the_original_when_the_cut_out_page_fails(monkeypatch):
+    original = _page()
+    before = _pixels(original)
+    doc = pymupdf.open(stream=original.tobytes(), filetype="pdf")
+    a = _analysis(original)
+    _fail_show_pdf_page(monkeypatch, lambda page, src: page.parent is doc and src is not original)
+    report = Renderer(doc, a, RenderOptions(), source=original).render()
+    assert "これは" in doc[0].get_text() and not report.restore_failed
+    assert _pixels(doc) == before
+
+
+def test_a_failed_restore_is_reported(monkeypatch):
+    """消したあとに貼れなかった場合（事前の確認では貼れた）は、警告に出せるよう報告に載せる。"""
+    original = _page()
+    doc = pymupdf.open(stream=original.tobytes(), filetype="pdf")
+    a = _analysis(original)
+    _fail_show_pdf_page(monkeypatch, lambda page, src: page.parent is doc)
+    report = Renderer(doc, a, RenderOptions(), source=original).render()
+    assert report.restore_failed == [0]
+
+
+class _FakePage:
+    """字の範囲を返すだけのページ（幅 0 の字形を含む Type3 フォントの代わり）。"""
+
+    def __init__(self, chars):
+        self.chars = chars
+
+    def get_text(self, *args, **kwargs):
+        return {"blocks": [{"lines": [{"spans": [{"chars": self.chars}]}]}]}
+
+
+def test_spans_with_unmeasurable_glyphs_are_not_treated_as_clear():
+    from spectra.core.analysis import _InkFinder
+    from spectra.core.models import Span
+
+    span = Span("PQ", "T3Font", 30, 0, 0, (100, 100, 140, 140), (100, 130))
+    measured = {"c": "P", "origin": (100, 130), "bbox": (100, 105, 118, 128)}
+    flat = {"c": "Q", "origin": (120, 130), "bbox": (120, 128, 120, 128)}  # 幅も高さも 0
+    finder = _InkFinder(_FakePage([measured, flat]))
+    assert finder.glyphs(span) == []
+    assert not finder.clear([span], (90, 132, 300, 160), [(90, 134, 300, 150)])
+    # どちらも測れれば、字形は段落の外なので重ならない
+    finder = _InkFinder(_FakePage([measured, {**flat, "bbox": (120, 106, 138, 128)}]))
+    assert finder.clear([span], (90, 132, 300, 160), [(90, 134, 300, 150)])

@@ -232,9 +232,14 @@ class _InkFinder:
                 for s in ln["spans"]:
                     for c in s.get("chars", ()):
                         x, y = c["origin"]
-                        r = tuple(c["bbox"])
-                        if c["c"] in want and zone[0] <= x <= zone[2] and zone[1] <= y <= zone[3] and r[2] > r[0] and r[3] > r[1]:
-                            found.append((c["c"], r, (x, y)))
+                        if c["c"] in want and zone[0] <= x <= zone[2] and zone[1] <= y <= zone[3]:
+                            found.append((c["c"], tuple(c["bbox"]), (x, y)))
+        # 1 文字でも範囲を測れない（幅や高さが 0 の Type3 フォントの字など）、または見つからない字があれば、
+        # 一部の字だけで「重ならない」と判定しないよう、スパン全体を測れないものとする
+        if len(found) != sum(1 for c in span.text if not c.isspace()):
+            return []
+        if any(r[2] <= r[0] or r[3] <= r[1] for _, r, _ in found):
+            return []
         return found
 
     def clear(self, spans: list, para: tuple, erase: list) -> bool:

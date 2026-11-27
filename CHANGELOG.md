@@ -7,6 +7,8 @@
 
 ## [Unreleased]
 
+## [0.4.7] - 2026-11-27
+
 ### 修正
 
 - 一部の論文・書籍の PDF（TeX の `\mathrm` の添字を「行送り」の命令で描くもの。Grainger の "An Atmospheric Science Primer" など）で、原文を消すときに、ページ内の後ろの文字が下へずれ、段落の後半が原文のまま残る・式が消える・式どうしが重なる問題を修正しました。PDF を扱うライブラリ（PyMuPDF）が、内容の書き直しで行送りを落とすためで、消す前に該当の命令を、同じ意味の明示的な位置指定に書き換えます。書き換えられない形のときは、元のまま続けます
@@ -230,7 +232,7 @@
 **コマンドラインツール**
 - `spectra translate` / `spectra estimate` / `spectra key`
 
-[Unreleased]: https://github.com/myuto2490/Spectra/compare/v0.4.6...HEAD
+[Unreleased]: https://github.com/myuto2490/Spectra/compare/v0.4.7...HEAD
 [0.1.0]: https://github.com/myuto2490/Spectra/releases/tag/v0.1.0
 [0.1.1]: https://github.com/myuto2490/Spectra/compare/v0.1.0...v0.1.1
 [0.1.2]: https://github.com/myuto2490/Spectra/compare/v0.1.1...v0.1.2
@@ -246,3 +248,4 @@
 [0.4.4]: https://github.com/myuto2490/Spectra/compare/v0.4.3...v0.4.4
 [0.4.5]: https://github.com/myuto2490/Spectra/compare/v0.4.4...v0.4.5
 [0.4.6]: https://github.com/myuto2490/Spectra/compare/v0.4.5...v0.4.6
+[0.4.7]: https://github.com/myuto2490/Spectra/compare/v0.4.6...v0.4.7

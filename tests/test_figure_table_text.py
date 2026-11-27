@@ -102,3 +102,46 @@ def test_a_row_with_a_narrow_gap_that_starts_on_a_table_column_is_not_translated
     narrow = _decision(2, _line(_span("Oblate IB = IC < IA", 238, 352, 340), _span("BCl3", 358, 378, 340)))  # 列の間が 6pt
     rules = [_stroke(141, 200, 471, 200, 1.0), _stroke(141, 514, 471, 514, 1.0)]
     assert _run([caption, header, narrow], rules) == [None, SkipReason.TABLE, SkipReason.TABLE]
+
+
+def test_fill_in_blanks_and_form_lines_are_not_taken_for_figures():
+    """穴埋めの空欄や記入欄の下線（ベースライン付近の線）は図の矢印ではない。"""
+    blank = _decision(0, _line(_span("The boiling point of water is", 140, 260, 450), _span("degrees Celsius.", 320, 390, 450)))
+    form = _decision(1, _line(_span("Name:", 140, 170, 480), _span("Date:", 300, 325, 480)))
+    lines = [_stroke(264, 451, 316, 451), _stroke(174, 481, 296, 481)]
+    assert _run([blank, form], lines) == [None, None]
+
+
+def test_a_plain_line_between_words_of_a_sentence_is_not_a_figure():
+    """矢じりの無い線が文の途中（ラベルでなく、文として終わる行）にあっても図とはしない。"""
+    sentence = _decision(0, _line(_span("The value shown in the second figure panel is", 140, 330, 450), _span("smaller than expected.", 380, 470, 450)))
+    assert _run([sentence], [_stroke(334, 446, 376, 446)]) == [None]
+
+
+def test_an_arrow_shape_between_words_marks_a_figure_even_in_a_sentence():
+    arrow = {"rect": (334.0, 444.5, 376.0, 447.8), "type": "f", "items": [("re",), ("l",), ("l",)], "color": None, "width": None}
+    line = _decision(0, _line(_span("The energy flows from the source", 140, 330, 450), _span("to the detector.", 380, 450, 450)))
+    assert _run([line], [arrow]) == [SkipReason.FIGURE]
+
+
+def test_a_ruled_table_ends_at_its_own_bottom_rule():
+    """同じページの 2 つ目の表の下端まで広げない（間の、列のある行を 1 つ目の表に入れない）。"""
+    cap1 = _decision(0, _line(_span("Table 1", 141, 180, 182)), kind=BlockKind.CAPTION)
+    row1 = _decision(1, _line(_span("Planet", 150, 190, 212), _span("Radius", 300, 340, 212)))
+    row1b = _decision(2, _line(_span("Venus", 150, 190, 226), _span("6052 km", 300, 340, 226)))
+    between = _decision(3, _line(_span("Notes:", 141, 170, 272), _span("values from the archive", 300, 420, 272)))
+    cap2 = _decision(4, _line(_span("Table 2", 141, 180, 292)), kind=BlockKind.CAPTION)
+    row2 = _decision(5, _line(_span("Moon", 150, 190, 322), _span("1737 km", 300, 340, 322)))
+    rules = [_stroke(141, 200, 471, 200, 1.0), _stroke(141, 240, 471, 240, 1.0),
+             _stroke(141, 305, 471, 305, 1.0), _stroke(141, 340, 471, 340, 1.0)]
+    skips = _run([cap1, row1, row1b, between, cap2, row2], rules)
+    assert skips[3] is None  # 表の外の行は訳す
+    assert skips[1] == skips[2] == skips[5] == SkipReason.TABLE
+
+
+def test_a_note_below_a_table_does_not_join_it_through_font_changes_in_cells():
+    """セルの中のフォントの変わり目の位置と偶然揃った表の注は、表の行とみなさない。"""
+    rows = [_line(_span(f"Planet {i}", 167, 200, 250 + 12 * i), _span("b", 205, 212, 250 + 12 * i), _span("Jupiter", 300, 340, 250 + 12 * i)) for i in range(4)]
+    table = _decision(0, *rows, skip=SkipReason.TABLE)
+    note = _decision(1, _line(_span("Source:", 167, 185, 302), _span("planetary fact sheet", 205, 290, 302)))
+    assert _run([table, note], []) == [SkipReason.TABLE, None]

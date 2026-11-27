@@ -218,18 +218,32 @@ def _mark_diagram_lines(pa: PageAnalysis, drawings: list[dict]) -> None:
         ln = d.block.lines[0]
         spans = [s for s in ln.spans if s.text.strip()]
         size = max((s.size for s in spans), default=10.0)
-        top, bottom = ln.bbox[1], ln.bbox[3]
+        top, bottom, base = ln.bbox[1], ln.bbox[3], ln.baseline
+        # 短いラベルの並びで、文として終わっていない（"measurand → measurement(s)"）
+        labels = not ln.text.rstrip().endswith((".", "?", "!")) and all(len(s.text.split()) <= 5 for s in spans)
         for a, b in zip(spans, spans[1:]):
             g0, g1 = a.bbox[2] - 1, b.bbox[0] + 1
             if g1 - g0 < size * 2:
                 continue
             for dr in drawings:
                 x0, y0, x1, y1 = dr["rect"]
-                if g0 <= x0 and x1 <= g1 and x1 - x0 >= size * 2 and top <= y0 and y1 <= bottom:
+                if not (g0 <= x0 and x1 <= g1 and x1 - x0 >= size * 2 and top <= y0 and y1 <= bottom):
+                    continue
+                # ベースライン付近の線は、穴埋めの空欄や記入欄の下線（"is ______ degrees" "Name: ______"）
+                if abs((y0 + y1) / 2 - base) < size * 0.2:
+                    continue
+                if _arrow_like(dr) or labels:
                     d.skip = SkipReason.FIGURE
                     break
             if d.skip is not None:
                 break
+
+
+def _arrow_like(dr: dict) -> bool:
+    """矢印らしい図形（軸と矢じりを 1 つの塗りの図形で描いたもの: 多角形で、細い線より太い）。"""
+    x0, y0, x1, y1 = dr["rect"]
+    kinds = {item[0] for item in dr.get("items", ())}
+    return "f" in (dr.get("type") or "") and "l" in kinds and y1 - y0 >= 1.5
 
 
 def _mark_ruled_tables(pa: PageAnalysis, rules: list[tuple[float, float, float]]) -> None:
@@ -246,7 +260,11 @@ def _mark_ruled_tables(pa: PageAnalysis, rules: list[tuple[float, float, float]]
         same = sorted((r for r in rules if r[2] > top + size and abs(r[0] - x0) < 1.5 and abs(r[1] - x1) < 1.5), key=lambda r: r[2])
         if not same:
             continue
-        bottom = same[-1][2]
+        # 下端は、上端の次の同じ幅の線。その上が見出しの 1 行だけなら（見出しの下の線）、その次の線
+        bottom = same[0][2]
+        above = [d for d in pa.decisions if top < d.block.bbox[1] and d.block.bbox[3] <= bottom + size * 0.5]
+        if len(same) >= 2 and len({round(d.block.lines[0].baseline) for d in above if d.block.lines}) <= 1:
+            bottom = same[1][2]
         # 横線の間にあるブロック。文章の段落（4 行以上、または文が続くもの）が 1 つでもあれば表とみなさない
         inside = [
             d for d in pa.decisions
@@ -303,8 +321,8 @@ def _join_table_rows(pa: PageAnalysis) -> None:
             touching = -size <= d.block.bbox[1] - tb[3] <= size or -size <= tb[1] - d.block.bbox[3] <= size
             if not touching or abs(d.block.bbox[0] - tb[0]) > 2:
                 continue
-            # 表の各行の、2 列目以降の始まりの位置と揃っているか
-            cols = {round(s.bbox[0]) for tl in t.block.lines for s in tl.spans[1:] if s.text.strip()}
+            # 表の行の、列の間の空きの後の位置（2 列目以降の始まり）と揃っているか
+            cols = set(_column_starts(t.block))
             if all(any(abs(x - c) <= 2 for c in cols) for x in starts):
                 d.skip = SkipReason.TABLE
                 break

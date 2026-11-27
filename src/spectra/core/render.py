@@ -120,9 +120,9 @@ def _restore_box(glyph: RestoreGlyph) -> Rect:
     return inflate(glyph.ink, 0.5)
 
 
-def _run_target(run: InlineRun, pr: PlacedRun) -> Rect:
-    """段落中の数式を移した先の範囲。"""
-    x0, y0, x1, y1 = run.bbox  # type: ignore[misc]
+def _run_target(run: InlineRun, pr: PlacedRun, box: Rect | None = None) -> Rect:
+    """段落中の数式（の box の範囲。省略時は文字の範囲）を移した先の範囲。"""
+    x0, y0, x1, y1 = box or run.bbox  # type: ignore[misc]
     ox, oy = run.origin  # type: ignore[misc]
     f = pr.factor
     return (pr.x + (x0 - ox) * f, pr.baseline + (y0 - oy) * f, pr.x + (x1 - ox) * f, pr.baseline + (y1 - oy) * f)
@@ -240,6 +240,8 @@ class Renderer:
         self._scanned: dict[int, bool] = {}
         self.restore_failed: list[int] = []  # 消去に巻き込まれた記号を戻せなかったページ
         self._trial: pymupdf.Document | None = None  # 記号を貼れるかを試すための文書
+        # 段落中の数式を移すときの切り抜きの範囲（文字の範囲より長い分数の横線などを含めたもの）
+        self._extent: dict[int, Rect] = {}
 
     def geometry(self, pno: int) -> PageGeometry:
         if pno not in self._geo:
@@ -537,7 +539,7 @@ class Renderer:
         by_page: dict[int, list[Rect]] = defaultdict(list)
         for run, _pr in transplants:
             if not self.scanned(run.page):  # type: ignore[arg-type]
-                by_page[run.page].append(inflate(run.bbox, 1.0))  # type: ignore[arg-type]
+                by_page[run.page].append(inflate(self._extent.get(id(run), run.bbox), 1.0))  # type: ignore[arg-type]
         for pno, glyph in restores:
             if not self.scanned(pno):
                 by_page[pno].append(inflate(glyph.span, 1.0))
@@ -570,19 +572,20 @@ class Renderer:
         字形・分数の線・根号のほか、文字コードの対応が分からない記号（Δ など）も正しく再現できる。
         配置した部分の外側は切り抜かれ、文字の抽出にも含まれない。
         """
-        target = pymupdf.Rect(_run_target(run, pr))
+        box = self._extent.get(id(run), run.bbox)
+        target = pymupdf.Rect(_run_target(run, pr, box))  # type: ignore[arg-type]
         if target.is_empty:
             return
         if self.scanned(run.page):  # type: ignore[arg-type]
-            self._transplant_scanned(page, run, target)
+            self._transplant_scanned(page, run, target, box)  # type: ignore[arg-type]
             return
         src_doc, src_page = stamps.get(run.page, (self.source, run.page))  # type: ignore[arg-type]
         try:
-            page.show_pdf_page(target, src_doc, src_page, clip=pymupdf.Rect(run.bbox), keep_proportion=False, overlay=True)
+            page.show_pdf_page(target, src_doc, src_page, clip=pymupdf.Rect(box), keep_proportion=False, overlay=True)
         except Exception:
             log.warning("page %d: could not place inline math", page.number + 1, exc_info=True)
 
-    def _transplant_scanned(self, page: pymupdf.Page, run: InlineRun, target: pymupdf.Rect) -> None:
+    def _transplant_scanned(self, page: pymupdf.Page, run: InlineRun, target: pymupdf.Rect, box: Rect) -> None:
         """スキャンしたページの数式は、画像の該当部分を切り出して配置する。
 
         ページをそのまま貼り込むと、透明な OCR テキストも一緒に入り、文字の抽出に紛れ込む。
@@ -590,7 +593,7 @@ class Renderer:
         src = self.source[run.page]  # type: ignore[index]
         dpi = min(600.0, max(150.0, image_dpi(src)))
         try:
-            pix = src.get_pixmap(clip=pymupdf.Rect(run.bbox), dpi=round(dpi), alpha=False)
+            pix = src.get_pixmap(clip=pymupdf.Rect(box), dpi=round(dpi), alpha=False)
             page.insert_image(target, pixmap=pix, keep_proportion=False, overlay=True)
         except Exception:
             log.warning("page %d: could not place inline math", page.number + 1, exc_info=True)
@@ -609,12 +612,24 @@ class Renderer:
             taken: set[int] = set()
             for run, pr in items:
                 zone = inflate(run.bbox, 0.8)  # type: ignore[arg-type]
+                # 分数の横線は分子・分母の文字より少し長いことがあるので、細い横線は左右に字の 1/4 まで許す
+                reach = max(0.8, (run.base_size or 10.0) * 0.25)
+                wide = (run.bbox[0] - reach, zone[1], run.bbox[2] + reach, zone[3])  # type: ignore[index]
                 for i, d in enumerate(drawings):
                     r = tuple(d["rect"])
-                    if i in taken or not (zone[0] <= r[0] and zone[1] <= r[1] and r[2] <= zone[2] and r[3] <= zone[3]):
+                    if i in taken:
+                        continue
+                    inside = zone[0] <= r[0] and zone[1] <= r[1] and r[2] <= zone[2] and r[3] <= zone[3]
+                    bar = r[3] - r[1] < 1.0 and wide[0] <= r[0] and wide[1] <= r[1] and r[2] <= wide[2] and r[3] <= wide[3]
+                    if not (inside or bar):
                         continue
                     taken.add(i)
                     found.append(({**d, "_page": pno}, run, pr))
+                    if bar and (r[0] < run.bbox[0] or r[2] > run.bbox[2]):  # type: ignore[index]
+                        # 移すときの切り抜きを、文字の範囲からはみ出した横線の端まで広げる（左右だけ）
+                        w = (d.get("width") or 1.0) / 2
+                        box = self._extent.get(id(run), run.bbox)
+                        self._extent[id(run)] = (min(box[0], r[0] - w), box[1], max(box[2], r[2] + w), box[3])  # type: ignore[index]
         return found
 
     @staticmethod

@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 
 import pymupdf
 
+from .extract import TEXT_FLAGS
 from .fontbook import FontBook, FontRole
 from .layout import Frame, LayoutResult, PlacedGlyphs, PlacedRun, layout
 from .markup import parse, to_plain
@@ -22,14 +23,16 @@ from .models import (
     PageAnalysis,
     Rect,
     Region,
+    RestoreGlyph,
     Segment,
     erase_rect,
     inflate,
     rect_area,
     rect_intersect,
+    rect_union,
 )
 from .options import RenderOptions
-from .redact import erase_text, stub_forms
+from .redact import apply_redactions, erase_text, stub_forms
 from .scan import cover, cover_rect, image_dpi, is_scanned, paper_color
 from .textnorm import normalize_translation
 
@@ -51,6 +54,8 @@ class RenderReport:
     segments: list[SegmentReport] = field(default_factory=list)
     # 訳文が収まらない・他の訳文と重なるため、原文のまま残した段落
     kept_original: list[SegmentReport] = field(default_factory=list)
+    # 消去に巻き込まれた翻訳対象外の記号を、原文から戻せなかったページ（0 始まり）
+    restore_failed: list[int] = field(default_factory=list)
 
     @property
     def shrunk(self) -> list[SegmentReport]:
@@ -103,6 +108,24 @@ def _overlapping(layouts: list[tuple[Segment, LayoutResult]]) -> set[str]:
                 if w > 1.0 and h > line * 0.3:
                     out.update((sid, sid2))
     return out
+
+
+def _same_rect(a: Rect, b: Rect, tol: float = 0.3) -> bool:
+    return all(abs(x - y) <= tol for x, y in zip(a, b))
+
+
+def _restore_box(glyph: RestoreGlyph) -> Rect:
+    """戻す字形の切り抜き範囲。字の輪郭から求めた範囲はぎりぎりなので、にじみの分だけ少し広げる
+    （縦に積んだ大きな括弧の部品の継ぎ目が欠けないように）。"""
+    return inflate(glyph.ink, 0.5)
+
+
+def _run_target(run: InlineRun, pr: PlacedRun, box: Rect | None = None) -> Rect:
+    """段落中の数式（の box の範囲。省略時は文字の範囲）を移した先の範囲。"""
+    x0, y0, x1, y1 = box or run.bbox  # type: ignore[misc]
+    ox, oy = run.origin  # type: ignore[misc]
+    f = pr.factor
+    return (pr.x + (x0 - ox) * f, pr.baseline + (y0 - oy) * f, pr.x + (x1 - ox) * f, pr.baseline + (y1 - oy) * f)
 
 
 def _complement(page: Rect, keep: list[Rect]) -> list[Rect]:
@@ -186,7 +209,10 @@ def _expand(region: Region, geo: PageGeometry, own_blocks: set[int], horizontal:
             x1 = max(x1, right_limit)
 
     if vertical:
-        below = [o[1] for o in obstacles if o[1] >= y1 - 0.5 and o[0] < x1 - 0.5 and o[2] > x0 + 0.5]
+        # 下にある障害物。上端が枠の下端より少し上にはみ出しているもの（表の隣の行など）も含め、その場合は広げない
+        below = [
+            max(o[1], y1) for o in obstacles if o[3] > y1 + 0.5 and o[1] > y0 + 0.5 and o[0] < x1 - 0.5 and o[2] > x0 + 0.5
+        ]
         bottom = min(below + [geo.content[3] + 0.5])
         limit = y1 + region.style.line_pitch * 3
         y1 = max(y1, min(bottom - size * 0.5, limit))
@@ -212,6 +238,10 @@ class Renderer:
         self._regions_by_page: dict[int, list[tuple[str, Rect]]] = {}
         self._pa = {pa.page: pa for pa in analysis.pages}
         self._scanned: dict[int, bool] = {}
+        self.restore_failed: list[int] = []  # 消去に巻き込まれた記号を戻せなかったページ
+        self._trial: pymupdf.Document | None = None  # 記号を貼れるかを試すための文書
+        # 段落中の数式を移すときの切り抜きの範囲（文字の範囲より長い分数の横線などを含めたもの）
+        self._extent: dict[int, Rect] = {}
 
     def geometry(self, pno: int) -> PageGeometry:
         if pno not in self._geo:
@@ -335,6 +365,10 @@ class Renderer:
             layouts.append((seg, self.layout_segment(seg)))
         # 収まらない（末尾の行が描かれない）段落と、訳文が他の訳文と重なる段落は、原文のまま残す（迷ったら訳さない）
         keep = {seg.id for seg, result in layouts if not result.fits} | _overlapping(layouts)
+        # 消去に巻き込まれる字形を戻すとき、戻した字形が訳文と重なるなら、その段落は原文のまま残す
+        restores, clash = self._restores([(seg, r) for seg, r in layouts if seg.id not in keep])
+        keep |= clash
+        restores = [(pno, g) for pno, g, sid in restores if sid not in keep]
         for seg, result in layouts:
             if seg.id in keep:
                 log.warning("render %s: translation does not fit or overlaps; kept the original", seg.id)
@@ -362,7 +396,7 @@ class Renderer:
 
         # 数式に付随するベクター線（根号の上線・分数の横線など）を数式と一緒に移動する
         vectors = self._collect_inline_vectors(moves)
-        stamps = self._make_stamps(transplants)
+        stamps = self._make_stamps(transplants, restores)
 
         for pno in sorted(self._pa):
             if should_cancel and should_cancel():
@@ -389,15 +423,113 @@ class Renderer:
             for run, pr in transplants:
                 if pr.page == pno:
                     self._transplant(page, run, pr, stamps)
+            self._restore(page, [g for rpno, g in restores if rpno == pno], stamps)
             done += 1
             if progress:
                 progress(done, total)
+        report.restore_failed = sorted(set(self.restore_failed))
         return report
 
     def _can_transplant(self, run: InlineRun) -> bool:
         return self.source is not None and run.bbox is not None and run.origin is not None and run.page is not None
 
-    def _make_stamps(self, transplants: list[tuple[InlineRun, PlacedRun]]) -> dict[int, tuple[pymupdf.Document, int]]:
+    def _restores(
+        self, layouts: list[tuple[Segment, LayoutResult]]
+    ) -> tuple[list[tuple[int, RestoreGlyph, str]], set[str]]:
+        """描く段落の消去に巻き込まれる字形 (ページ, 字形, 段落) と、戻す字形が訳文と重なる段落の集まり。"""
+        owner: dict[tuple[int, int], str] = {}
+        for seg, _ in layouts:
+            for r in seg.regions:
+                owner[(r.page, r.block_index)] = seg.id
+        drawn: dict[int, list[Rect]] = defaultdict(list)
+        for seg, result in layouts:
+            for pno, rect in result.used:
+                drawn[pno].append(rect)
+            for pr in result.runs:
+                run = seg.runs.get(pr.run_id)
+                if run is not None and run.bbox is not None and run.origin is not None:
+                    drawn[pr.page].append(_run_target(run, pr))
+        found: list[tuple[int, RestoreGlyph, str]] = []
+        clash: set[str] = set()
+        for pno, pa in self._pa.items():
+            for g in pa.restore:
+                sid = owner.get((pno, g.block_index))
+                if sid is None:
+                    continue
+                box = _restore_box(g)
+                if (
+                    self.source is None
+                    or any(rect_area(rect_intersect(box, inflate(d, 0.3))) > 0 for d in drawn[pno])
+                    or not self._can_restore(pno, box)
+                ):
+                    log.warning("render %s: a kept glyph would be lost or overlapped; kept the original", sid)
+                    clash.add(sid)
+                    continue
+                found.append((pno, g, sid))
+        return found, clash
+
+    def _can_restore(self, pno: int, box: Rect) -> bool:
+        """原文から字形を切り抜いて貼れるか、消す前に試す（貼れないまま消すと記号が失われるため）。"""
+        try:
+            if self._trial is None:
+                self._trial = pymupdf.open()
+            trial = self._trial
+            if trial.page_count > 50:  # 試しに貼ったページが溜まらないよう、ときどき作り直す
+                trial = self._trial = pymupdf.open()
+            page = trial.new_page(width=self.source[pno].rect.width, height=self.source[pno].rect.height)  # type: ignore[index]
+            r = pymupdf.Rect(box)
+            page.show_pdf_page(r, self.source, pno, clip=r, keep_proportion=False, overlay=True)
+            return True
+        except Exception:
+            log.debug("page %d: cannot restore kept glyphs", pno + 1, exc_info=True)
+            return False
+
+    def _restore(
+        self, page: pymupdf.Page, glyphs: list[RestoreGlyph], stamps: dict[int, tuple[pymupdf.Document, int]]
+    ) -> None:
+        """消去に巻き込まれて消えた翻訳対象外の字形を、元の文書から切り抜いて同じ位置に戻す。
+
+        同じスパンの字形（縦に積んだ括弧の部品など）は、継ぎ目が出ないよう 1 つの範囲にまとめて戻す。
+        """
+        if not glyphs or self.scanned(page.number):
+            return
+        boxes: dict[Rect, Rect] = {}
+        for g in glyphs:
+            if self._glyph_lost(page, g):
+                box = _restore_box(g)
+                boxes[g.span] = rect_union(boxes[g.span], box) if g.span in boxes else box
+        sources = [stamps.get(page.number, (self.source, page.number)), (self.source, page.number)]
+        for box in boxes.values():
+            r = pymupdf.Rect(box)
+            for src_doc, src_page in sources:  # 切り抜き用のページで失敗したら、元の文書から直接貼る
+                try:
+                    page.show_pdf_page(r, src_doc, src_page, clip=r, keep_proportion=False, overlay=True)
+                    break
+                except Exception:
+                    log.debug("page %d: could not restore a kept glyph", page.number + 1, exc_info=True)
+            else:
+                log.warning("page %d: could not restore a kept glyph", page.number + 1)
+                self.restore_failed.append(page.number)
+
+    @staticmethod
+    def _glyph_lost(page: pymupdf.Page, glyph: RestoreGlyph) -> bool:
+        """字形が消えたか。元の字形と同じ文字が、同じ原点に残っていなければ消えている。"""
+        if glyph.origin is None:
+            return False
+        gx, gy = glyph.origin
+        data = page.get_text("rawdict", flags=TEXT_FLAGS, clip=pymupdf.Rect(inflate(glyph.span, 1.0)))
+        for b in data["blocks"]:
+            for ln in b.get("lines", ()):
+                for sp in ln["spans"]:
+                    for c in sp.get("chars", ()):
+                        x, y = c["origin"]
+                        if c["c"] == glyph.text and abs(x - gx) < 0.5 and abs(y - gy) < 0.5:
+                            return False
+        return True
+
+    def _make_stamps(
+        self, transplants: list[tuple[InlineRun, PlacedRun]], restores: list[tuple[int, RestoreGlyph]] = ()
+    ) -> dict[int, tuple[pymupdf.Document, int]]:
         """数式の部分だけを残した「切り抜き用のページ」を作る。
 
         元のページをそのまま貼り込むと、切り抜きで隠れた部分（図の大量の図形など）も PDF に残り、
@@ -407,7 +539,10 @@ class Renderer:
         by_page: dict[int, list[Rect]] = defaultdict(list)
         for run, _pr in transplants:
             if not self.scanned(run.page):  # type: ignore[arg-type]
-                by_page[run.page].append(inflate(run.bbox, 1.0))  # type: ignore[arg-type]
+                by_page[run.page].append(inflate(self._extent.get(id(run), run.bbox), 1.0))  # type: ignore[arg-type]
+        for pno, glyph in restores:
+            if not self.scanned(pno):
+                by_page[pno].append(inflate(glyph.span, 1.0))
         if not by_page or self.source is None:
             return {}
         stamp_doc = pymupdf.open()
@@ -420,7 +555,8 @@ class Renderer:
             stub_forms(stamp_doc, sp)
             for r in _complement(tuple(sp.rect), keep):
                 sp.add_redact_annot(pymupdf.Rect(r), fill=False, cross_out=False)
-            sp.apply_redactions(
+            apply_redactions(
+                sp,
                 images=pymupdf.PDF_REDACT_IMAGE_REMOVE,
                 graphics=pymupdf.PDF_REDACT_LINE_ART_REMOVE_IF_TOUCHED,
                 text=pymupdf.PDF_REDACT_TEXT_REMOVE,
@@ -436,22 +572,20 @@ class Renderer:
         字形・分数の線・根号のほか、文字コードの対応が分からない記号（Δ など）も正しく再現できる。
         配置した部分の外側は切り抜かれ、文字の抽出にも含まれない。
         """
-        x0, y0, x1, y1 = run.bbox  # type: ignore[misc]
-        ox, oy = run.origin  # type: ignore[misc]
-        f = pr.factor
-        target = pymupdf.Rect(pr.x + (x0 - ox) * f, pr.baseline + (y0 - oy) * f, pr.x + (x1 - ox) * f, pr.baseline + (y1 - oy) * f)
+        box = self._extent.get(id(run), run.bbox)
+        target = pymupdf.Rect(_run_target(run, pr, box))  # type: ignore[arg-type]
         if target.is_empty:
             return
         if self.scanned(run.page):  # type: ignore[arg-type]
-            self._transplant_scanned(page, run, target)
+            self._transplant_scanned(page, run, target, box)  # type: ignore[arg-type]
             return
         src_doc, src_page = stamps.get(run.page, (self.source, run.page))  # type: ignore[arg-type]
         try:
-            page.show_pdf_page(target, src_doc, src_page, clip=pymupdf.Rect(run.bbox), keep_proportion=False, overlay=True)
+            page.show_pdf_page(target, src_doc, src_page, clip=pymupdf.Rect(box), keep_proportion=False, overlay=True)
         except Exception:
             log.warning("page %d: could not place inline math", page.number + 1, exc_info=True)
 
-    def _transplant_scanned(self, page: pymupdf.Page, run: InlineRun, target: pymupdf.Rect) -> None:
+    def _transplant_scanned(self, page: pymupdf.Page, run: InlineRun, target: pymupdf.Rect, box: Rect) -> None:
         """スキャンしたページの数式は、画像の該当部分を切り出して配置する。
 
         ページをそのまま貼り込むと、透明な OCR テキストも一緒に入り、文字の抽出に紛れ込む。
@@ -459,7 +593,7 @@ class Renderer:
         src = self.source[run.page]  # type: ignore[index]
         dpi = min(600.0, max(150.0, image_dpi(src)))
         try:
-            pix = src.get_pixmap(clip=pymupdf.Rect(run.bbox), dpi=round(dpi), alpha=False)
+            pix = src.get_pixmap(clip=pymupdf.Rect(box), dpi=round(dpi), alpha=False)
             page.insert_image(target, pixmap=pix, keep_proportion=False, overlay=True)
         except Exception:
             log.warning("page %d: could not place inline math", page.number + 1, exc_info=True)
@@ -478,25 +612,55 @@ class Renderer:
             taken: set[int] = set()
             for run, pr in items:
                 zone = inflate(run.bbox, 0.8)  # type: ignore[arg-type]
+                # 分数の横線は分子・分母の文字より少し長いことがあるので、細い横線は左右に字の 1/4 まで許す
+                reach = max(0.8, (run.base_size or 10.0) * 0.25)
+                wide = (run.bbox[0] - reach, zone[1], run.bbox[2] + reach, zone[3])  # type: ignore[index]
                 for i, d in enumerate(drawings):
                     r = tuple(d["rect"])
-                    if i in taken or not (zone[0] <= r[0] and zone[1] <= r[1] and r[2] <= zone[2] and r[3] <= zone[3]):
+                    if i in taken:
+                        continue
+                    inside = zone[0] <= r[0] and zone[1] <= r[1] and r[2] <= zone[2] and r[3] <= zone[3]
+                    bar = r[3] - r[1] < 1.0 and wide[0] <= r[0] and wide[1] <= r[1] and r[2] <= wide[2] and r[3] <= wide[3]
+                    if not (inside or bar):
                         continue
                     taken.add(i)
                     found.append(({**d, "_page": pno}, run, pr))
+                    if bar and (r[0] < run.bbox[0] or r[2] > run.bbox[2]):  # type: ignore[index]
+                        # 移すときの切り抜きを、文字の範囲からはみ出した横線の端まで広げる（左右だけ）
+                        w = (d.get("width") or 1.0) / 2
+                        box = self._extent.get(id(run), run.bbox)
+                        self._extent[id(run)] = (min(box[0], r[0] - w), box[1], max(box[2], r[2] + w), box[3])  # type: ignore[index]
         return found
 
     @staticmethod
     def _erase_vectors(page: pymupdf.Page, drawings: list[dict]) -> None:
-        for d in drawings:
-            r = pymupdf.Rect(d["rect"])
-            w = (d.get("width") or 1.0) / 2 + 0.3
-            page.add_redact_annot(pymupdf.Rect(r.x0 - w, r.y0 - w, r.x1 + w, r.y1 + w), fill=False, cross_out=False)
-        page.apply_redactions(
-            images=pymupdf.PDF_REDACT_IMAGE_NONE,
-            graphics=pymupdf.PDF_REDACT_LINE_ART_REMOVE_IF_COVERED,
-            text=pymupdf.PDF_REDACT_TEXT_NONE,
-        )
+        """drawings（移す数式の線など）を消す。
+
+        MuPDF は、並んだ複数の線を 1 回の消去でまとめて消せず、一部が残ることがある（2 本の太い横線のうち
+        1 本だけが消える）。残ったものだけを指定し直して、消えなくなるまで繰り返す。
+        """
+        remaining = list(drawings)
+        for _ in range(8):
+            for d in remaining:
+                r = pymupdf.Rect(d["rect"])
+                w = (d.get("width") or 1.0) / 2 + 0.3
+                page.add_redact_annot(pymupdf.Rect(r.x0 - w, r.y0 - w, r.x1 + w, r.y1 + w), fill=False, cross_out=False)
+            apply_redactions(
+                page,
+                images=pymupdf.PDF_REDACT_IMAGE_NONE,
+                graphics=pymupdf.PDF_REDACT_LINE_ART_REMOVE_IF_COVERED,
+                text=pymupdf.PDF_REDACT_TEXT_NONE,
+            )
+            if len(remaining) < 2:  # 1 本だけなら 1 回で消える（確かめるためにページ全体の図形を読まない）
+                return
+            try:
+                now = [tuple(x["rect"]) for x in page.get_cdrawings()]
+            except Exception:
+                return
+            left = [d for d in remaining if any(_same_rect(tuple(d["rect"]), r) for r in now)]
+            if not left or len(left) == len(remaining):
+                return
+            remaining = left
 
     @staticmethod
     def _redraw(page: pymupdf.Page, d: dict, run: InlineRun, pr: PlacedRun) -> None:

@@ -10,6 +10,7 @@ from dataclasses import dataclass, replace
 from .fonts import base_name, decode_symbol_font, is_math_font, is_math_span, is_sans_font
 from .markup import BOLD_CLOSE, BOLD_OPEN, escape, placeholder, to_plain
 from .models import (
+    LINE_ART_FONT,
     Align,
     BlockDecision,
     BlockKind,
@@ -144,7 +145,7 @@ def _pieces_for_line(line: Line, base_size: float, body_font: str, has_math: boo
         prev = span
         raised = abs(span.origin[1] - baseline) > base_size * 0.15
         small = span.size < base_size * 0.8
-        math = is_math_font(span.font) or (
+        math = span.font == LINE_ART_FONT or is_math_font(span.font) or (
             is_math_span(span.font, span.text, body_font) and (has_math or len(span.text.strip()) <= 4)
         )
         if math or (raised and small):
@@ -351,6 +352,10 @@ def _continues(prev: _Unit, nxt: _Unit) -> bool:
     if nxt.region.page - prev.region.page > 1:
         return False
     if _SENTENCE_END.search(prev.markup):
+        return False
+    # 記号表の項目（記号で始まる 1 行）どうし。段の最後の項目と次の段の最初の項目は別の項目
+    one_line = all(u.region.rect[3] - u.region.rect[1] <= u.region.style.size * 2 for u in (prev, nxt))
+    if one_line and prev.markup.startswith("<x") and nxt.markup.startswith("<x"):
         return False
     head = to_plain(nxt.markup).lstrip()
     # 文の途中で切れた段落の続き: 小文字・数式で始まるか、括弧で始まる（"… profile" の次ページが "(3–7 K rather …"）

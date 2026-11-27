@@ -323,8 +323,29 @@ def _all_bold(ln: Line) -> bool:
     return bool(spans) and all(s.is_bold for s in spans)
 
 
+_EQUATION_NUMBER_LINE = re.compile(r"^\s*\(\s*\d{1,3}(\.\d{1,3}){0,2}[a-z]?\s*\)\s*$")
+
+
+def _equation_number_line(ln: Line, others: list[Line]) -> bool:
+    """式番号だけの行（"(6.80)"）が、段落の右端に置かれているか。
+
+    長い式の番号が、式の下の行に送られて次の段落と 1 つのブロックにまとめられることがある。
+    段落の一部として訳すと、番号が訳文に置き換わって消えるので切り離す。
+    """
+    if not others or not _EQUATION_NUMBER_LINE.match(ln.text):
+        return False
+    left = min(o.bbox[0] for o in others)
+    right = max(o.bbox[2] for o in others)
+    return ln.bbox[0] > (left + right) / 2 and ln.bbox[2] >= right - _line_size(ln) * 2
+
+
 def _split_block(lines: list[Line]) -> list[list[Line]]:
     """1 ブロック内に見出しと本文など性質の異なる行が混在する場合に分割する。"""
+    # 先頭・末尾の、式番号だけの行を切り離す
+    if len(lines) > 1 and _equation_number_line(lines[0], lines[1:]):
+        return [[lines[0]], *_split_block(lines[1:])]
+    if len(lines) > 1 and _equation_number_line(lines[-1], lines[:-1]):
+        return [*_split_block(lines[:-1]), [lines[-1]]]
     # 先頭の見出しの行を 1 行ずつ切り離す（見出しらしい行が続く PDF でも再帰が深くならないよう、繰り返しで行う）
     heads: list[list[Line]] = []
     while len(lines) > 1 and _heading_first_line(lines):

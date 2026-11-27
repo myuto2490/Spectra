@@ -39,7 +39,9 @@ def test_clean_device_name(raw, expected):
     assert clean_device_name(raw) == expected
 
 
-def test_default_name_does_not_use_hostname(tmp_path):
+def test_default_name_does_not_use_hostname(tmp_path, monkeypatch):
+    # 実機のホスト名が "Mac" のように短いと、既定の名前（"Mac（xxxx）"）に含まれてしまうので、固有のホスト名にする
+    monkeypatch.setattr(platform, "node", lambda: "taro-secret-pc.local")
     info = load_device(tmp_path / "device.json")
     assert info.name == default_name(info.id)
     host = platform.node()

@@ -126,3 +126,23 @@ def test_bold_tokens_use_bold_fonts(fonts):
     assert by_text["Results."].role.name == "LATIN_BOLD"
     assert by_text["結"].role.name == "JP_BOLD"  # 同梱の Noto Sans JP Bold
     assert by_text["本"].role.name == "JP" and not by_text["本"].bold
+
+
+def test_frame_is_not_grown_into_the_next_table_row_that_starts_just_above_its_bottom():
+    """表のセル（狭い枠）の下に、上端がわずかに枠へ食い込んだ次の行があるときは、下へ広げない。"""
+    from spectra.core.models import Region
+    from spectra.core.render import PageGeometry, _expand
+
+    st = style(size=10.0, pitch=12.0)
+    region = Region(page=0, rect=(141, 257, 177, 282), line_rects=[(141, 257, 162, 270), (141, 269, 177, 282)],
+                    style=st, source_chars=15, block_index=8)
+    geo = PageGeometry.__new__(PageGeometry)
+    geo.page_rect = (0, 0, 595, 842)
+    geo.blocks = [(8, region.rect), (10, (141, 280, 441, 295))]  # 次の行（上端 280 が枠の下端 282 より上）
+    geo.others = []
+    geo.content = (139, 150, 473, 760)
+    grown = _expand(region, geo, {8}, horizontal=False, vertical=True)
+    assert grown[3] <= 282
+    # 次の行が十分下にあれば、従来どおり下へ広げる
+    geo.blocks = [(8, region.rect), (10, (141, 330, 441, 345))]
+    assert _expand(region, geo, {8}, horizontal=False, vertical=True)[3] > 282

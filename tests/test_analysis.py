@@ -722,3 +722,475 @@ def test_table_sentence_in_label_font_position_is_not_caption():
     # 番号の後が小文字で続く文（"Table 1 shows …"）は、ラベルの書式でもキャプションにしない
     a = analyze_document(_elsevier_table_page("Table 1", "shows the wind speed of Titan."))
     assert _find(a, "shows the wind speed").kind != BlockKind.CAPTION
+
+
+def _book_chapter(pages: int = 5) -> pymupdf.Document:
+    """余白の広い本の章（概要が無く、柱がページの上端から離れている）。"""
+    from pdf_factory import BODY, BOLD, LOREM, write_paragraph
+
+    doc = pymupdf.open()
+    for i in range(pages):
+        page = doc.new_page(width=595, height=842)
+        if i == 0:
+            page.insert_text((140, 200), "6", fontname=BOLD, fontsize=24)
+            page.insert_text((140, 230), "Transfer of Things", fontname=BODY, fontsize=18)
+            page.insert_text((140, 320), "6.1   Optical Properties of a Mixed Volume", fontname=BOLD, fontsize=12)
+            y = 345
+        else:
+            if i % 2:
+                page.insert_text((140, 160), f"{115 + i}", fontname=BODY, fontsize=10)
+                page.insert_text((320, 160), "A Primer on Transfer", fontname=BODY, fontsize=10)
+            else:
+                page.insert_text((140, 160), "Transfer of Things", fontname=BODY, fontsize=10)
+                page.insert_text((460, 160), f"{115 + i}", fontname=BODY, fontsize=10)
+            y = 172  # 柱のすぐ下から本文（抽出で柱と 1 つのブロックにまとめられやすい）
+        write_paragraph(page, (140, 473), y, LOREM, 6)
+    return doc
+
+
+def test_numbered_section_heading_on_the_first_page_is_not_taken_as_authors():
+    a = analyze_document(_book_chapter())
+    heading = _find(a, "Optical Properties of a Mixed")
+    assert heading.translate and heading.kind == BlockKind.HEADING
+
+
+def test_running_headers_far_from_the_page_edge_are_found_by_repetition():
+    a = analyze_document(_book_chapter(7))
+    for pa in a.pages[1:]:
+        top = min(pa.decisions, key=lambda d: d.block.bbox[1])
+        assert top.skip == SkipReason.RUNNING_HEADER, pa.page
+        assert len(top.block.lines) == 1  # 下の段落とは別のブロック
+        body = [d for d in pa.decisions if d.translate]
+        assert body and all("Primer" not in d.block.text and "Things" not in d.block.text for d in body)
+    # 1 ページ目の大きな章題は、柱と同じ文言でも訳す
+    first = a.pages[0]
+    assert any(d.translate and "Transfer of Things" in d.block.text for d in first.decisions)
+
+
+def test_numbered_first_line_repeated_on_every_page_is_not_a_running_header():
+    """各ページの先頭が "Problem 1" "Problem 2" … で、普通の行間で段落に続くなら、柱として切り離さずに訳す。"""
+    from pdf_factory import BODY, LOREM, write_paragraph
+
+    doc = pymupdf.open()
+    for n in range(1, 6):
+        page = doc.new_page(width=595, height=842)
+        page.insert_text((140, 200), f"Problem {n} Show that the following relation holds for any medium", fontname=BODY, fontsize=10)
+        write_paragraph(page, (140, 473), 212, LOREM, 4)
+    a = analyze_document(doc)
+    for pa in a.pages:
+        top = min(pa.decisions, key=lambda d: d.block.bbox[1])
+        assert top.translate and len(top.block.lines) > 1, pa.page
+
+
+def test_equation_number_pushed_below_a_long_equation_is_not_merged_into_the_next_paragraph():
+    from pdf_factory import BODY, LOREM, write_paragraph
+
+    doc = pymupdf.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_text((200, 300), "R = A + B + C + D + E", fontname="symb", fontsize=10)
+    page.insert_text((449, 312), "(6.80)", fontname=BODY, fontsize=10)  # 式の下の行に送られた式番号
+    write_paragraph(page, (140, 473), 324, LOREM, 3)
+    a = analyze_document(doc)
+    number = _find(a, "(6.80)")
+    assert not number.translate and len(number.block.lines) == 1
+    para = _find(a, "Deep neural networks")
+    assert para.translate and "(6.80)" not in para.block.text
+
+
+def _frag_span(text, font, size, x0, y_base, width=None):
+    from spectra.core.models import Span
+
+    w = width if width is not None else len(text) * size * 0.5
+    return Span(text, font, size, 0, 0, (x0, y_base - size * 0.8, x0 + w, y_base + size * 0.2), (x0, y_base))
+
+
+def _fragment_block(lines):
+    from spectra.core.models import Line, TextBlock
+
+    ls = []
+    for spans in lines:
+        box = (min(s.bbox[0] for s in spans), min(s.bbox[1] for s in spans), max(s.bbox[2] for s in spans), max(s.bbox[3] for s in spans))
+        ls.append(Line(spans=spans, bbox=box))
+    bbox = (min(ln.bbox[0] for ln in ls), min(ln.bbox[1] for ln in ls), max(ln.bbox[2] for ln in ls), max(ln.bbox[3] for ln in ls))
+    return TextBlock(page=0, index=0, bbox=bbox, lines=ls)
+
+
+def test_subscript_words_after_an_accented_variable_are_math():
+    """分母 "β_particle ω˜_particle" の添字の単語を本文の単語と数えない（"˜" は別のスパンで置かれる）。"""
+    from spectra.core.classify import _subscripts
+
+    after_accent = _frag_span("particle", "Times-Roman", 7, 316, 713, 21)
+    block = _fragment_block([[
+        _frag_span("β", "rtxmi", 10, 280, 710, 6),
+        _frag_span("particle", "Times-Roman", 7, 286, 713, 21),
+        _frag_span("ω", "rtxmi", 10, 310, 710, 6),
+        _frag_span("˜", "Times-Roman", 10, 310, 708, 4),
+        after_accent,
+    ]])
+    assert id(after_accent) in _subscripts(block)
+
+
+def test_subscript_on_a_line_split_off_at_the_same_height_is_math():
+    """上付きと下付きが重なる位置で行が分けられ、次の行が下付きの単語から始まる（"β^ext" / "_particle + β^ext"）。"""
+    from spectra.core.classify import _subscripts
+
+    split = _frag_span("particle", "Times-Roman", 7, 267, 647, 21)
+    block = _fragment_block([
+        [_frag_span("+", "rtxr", 10, 253, 644, 6), _frag_span("β", "rtxmi", 10, 260, 644, 7), _frag_span("ext", "Times-Roman", 7, 267, 640, 8)],
+        [split, _frag_span("+", "rtxr", 10, 291, 644, 6), _frag_span("β", "rtxmi", 10, 297, 644, 7), _frag_span("ext", "Times-Roman", 7, 304, 640, 8)],
+    ])
+    assert id(split) in _subscripts(block)
+    # 下の別の行（前の行の右端から続かない行）の先頭の小さな単語は、添字としない
+    below = _frag_span("note", "Times-Roman", 7, 140, 700, 14)
+    block = _fragment_block([[_frag_span("β", "rtxmi", 10, 260, 644, 7), _frag_span("ext", "Times-Roman", 7, 267, 640, 8)], [below]])
+    assert id(below) not in _subscripts(block)
+
+
+def test_equation_number_with_a_chapter_prefix_marks_an_equation_fragment():
+    from spectra.core.classify import _EQUATION_NUMBER
+
+    assert _EQUATION_NUMBER.search("gas(6.4)")
+    assert _EQUATION_NUMBER.search("x (2.10b)")
+    assert _EQUATION_NUMBER.search("y (7)")
+
+
+def test_upright_fragments_inside_a_display_equation_are_math():
+    """分数の分子 "hc" や、式の右の "[isotropic] (3.90)" は数式の一部として訳さない。"""
+    from pdf_factory import BODY, LOREM, write_paragraph
+
+    doc = pymupdf.open()
+    page = doc.new_page(width=595, height=842)
+    write_paragraph(page, (140, 473), 200, LOREM, 3)
+    page.insert_text((300, 300), "hc", fontname=BODY, fontsize=10)  # 分子（立体の英字）
+    page.insert_text((290, 314), "l = k + m", fontname="symb", fontsize=10)  # 分母（数式フォント）
+    page.insert_text((360, 340), "a = b + c", fontname="symb", fontsize=10)
+    page.insert_text((420, 340), "[isotropic] (3.90)", fontname=BODY, fontsize=10)
+    write_paragraph(page, (140, 473), 380, LOREM, 3)
+    a = analyze_document(doc)
+    assert _find(a, "hc").skip == SkipReason.MATH
+    assert _find(a, "[isotropic]").skip == SkipReason.MATH
+    assert all(d.translate for d in _decisions(a) if "Deep neural" in d.block.text)
+
+
+def test_capitalized_connective_below_a_display_equation_is_translated():
+    """式の真下で左右に重なる 1 語の "Hence" "Thus" も、文のつなぎとして訳す。"""
+    from spectra.core.classify import _has_prose_word
+
+    assert _has_prose_word("Hence") and _has_prose_word("Thus") and _has_prose_word("Then")
+    assert not _has_prose_word("hc kB T") and not _has_prose_word("dLi") and not _has_prose_word("[isotropic] (3.90)")
+
+
+def test_prose_word_beside_a_display_equation_is_still_translated():
+    """行列の左の "where" や箇条書きの "underconstrained m < n" は、数式と同じ高さでも本文。"""
+    from spectra.core.classify import BlockStats, _absorb_equation_fragments
+    from spectra.core.models import BlockDecision, TextBlock
+
+    def block(index, spans):
+        b = _fragment_block([spans])
+        return TextBlock(page=0, index=index, bbox=b.bbox, lines=b.lines)
+
+    matrix = block(0, [_frag_span("S", "rtxmi", 10, 220, 400, 6), _frag_span("0", "rtxr", 10, 240, 400, 6)])
+    where = block(1, [_frag_span("where", "Times-Roman", 10, 180, 400, 24)])
+    bullet = block(2, [_frag_span("well-posed", "Times-Roman", 10, 180, 412, 45), _frag_span("m", "rtxmi", 10, 228, 412, 6)])
+    numerator = block(3, [_frag_span("hc", "Times-Roman", 10, 222, 390, 10)])
+    decisions = [
+        BlockDecision(matrix, BlockKind.BODY, SkipReason.MATH),
+        BlockDecision(where, BlockKind.BODY, None),
+        BlockDecision(bullet, BlockKind.BODY, None),
+        BlockDecision(numerator, BlockKind.BODY, None),
+    ]
+    stats = {b.index: BlockStats(b) for b in (matrix, where, bullet, numerator)}
+    _absorb_equation_fragments(decisions, stats, 10.0)
+    assert decisions[1].translate and decisions[2].translate
+    assert decisions[3].skip == SkipReason.MATH
+
+
+def test_equation_with_a_chapter_number_in_a_text_font_is_math():
+    """式と同じ高さの "M or E (3.11)" "[dimensionless] (3.119)" "(B.22) dx" は数式。式と並ばない同じ形の行は訳す。"""
+    from spectra.core.classify import BlockStats, _absorb_equation_fragments
+    from spectra.core.models import BlockDecision, TextBlock
+
+    def block(index, spans):
+        b = _fragment_block([spans])
+        return TextBlock(page=0, index=index, bbox=b.bbox, lines=b.lines)
+
+    equation = block(0, [_frag_span("=", "rtxr", 10, 200, 300, 6), _frag_span("∂Φ", "rtxmi", 10, 210, 300, 12)])
+    beside = block(1, [_frag_span("M or E", "Times-Roman", 10, 160, 300, 30), _frag_span("(3.11)", "Times-Roman", 10, 440, 300, 24)])
+    unit = block(2, [_frag_span("[dimensionless]", "Times-Roman", 10, 240, 300, 60)])
+    alone = block(3, [_frag_span("M or E", "Times-Roman", 10, 140, 500, 30), _frag_span("(3.11)", "Times-Roman", 10, 180, 500, 24)])
+    decisions = [BlockDecision(equation, BlockKind.BODY, SkipReason.MATH)] + [
+        BlockDecision(b, BlockKind.BODY, None) for b in (beside, unit, alone)
+    ]
+    stats = {b.index: BlockStats(b) for b in (equation, beside, unit, alone)}
+    _absorb_equation_fragments(decisions, stats, 10.0)
+    assert decisions[1].skip == SkipReason.MATH and decisions[2].skip == SkipReason.MATH
+    assert decisions[3].translate
+
+
+def test_body_line_citing_a_number_without_an_equation_beside_it_is_translated():
+    """数式と並ばない 1 行の "Bond albedo (0.77)" "See Eq. (3.4)" "Appendix (A.1)" は本文。"""
+    from pdf_factory import BODY, LOREM, write_paragraph
+
+    doc = pymupdf.open()
+    page = doc.new_page(width=595, height=842)
+    write_paragraph(page, (140, 473), 200, LOREM, 3)
+    for i, line in enumerate(["Bond albedo (0.77)", "See Eq. (3.4)", "Appendix (A.1)"]):
+        page.insert_text((140, 270 + i * 30), line, fontname=BODY, fontsize=10)
+    write_paragraph(page, (140, 473), 400, LOREM, 3)
+    a = analyze_document(doc)
+    for line in ("Bond albedo", "See Eq.", "Appendix"):
+        assert _find(a, line).translate, line
+
+
+def test_table_of_contents_with_leaders_is_not_translated():
+    """目次の項目（リーダーとページ番号で終わる行）は訳さない。訳すと番号・リーダー・ページ番号が消える。"""
+    from pdf_factory import BODY
+
+    doc = pymupdf.open()
+    page = doc.new_page(width=595, height=842)
+    entries = [("2.1", "The Nature of Light", "11"), ("2.2", "Wave Equation", "13"), ("2.3", "Light Waves in a Vacuum", "18")]
+    for i, (num, title, pno) in enumerate(entries):
+        # 番号・題名・リーダー・ページ番号が 1 つながりの行（列の間隔が無いので、表とは判定されない）
+        page.insert_text((140, 200 + i * 12), f"{num} {title} " + ". " * 12 + pno, fontname=BODY, fontsize=10)
+    a = analyze_document(doc)
+    assert not _find(a, "Nature of Light").translate
+
+
+def test_paragraph_with_one_line_ending_in_leader_dots_is_translated():
+    """2 行の本文の 1 行目が ". . . . 3" で終わっても、目次ではない。"""
+    from pdf_factory import BODY
+
+    doc = pymupdf.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_text((140, 200), "The series continues as 1, 2, . . . . 3", fontname=BODY, fontsize=10)
+    page.insert_text((140, 212), "and so on until the remaining terms become negligible in practice.", fontname=BODY, fontsize=10)
+    a = analyze_document(doc)
+    assert _find(a, "remaining terms").translate
+
+
+def test_nomenclature_entries_are_translated_one_by_one():
+    """記号表（記号と説明の行を広い行間で並べたもの）は、項目ごとに訳す。段の最後と次の段の最初の項目もつなげない。"""
+    from pdf_factory import BODY
+
+    doc = pymupdf.open()
+    page = doc.new_page(width=595, height=842)
+    left = [("s", "Stephan-Boltzmann constant"), ("c", "velocity of light"), ("h", "Planck constant"), ("f", "azimuth angle")]
+    right = [("r", "mass density"), ("t", "optical depth"), ("w", "single scatter albedo")]
+    for col, entries in ((140, left), (320, right)):
+        for i, (sym, desc) in enumerate(entries):
+            y = 260 + i * 20  # 行間 20pt（文字の 2 倍）
+            page.insert_text((col, y), sym, fontname="symb", fontsize=10)
+            page.insert_text((col + 14, y), desc, fontname=BODY, fontsize=10)
+    a = analyze_document(doc)
+    for _, desc in left + right:
+        d = _find(a, desc)
+        assert d.translate and len(d.block.lines) == 1, desc
+    seg = next(s for s in a.segments if "azimuth" in s.source)
+    assert "mass density" not in seg.source
+
+
+def test_double_spaced_paragraph_starting_lines_with_a_is_not_split_as_nomenclature():
+    """行間の広い（ダブルスペースの）段落で、行頭が "A small" "a depth" でも、記号表として分けない。"""
+    from pdf_factory import BODY
+
+    doc = pymupdf.open()
+    page = doc.new_page(width=595, height=842)
+    lines = [
+        "A small fraction of the incident radiation is absorbed by",
+        "a depth of the atmosphere that depends on the wavelength",
+        "a mass of air that is large compared with the cloud layer",
+        "and the remainder is scattered back towards the observer.",
+    ]
+    for i, line in enumerate(lines):
+        page.insert_text((140, 200 + i * 22), line, fontname=BODY, fontsize=10)  # 行間 2.2 倍
+    a = analyze_document(doc)
+    d = _find(a, "A small fraction")
+    assert d.translate and len(d.block.lines) == 4
+
+
+def test_short_sentence_with_a_symbol_beside_equations_is_translated():
+    """数式の記号を含む短い文 "If ω = 1 then" は訳す。記号から始まる式の断片や、語が 1 つの式は訳さない。"""
+    from spectra.core.classify import BlockStats, _short_sentence
+
+    sentence = _fragment_block([[
+        _frag_span("If", "Times-Roman", 10, 140, 300, 8),
+        _frag_span("ω", "rtxmi", 10, 150, 300, 6),
+        _frag_span("=", "rtxr", 10, 158, 300, 6),
+        _frag_span("1", "rtxr", 10, 166, 300, 5),
+        _frag_span("then", "Times-Roman", 10, 174, 300, 16),
+    ]])
+    fragment = _fragment_block([[
+        _frag_span("M or E", "Times-Roman", 10, 140, 300, 26),
+        _frag_span("=", "rtxr", 10, 170, 300, 6),
+        _frag_span("∂Φ", "rtxmi", 10, 178, 300, 12),
+    ]])
+    labelled = _fragment_block([[
+        _frag_span("Directional", "Times-Roman", 10, 140, 300, 44),
+        _frag_span("ε(∆λ, ω) =", "rtxmi", 10, 190, 300, 40),
+    ]])
+    assert _short_sentence(sentence, BlockStats(sentence))
+    assert not _short_sentence(fragment, BlockStats(fragment))
+    assert not _short_sentence(labelled, BlockStats(labelled))
+
+
+def test_numbered_equation_set_in_a_text_font_is_math_without_a_neighbor():
+    """等号と章番号付きの式番号があり、英単語の無い 2 行の式（分子が別の行の "mvr = nh/2π (4.9)"）は数式。"See Eq. (3.4)" は本文。"""
+    from pdf_factory import BODY, LOREM, write_paragraph
+
+    doc = pymupdf.open()
+    page = doc.new_page(width=595, height=842)
+    write_paragraph(page, (140, 473), 200, LOREM, 3)
+    page.insert_text((282, 274), "nh", fontname=BODY, fontsize=10)  # 分子（2 行の式）
+    page.insert_text((250, 284), "mvr = 2p = nk", fontname=BODY, fontsize=10)
+    page.insert_text((440, 284), "(4.9)", fontname=BODY, fontsize=10)
+    page.insert_text((140, 320), "See Eq. (3.4)", fontname=BODY, fontsize=10)
+    write_paragraph(page, (140, 473), 360, LOREM, 3)
+    a = analyze_document(doc)
+    assert not _find(a, "(4.9)").translate
+    assert _find(a, "See Eq.").translate
+
+
+def test_contents_block_with_a_chapter_line_without_leaders_is_not_translated():
+    """目次の 1 ブロックが「リーダー付きの 1 行＋リーダーの無い章の行（"1 The Earth’s Atmosphere 1"）」でも目次。"""
+    from pdf_factory import BODY, BOLD
+
+    doc = pymupdf.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_text((150, 200), "Nomenclature " + ". " * 20 + "xii", fontname=BODY, fontsize=10)
+    page.insert_text((140, 214), "1 The Earth’s Atmosphere", fontname=BOLD, fontsize=10)
+    page.insert_text((460, 214), "1", fontname=BOLD, fontsize=10)
+    a = analyze_document(doc)
+    assert not _find(a, "Nomenclature").translate
+
+
+def test_index_entries_after_an_index_heading_are_not_translated():
+    """"Index" の見出しの後の項目（"angular frequency, 13"）は、次のページも含めて訳さない。見出しと前の本文は訳す。"""
+    from pdf_factory import BODY, BOLD, LOREM, write_paragraph
+
+    doc = pymupdf.open()
+    write_paragraph(doc.new_page(width=595, height=842), (140, 473), 150, LOREM, 10)  # 本文のページ
+    page = doc.new_page(width=595, height=842)
+    write_paragraph(page, (140, 473), 150, LOREM, 3)
+    page.insert_text((140, 230), "Index", fontname=BOLD, fontsize=16)
+    entries = ["absorption coefficient, 74", "air", "molar mass, 3", "angular frequency, 13", "angular wavenumber, 13"]
+    for i, e in enumerate(entries):
+        page.insert_text((140 if e != "molar mass, 3" else 150, 270 + i * 12), e, fontname=BODY, fontsize=9)
+    page2 = doc.new_page(width=595, height=842)
+    for i, e in enumerate(["phase velocity, 14", "plane of scattering, 40", "quantum yield, 81"]):
+        page2.insert_text((140, 200 + i * 12), e, fontname=BODY, fontsize=9)
+    a = analyze_document(doc)
+    assert _find(a, "Index").translate and _find(a, "Deep neural networks").translate
+    assert not _find(a, "angular frequency").translate
+    assert not _find(a, "quantum yield").translate
+
+
+def test_running_headers_with_roman_page_numbers_are_found():
+    """前付けの柱 "viii     An Atmospheric Primer"（左端のローマ数字のページ番号と、離れた題名）も、繰り返しで柱とする。"""
+    from pdf_factory import BODY, LOREM, write_paragraph
+
+    doc = pymupdf.open()
+    for roman in ["vi", "viii", "x", "xii"]:
+        page = doc.new_page(width=595, height=842)
+        page.insert_text((140, 160), roman, fontname=BODY, fontsize=10)
+        page.insert_text((300, 160), "An Atmospheric Primer", fontname=BODY, fontsize=10)  # ページ番号と題名は左右に離れる
+        write_paragraph(page, (140, 473), 190, LOREM, 6)
+    a = analyze_document(doc)
+    for pa in a.pages[1:]:
+        top = min(pa.decisions, key=lambda d: d.block.bbox[1])
+        assert top.skip == SkipReason.RUNNING_HEADER, pa.page
+
+
+def test_chapter_line_and_header_on_a_contents_page_are_not_translated():
+    """目次のページの、リーダーの無い章の行（"3 Radiometric Basics 41"）と柱（"Table of Contents ix"）は訳さない。"""
+    from pdf_factory import BODY, BOLD
+
+    doc = pymupdf.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_text((140, 160), "Table of Contents", fontname=BODY, fontsize=10)
+    page.insert_text((462, 160), "ix", fontname=BODY, fontsize=10)
+    page.insert_text((140, 200), "3 Radiometric Basics", fontname=BOLD, fontsize=10)
+    page.insert_text((462, 200), "41", fontname=BOLD, fontsize=10)
+    for i, (num, title, pno) in enumerate([("3.1", "Solid Angle", "41"), ("3.2", "Radiant Quantities", "43")]):
+        page.insert_text((150, 230 + i * 12), f"{num} {title} " + ". " * 12 + pno, fontname=BODY, fontsize=10)
+    a = analyze_document(doc)
+    assert not _find(a, "Solid Angle").translate
+    assert not _find(a, "Radiometric Basics").translate
+    assert not _find(a, "Table of Contents").translate
+
+
+def test_two_line_equation_with_a_noun_label_is_math():
+    """分数を含む 2 行の独立数式 "Loss Rate = d[A]/dt = J[A]"（大文字の名詞のラベル付き）は数式。文は訳す。"""
+    from pdf_factory import BODY, LOREM, write_paragraph
+
+    doc = pymupdf.open()
+    page = doc.new_page(width=595, height=842)
+    write_paragraph(page, (140, 473), 200, LOREM, 3)
+    page.insert_text((253, 300), "Loss Rate = d [A] = J [A]", fontname=BODY, fontsize=10)
+    page.insert_text((322, 312), "dt", fontname=BODY, fontsize=10)
+    page.insert_text((140, 350), "Hence the rate is given by k = 2", fontname=BODY, fontsize=10)
+    page.insert_text((140, 362), "and so on", fontname=BODY, fontsize=10)
+    write_paragraph(page, (140, 473), 400, LOREM, 3)
+    a = analyze_document(doc)
+    assert _find(a, "Loss Rate").skip == SkipReason.MATH
+    assert _find(a, "Hence the rate").translate
+
+
+def test_short_paragraphs_after_a_section_named_index_are_translated():
+    """番号の無い見出し "Index"（指標の節）の後の短い本文と、次の見出しの後の本文は訳す。"""
+    from pdf_factory import BODY, BOLD, LOREM, write_paragraph
+
+    doc = pymupdf.open()
+    write_paragraph(doc.new_page(width=595, height=842), (140, 473), 150, LOREM, 10)
+    page = doc.new_page(width=595, height=842)
+    page.insert_text((140, 200), "Index", fontname=BOLD, fontsize=12)
+    page.insert_text((140, 220), "Both indices agree well.", fontname=BODY, fontsize=10)
+    page.insert_text((140, 260), "Results", fontname=BOLD, fontsize=12)
+    page.insert_text((140, 280), "We found three trends.", fontname=BODY, fontsize=10)
+    a = analyze_document(doc)
+    assert _find(a, "Both indices").translate
+    assert _find(a, "three trends").translate
+
+
+def test_two_line_paragraph_ending_in_leader_dots_and_a_number_is_translated():
+    """1 行目が ". . . . 0"、2 行目が数で終わる 2 行の本文（"…converges to the value 2"）は目次ではない。"""
+    from pdf_factory import BODY
+
+    doc = pymupdf.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_text((140, 200), "The terms of the series are 1, 1/2, 1/4, . . . . 0", fontname=BODY, fontsize=10)
+    page.insert_text((140, 212), "and the partial sums converges to the value 2", fontname=BODY, fontsize=10)
+    a = analyze_document(doc)
+    assert _find(a, "partial sums").translate
+
+
+def test_first_lines_differing_only_by_a_one_letter_variable_are_not_running_headers():
+    """各ページの先頭行が行末の 1 文字の変数（x, v, c, i）だけ違っても、題名と離れたページ番号ではないので柱としない。"""
+    from pdf_factory import BODY, LOREM, write_paragraph
+
+    doc = pymupdf.open()
+    for var in ["x", "v", "c", "i"]:
+        page = doc.new_page(width=595, height=842)
+        page.insert_text((140, 160), f"We now consider the dependence on the variable {var}", fontname=BODY, fontsize=10)
+        write_paragraph(page, (140, 473), 190, LOREM, 6)
+    a = analyze_document(doc)
+    for pa in a.pages:
+        top = min(pa.decisions, key=lambda d: d.block.bbox[1])
+        assert top.skip != SkipReason.RUNNING_HEADER, pa.page
+
+
+def test_numbered_bold_heading_on_every_page_is_not_a_running_header():
+    """各ページの先頭の、段落から離れた太字の見出し "Problem 1" "Problem 2" … は柱としない。"""
+    from pdf_factory import BOLD, LOREM, write_paragraph
+
+    doc = pymupdf.open()
+    for n in range(1, 6):
+        page = doc.new_page(width=595, height=842)
+        page.insert_text((140, 200), f"Problem {n}", fontname=BOLD, fontsize=12)
+        write_paragraph(page, (140, 473), 230, LOREM, 4)
+    a = analyze_document(doc)
+    for pa in a.pages[1:]:
+        assert _find_on(pa, "Problem").translate, pa.page
+
+
+def _find_on(pa, needle):
+    return next(d for d in pa.decisions if needle in d.block.text)

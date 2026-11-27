@@ -262,6 +262,9 @@ class TranslationJob:
                 f"{len(render_report.kept_original)} 個の段落は、訳文が元の枠に収まらない、または他の段落と重なるため、原文のまま残しました。"
             )
             untranslated += len(render_report.kept_original)
+        if render_report.restore_failed:
+            pages = "、".join(str(p + 1) for p in render_report.restore_failed)
+            warnings.append(f"{pages} ページで、訳文の近くの数式の記号の一部を正しく描けなかった可能性があります。原文と見比べてください。")
         if render_report.shrunk:
             warnings.append(f"{len(render_report.shrunk)} 個の段落を、元の枠に収めるため小さめの文字で組みました。")
         if not report.ok:

@@ -18,7 +18,7 @@ from enum import Enum
 
 from .fontbook import FontBook, FontRole
 from .markup import Token
-from .models import Align, InlineRun, Rect, TextStyle
+from .models import LINE_ART_CHAR, Align, InlineRun, Rect, TextStyle
 
 # 行頭禁則（行の先頭に来てはいけない）
 NO_START = set("、。，．・：；？！゛゜ヽヾゝゞ々ー）］｝」』】〕〉》〙〗’”ぁぃぅぇぉっゃゅょゎァィゥェォッャュョヮヵヶ…‥%),.:;!?]}")
@@ -216,7 +216,7 @@ def _inline_atom(run: InlineRun, fonts: FontBook, transplant: bool = False) -> A
     positioned = run.width_ratio is not None and all(p.dx_ratio is not None for p in run.pieces)
     fit = _run_fit_scale(run)
     for p in run.pieces:
-        if not p.text:
+        if not p.text or p.text == LINE_ART_CHAR:  # 行の中の図形は字形を持たない（原文の見た目のまま移す）
             continue
         if p.math and p.italic:
             base = FontRole.MATH_ITALIC

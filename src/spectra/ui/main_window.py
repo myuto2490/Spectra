@@ -71,9 +71,10 @@ from . import icons, theme, worker
 from .about import AboutDialog
 from .annotation_popover import AnnotationPopover, UndoBar
 from .export_dialog import ExportDialog, suffix_for
+from .fulltext_controller import FulltextController
 from .inspector import Inspector
 from .jobs import LookupQueue, TranslationNotice, TranslationQueue, TranslationRequest
-from .library_model import TRASH_DAYS
+from .library_model import FAVORITE_SHORTCUT, TRASH_DAYS, favorite_action_text
 from .library_view import LibraryView
 from .paper_detail import MetadataDialog
 from .pdf_view import ANNOTATION_NAMES, ANNOTATION_RGB, ZOOM_PRESETS, FindBar, NavPane, PreviewPair
@@ -123,6 +124,7 @@ class MainWindow(QMainWindow):
         self.queue = TranslationQueue(self._run_translation, self)
         self.lookups = LookupQueue(self.library, self)
         self.sync = SyncController(self.settings, self.library, sync_engine_factory, self)
+        self.fulltext = FulltextController(self.settings, self.library, self)
         self.setWindowTitle(APP_NAME)
         self.setMinimumSize(QSize(980, 640))
         self.setAcceptDrops(True)
@@ -170,6 +172,12 @@ class MainWindow(QMainWindow):
         self.sync.downloadFinished.connect(self._on_download_finished)
         self.sync.downloadFailed.connect(self._on_download_failed)
         self.sync.synced.connect(self._on_synced)
+        # 同期は合図を出さずにライブラリを変えるので、同期・取得の後にも本文の索引の差分を取る
+        self.sync.synced.connect(lambda _r: self.fulltext.schedule())
+        self.fulltext.resultsReady.connect(self._on_fulltext_results)
+        self.fulltext.progressChanged.connect(self._refresh_index_status)
+        self.library_view.indexCancelRequested.connect(self.fulltext.cancel)
+        self.sync.downloadFinished.connect(lambda _pid, _purpose: self.fulltext.schedule())
         self._sync_clock = QTimer(self, interval=30_000, timeout=self._refresh_sync_status)  # 「2 分前」を更新する
         self._sync_clock.start()
         # アプリが前面に来たときにも同期する（ほかのパソコンで変えた内容をすぐ反映するため）
@@ -336,7 +344,7 @@ class MainWindow(QMainWindow):
         h.addWidget(self.sidebar_btn)
         self.search = QLineEdit()
         self.search.setObjectName("Search")
-        self.search.setPlaceholderText("タイトル・著者・雑誌・DOI で検索")
+        self.search.setPlaceholderText(self._search_placeholder())
         self.search.setAccessibleName("ライブラリを検索")
         self.search.setClearButtonEnabled(True)
         self.search.setMaximumWidth(440)
@@ -345,6 +353,7 @@ class MainWindow(QMainWindow):
             icons.icon("search", theme.current().secondary, 16), QLineEdit.ActionPosition.LeadingPosition
         )
         self.search.textChanged.connect(self.library_view.set_search)
+        self.search.textChanged.connect(lambda t: self.fulltext.query(t))
         # Esc（検索を消す）を押せるかは検索語の有無で決まるので、打つたびに状態を更新する
         self.search.textChanged.connect(lambda _t: self._update_state())
         h.addWidget(self.search, 1)
@@ -573,7 +582,7 @@ class MainWindow(QMainWindow):
         lib = mb.addMenu("ライブラリ")
         self.act_find = act("検索", self.focus_search, QKeySequence.StandardKey.Find)
         self.act_open_paper = act("開く", self._open_selected)
-        self.act_favorite = act("お気に入り", lambda: self.library_view.toggle_favorite(), f"{mod}+D")
+        self.act_favorite = act(favorite_action_text(False), lambda: self.library_view.toggle_favorite(), FAVORITE_SHORTCUT)
         self.act_edit = act("書誌情報を編集…", self._edit_selected, f"{mod}+I")
         self.act_lookup = act("書誌情報を取得し直す", lambda: self._lookup(self.library_view.selected_ids(), ask=True))
         self.act_bibtex = act("BibTeX をコピー", lambda: self.copy_bibtex(self.library_view.selected_ids()), f"{mod}+Shift+C")
@@ -688,6 +697,8 @@ class MainWindow(QMainWindow):
         for a in (self.act_open_paper, self.act_favorite, self.act_edit, self.act_lookup, self.act_bibtex, self.act_remove):
             a.setEnabled(bool(selected))
         self.act_open_paper.setEnabled(len(selected) == 1)
+        selected_papers = [p for p in (self.library_view.model.paper(i) for i in selected) if p is not None]
+        self.act_favorite.setText(favorite_action_text(bool(selected_papers) and all(p.favorite for p in selected_papers)))
         self.act_edit.setEnabled(len(selected) == 1)
         self.act_new_collection.setEnabled(not reader)
         for a in (*self._view_actions, *self._zoom_actions, *self._page_actions, *self._annotation_actions, self.act_inspector):
@@ -929,6 +940,31 @@ class MainWindow(QMainWindow):
         if self.paper is not None and self.paper.id == paper_id:
             self._reload_annotations()
         self.library_view.side_panel.refresh_annotations()
+        self.library_view.refresh_comments()
+
+    # ======================================================================
+    # 本文検索
+    # ======================================================================
+
+    def _search_placeholder(self) -> str:
+        if self.settings.fulltext_search:
+            return "タイトル・著者・DOI・本文・メモで検索"
+        return "タイトル・著者・雑誌・DOI・メモで検索"
+
+    def _on_fulltext_results(self, text: str, found) -> None:
+        self.library_view.set_fulltext(text, found)
+        self._refresh_detail()
+
+    def _refresh_index_status(self) -> None:
+        ft = self.fulltext
+        if ft.progress is not None:
+            done, total = ft.progress
+            self.library_view.set_index_status(f"本文の索引を作成中 {done}/{total}", cancellable=True)
+        elif ft.enabled and ft.unavailable:
+            self.library_view.set_index_status("本文を検索できません（タイトル・著者などで検索します）", warning=True)
+        else:
+            self.library_view.set_index_status("")
+        self.search.setPlaceholderText(self._search_placeholder())
 
     def _reload_annotations(self) -> None:
         """開いている論文の注釈を読み直して、PDF の印と右のパネルの一覧を更新する。"""
@@ -1141,6 +1177,8 @@ class MainWindow(QMainWindow):
             sync_on=self.sync.enabled(),
             sync_available=self.sync.available() or not self.sync.enabled(),
         )
+        if len(papers) == 1:
+            self.library_view.detail.set_matches(self.library_view.matches_for(papers[0].id))
         if self.screen_mode == LIBRARY:
             self._update_state()
 
@@ -1281,8 +1319,7 @@ class MainWindow(QMainWindow):
         else:
             menu.addAction("翻訳キューに追加" if len(ids) > 1 else "翻訳する", lambda: self.translate_papers(ids))
         menu.addSeparator()
-        fav = all(p.favorite for p in papers)
-        menu.addAction("お気に入りから外す" if fav else "お気に入りに追加", lambda: view.toggle_favorite(ids))
+        menu.addAction(favorite_action_text(all(p.favorite for p in papers)), lambda: view.toggle_favorite(ids))
         menu.addMenu(view.collection_menu(ids))
         if view.proxy.scope()[0] == "collection":
             menu.addAction("このコレクションから外す", lambda: view.remove_from_current_collection(ids))
@@ -1833,7 +1870,7 @@ class MainWindow(QMainWindow):
     # ======================================================================
 
     def show_settings(self, tab: str = "engines", focus: str = "") -> None:
-        dlg = SettingsDialog(self.settings, self.secrets, self.cache, self, sync=self.sync)
+        dlg = SettingsDialog(self.settings, self.secrets, self.cache, self, sync=self.sync, fulltext=self.fulltext)
         dlg.syncChanged.connect(self._on_sync_setting)
         dlg.restoreBackupRequested.connect(self.restore_backup)
         dlg.keysChanged.connect(self.refresh_engine_status)
@@ -2257,6 +2294,7 @@ class MainWindow(QMainWindow):
         self.library_view.side_panel.flush_note()
         self._unlisten()
         self.sync.close()
+        self.fulltext.close()
         self.settings.window = {
             "geometry": bytes(self.saveGeometry().toBase64()).decode(),
             "inspector": self.inspector_btn.isChecked(),

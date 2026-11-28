@@ -18,27 +18,28 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/screenshot-library-dark.png">
-    <img src="docs/images/screenshot-library-light.png" width="960" alt="Spectra のライブラリ画面。左にコレクション、中央に論文の一覧（タイトル・著者・年・翻訳の状態）、右に選んだ論文の書誌情報が並んでいる">
+    <img src="docs/images/screenshot-library-light.png" width="960" alt="Spectra のライブラリ画面。左にコレクション、中央に論文の一覧（お気に入りのスター・タイトル・著者・年・翻訳の状態）、右に選んだ論文の書誌情報が並んでいる。検索欄に語を入れ、本文に一致した箇所の抜粋がタイトルの下に出ている">
   </picture>
 </p>
 
-Spectra は、英語の論文 PDF を **PDF のまま** 日本語に翻訳するデスクトップアプリです。
+Spectra は、英語の論文や教科書の PDF を **PDF のまま** 日本語に翻訳するデスクトップアプリです。
 本文・見出し・キャプションだけを日本語に置き換え、図・表・数式・ページ構成は元の論文のまま残します。
 読んだ論文はライブラリに集まり、タイトル・著者・雑誌名などの書誌情報で整理して、いつでも原文と訳文を並べて読み返せます。
 翻訳には Google の Gemini API を使い、無料枠で利用できます。
 
 ## 特長
 
-- **論文ライブラリ** — PDF をドロップするだけで、タイトル・著者・年・雑誌名を PDF から読み取ってライブラリに登録します（PDF に DOI・arXiv ID があれば、Crossref / arXiv に照会して正確な書誌情報を取得します）。検索・並べ替え・お気に入り・コレクションで整理でき、翻訳した論文は開くだけで原文と訳文をすぐに読めます。BibTeX のコピーにも対応しています。
+- **論文ライブラリ** — PDF をドロップするだけで、タイトル・著者・年・雑誌名を PDF から読み取ってライブラリに登録します（PDF に DOI・arXiv ID があれば、Crossref / arXiv に照会して正確な書誌情報を取得します）。検索（タイトル・著者に加えて、論文の本文・訳文・メモも）・並べ替え・お気に入り（一覧のスター）・コレクションで整理でき、翻訳した論文は開くだけで原文と訳文をすぐに読めます。BibTeX のコピーにも対応しています。
 - **複数のパソコンでライブラリを同期（任意）** — Google Drive・Dropbox・OneDrive・iCloud Drive・Syncthing などの同期フォルダを選ぶと、ご自身のほかのパソコンでも同じライブラリ（原文・訳文・書誌情報・コレクション）を読めます。初期状態では無効です。
 - **マーカーとコメント** — 原文の文字を選んで、マーカー（5 色）・下線・コメントを付けられます。ページ上に付箋も置けます。右のパネルの「注釈」タブに一覧が並び、クリックするとその場所に移ります。同期していればほかのパソコンでも読めて、PDF出力にも含められます（ライブラリの PDF 自体は書き換えません）。
 - **読みやすい読書画面とノート** — 原文と訳文を並べて、ページ番号の表示とページ指定、50〜400% のズーム、PDF 内の検索、文字のコピー、ページの一覧と目次を使えます。右のパネルの「ノート」に論文ごとのメモを書けて、同期していればほかのパソコンでも読めます。
-- **レイアウトを崩さない** — ページ番号も図の位置もそのまま。図の中の文字、表、独立した数式、著者・所属、参考文献は自動で見分けて原文のまま残します。翻訳後には、図表や翻訳対象外の文字が変わっていないことを自動で検査します。
-- **数式は元の見た目のまま** — 段落の中の数式（変数、上付き・下付き、分数など）は翻訳から保護し、元の論文の字形のまま、訳文の自然な位置に配置します。
+- **レイアウトを崩さない** — ページ番号も図の位置もそのまま。図の中の文字、表、独立した数式、著者・所属、参考文献は自動で見分けて原文のまま残します。TeX で組んだ書籍の章も、目次・索引・ページ上部の柱（ランニングヘッダ）は訳さず、記号表（Nomenclature）は項目ごとに訳します。翻訳後には、図表や翻訳対象外の文字が変わっていないことを自動で検査します。
+- **数式は元の見た目のまま** — 段落の中の数式（変数、上付き・下付き、分数とその横線など）は翻訳から保護し、元の論文の字形のまま、訳文の自然な位置に配置します。独立した数式（別の行の式と式番号）は訳さず、そのまま残します。
 - **読みやすい日本語の組版** — 日本語の字形の Noto Sans JP を同梱。禁則処理、和欧間の空き、両端揃え、字下げに対応し、段組みや段落の太字も原文どおりに再現します。明朝体（Noto Serif JP）も選べます。
 - **論文向けの翻訳** — 学術論文の文体（である調 / です・ます調）で、専門用語や手法名、定型の見出し（Abstract → 概要 など）を適切に訳します。
 - **3 つの形式で書き出し** — 翻訳のみ / 原文と左右に並べた対訳 / ページごとに交互の対訳。翻訳し直さずに、何度でも別の形式で書き出せます。
-- **無料枠を大切に** — 翻訳した段落はキャッシュされ、同じ論文を訳し直しても無料枠を消費しません。混雑や上限で止まったときは、別のモデルに自動で切り替えて続きを翻訳します。
+- **無料枠を大切に** — 翻訳した段落はキャッシュされ、同じ論文を訳し直しても無料枠を消費しません。API キーを複数登録すると、1 日の上限に達したときに次のキーへ自動で切り替えます。混雑や上限で止まったときは、別のモデルに自動で切り替えて続きを翻訳します。
+- **新しい版のお知らせ（任意）** — 新しい版が公開されると、アプリの上の帯でお知らせします（自動では入れ替えません）。初回の起動時に、確認してよいかを尋ねます。
 
 <p align="center">
   <img src="docs/images/before-after.png" alt="左が原文、右が翻訳後。図・数式・著者名はそのままで、本文と見出しだけが日本語になっている">
@@ -54,7 +55,7 @@ Spectra は、英語の論文 PDF を **PDF のまま** 日本語に翻訳する
 | --- | --- | --- |
 | macOS（Apple シリコン） | `Spectra-x.y.z-macOS-arm64.dmg` | 開いて `Spectra` を「アプリケーション」へドラッグ |
 | Windows 10 / 11 | `Spectra-x.y.z-Windows-x64.zip` | 展開して `Spectra.exe` を実行 |
-| Linux（x86_64） | `Spectra-x.y.z-Linux-x86_64.tar.gz` | 展開して `Spectra/Spectra` を実行 |
+| Linux（x86_64、glibc 2.35 以上。Ubuntu 22.04 以降など） | `Spectra-x.y.z-Linux-x86_64.tar.gz` | 展開して `Spectra/Spectra` を実行 |
 
 Intel 搭載の Mac では、[ソースから実行](#開発)してください。
 
@@ -72,17 +73,19 @@ Intel 搭載の Mac では、[ソースから実行](#開発)してください�
 4. **読み返す・PDF出力** — 翻訳した論文はライブラリに保存され、ダブルクリックするとすぐに原文と訳文を読めます。「PDF出力」を押すと、形式を選んで PDF を保存できます。
 
 <p align="center">
-  <img src="docs/images/screenshot-export.png" width="560" alt="PDF出力の形式を 3 枚のカードから選ぶ画面">
+  <img src="docs/images/screenshot-export.png" width="560" alt="PDF出力の形式を 3 枚のカードから選ぶ画面。下に「注釈を含める」のスイッチがある">
 </p>
 
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/screenshot-reader-dark.png">
-    <img src="docs/images/screenshot-reader-light.png" width="960" alt="読書画面。原文と訳文のページが左右に並び、右のパネルでモデル・文体・ページ・翻訳する内容を選べる">
+    <img src="docs/images/screenshot-reader-light.png" width="960" alt="読書画面。左にページの一覧、中央に原文と訳文のページが並び、原文にマーカーと付箋、訳文の余白に同じ色の帯がある。右のパネルはノートのタブ">
   </picture>
 </p>
 
-読書画面の右側のパネルでは、モデル、文体（である調 / です・ます調）、翻訳するページの範囲、キャプション・脚注・参考文献を訳すかどうかを変えられます。
+読書画面の右のパネルは、「論文の詳細」「AI翻訳の詳細」「ノート」「注釈」のタブに分かれています。「AI翻訳の詳細」では、モデル、文体（である調 / です・ます調）、翻訳するページの範囲、キャプション・脚注・参考文献を訳すかどうかを変えられます。「ノート」には論文ごとのメモを書けます（入力をやめると自動で保存します）。
+
+読書画面の下の帯には、今のページ（ページ番号の欄と「/ 全ページ数」）と倍率が出ます。ページ番号の欄（⌘J）に番号を入れるか、‹ › を押すと、ページを移動します。倍率は 50〜400% のメニュー、「幅に合わせる」「ページ全体に合わせる」から選べ、⌘（Ctrl）+スクロールやピンチでも変えられます。⌘F で、見えている側（原文・訳文）の PDF の中を検索できます。⌥⌘T で、左にページの一覧（サムネイル）と目次（しおり）を出せます。論文ごとの倍率とページの位置は、次に開いたときに戻ります。
 
 ### マーカーとコメント
 
@@ -95,8 +98,19 @@ Intel 搭載の Mac では、[ソースから実行](#開発)してください�
 
 ### ライブラリ
 
-- 左のサイドバーで「すべての論文 / 最近追加した論文 / お気に入り / 翻訳済み / 未翻訳」とコレクションを切り替えられます。論文の行をコレクションへドラッグすると、そのコレクションに加わります。
-- 上の検索欄で、タイトル・著者・雑誌名・年・DOI から絞り込めます。列の見出しを押すと並べ替えられます。
+- 左のサイドバーで「すべての論文 / 最近追加した論文 / お気に入り / 翻訳済み / 未翻訳」とコレクションを切り替えられます（「翻訳済み」には、一部だけ訳した論文も含みます）。論文の行をコレクションへドラッグすると、そのコレクションに加わります。
+- 一覧の左端のスターを押すと、お気に入りに追加・外すができます（お気に入りでない論文は枠だけのスター、お気に入りは塗りつぶしたスター）。⌘D / Ctrl+D でも切り替えられます。
+- 上の検索欄で、タイトル・著者・雑誌名・年・DOI に加えて、論文の本文（原文と訳文）、ノート、注釈のコメントからも探せます。空白で区切った語は、すべてを含む論文を探します。書誌情報に一致した論文、メモに一致した論文、本文に一致した論文（一致したページの多い順）の順に並び、本文やメモだけで一致した論文は、タイトルの下に「本文に一致」「メモに一致」と一致した箇所の抜粋が出ます（右のパネルには、原文か訳文か・ページも出ます）。列の見出しを押すと、その列で並べ替えられます。
+- 本文の検索には、PDF から文字を取り出して作る索引を使います。索引はこのパソコンの中にだけ作り（論文を追加・翻訳したあと、裏で少しずつ作ります）、同期せず、外部にも送りません。索引を作っている間は、サイドバーの下に進み具合が出ます（「中止」で止められます）。文字のない PDF（スキャン）や、パスワードのかかった PDF は、本文では探せません。⚙ →「詳細」→「本文検索」で、オン・オフ、訳文を含めるか、索引の作り直し・削除ができます。
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/screenshot-settings-dark.png">
+    <img src="docs/images/screenshot-settings-light.png" width="560" alt="設定の「詳細」タブの本文検索の欄。「本文も検索する」「訳文も索引にする」のスイッチと、索引の件数・大きさ、「作り直す」「削除…」のボタンがある">
+  </picture>
+</p>
+
+- 一覧の「翻訳」の列には、状態を「✓ 翻訳済み」「◐ 一部」「⟳ 翻訳中 42%」「… 待機中」「⚠ 失敗」のように記号と文字で表示します。「◐ 一部」は、ページの範囲を絞って訳したとき、または訳せなかった段落が残ったときの表示です。もう一度翻訳すると、残りの段落だけを送ります（訳し終えた段落はキャッシュから使います）。
 - 右の詳細パネルで書誌情報と翻訳の状態を確認できます。「情報を編集…」で直した項目は、書誌情報を取得し直しても上書きされません。
 - 書誌情報は、PDF に書かれた DOI・arXiv ID から Crossref / arXiv に照会して自動で取得します。送るのは DOI・arXiv ID だけで、本文やファイルは送りません。取得しない場合は ⚙ →「詳細」でオフにできます（PDF から読み取れた情報だけで整理します）。
 - ⚙ →「同期」で同期フォルダを選ぶと、ライブラリを複数のパソコンで同期できます（初期状態では無効）。Spectra 自身は通信せず、フォルダの同期は各サービスのアプリが行います。Gemini の API キー・設定・翻訳キャッシュは同期しないので、別のパソコンでも翻訳するときは、そのパソコンで API キーを設定します。購読契約で入手した論文など、共有が認められていないものがあるときは、同期フォルダをほかの人と共有しないでください。
@@ -117,16 +131,19 @@ Intel 搭載の Mac では、[ソースから実行](#開発)してください�
 | お気に入りに追加 / 外す | ⌘D | Ctrl+D |
 | 書誌情報を編集 | ⌘I | Ctrl+I |
 | BibTeX をコピー | ⇧⌘C | Ctrl+Shift+C |
-| ライブラリから削除 | ⌘⌫ | Delete |
+| 新しいコレクション | ⇧⌘N | Ctrl+Shift+N |
+| ライブラリから削除（一覧を選んでいるとき） | ⌘⌫ | Ctrl+Backspace / Delete |
 | 翻訳を開始（ライブラリでは選んだ論文） | ⌘↩ | Ctrl+Enter |
 | PDF出力 | ⌘S | Ctrl+S |
 | 原文 / 対訳 / 翻訳 の表示 | ⌘1 / ⌘2 / ⌘3 | Ctrl+1 / 2 / 3 |
-| 拡大 / 縮小 / 幅に合わせる | ⌘+ / ⌘− / ⌘0 | Ctrl++ / Ctrl+− / Ctrl+0 |
+| 拡大 / 縮小 / 幅に合わせる / ページ全体に合わせる | ⌘+ / ⌘− / ⌘0 / ⌘9 | Ctrl++ / Ctrl+− / Ctrl+0 / Ctrl+9 |
+| 次のページ / 前のページ | ⌘↓ / ⌘↑ | Ctrl+↓ / Ctrl+↑ |
 | PDF 内を検索（読書画面） | ⌘F | Ctrl+F |
 | 次の一致 / 前の一致 | ⌘G / ⇧⌘G | Ctrl+G / Ctrl+Shift+G |
 | ページを指定して移動 | ⌘J | Ctrl+J |
 | ページの一覧と目次を表示 / 隠す | ⌥⌘T | Ctrl+Alt+T |
 | マーカーを付ける / コメント付きで付ける / 下線を付ける（文字を選んで） | ⌃⌘H / ⌃⌘N / ⌃⌘U | Ctrl+Alt+H / N / U |
+| サイドバー / 右のパネルを表示 / 隠す | ⌥⌘S / ⌥⌘I | Ctrl+Alt+S / Ctrl+Alt+I |
 | 設定 | ⌘, | Ctrl+, |
 | 翻訳をキャンセル | Esc | Esc |
 
@@ -177,7 +194,7 @@ Spectra は PDF を作り直すのではなく、**元の PDF の本文の文字
 5. **置き換え** — 原文の文字だけを消し（画像・図形・背景はそのまま）、訳文と、元の見た目のままの数式を配置します。フォントは使った文字だけを埋め込むので、ファイルサイズは元とほぼ同じです。
 6. **検査** — 翻訳の前後を比べ、図形・画像・翻訳対象外の文字が失われていないこと、図表の見た目が変わっていないことを確かめます。
 
-Elsevier・A&A・AAS・AGU/Wiley・Springer・IEEE などの論文 20 本で、レイアウトの検査に合格することを確認しています。設計の詳細は [docs/DESIGN.md](docs/DESIGN.md) を参照してください。
+翻訳のたびに、図表や翻訳対象外の文字が変わっていないことを自動で検査します（⚙ →「詳細」の「レイアウトを検査する」。既定でオン）。設計の詳細は [docs/DESIGN.md](docs/DESIGN.md) を参照してください。
 
 ## よくある質問
 
@@ -192,7 +209,7 @@ Elsevier・A&A・AAS・AGU/Wiley・Springer・IEEE などの論文 20 本で、�
 
 翻訳する本文が Google の Gemini API にのみ送信されます。無料枠での送信データの扱いは、上の「重要」の項目を確認してください。
 
-書誌情報を取得するため、PDF に書かれた DOI を [Crossref](https://www.crossref.org/)、arXiv ID を [arXiv](https://arxiv.org/) に送って書誌情報を受け取ります（タイトルや本文、ファイルは送りません。⚙ →「詳細」でオフにできます）。新しい版のお知らせを有効にした場合は、GitHub（api.github.com）に、最新の版の番号を 1 日に 1 回まで問い合わせます（ライブラリや設定、使っている版の番号は送りません。初回に尋ね、⚙ →「詳細」でオフにできます）。Spectra 自体は利用状況などのデータを一切送信しません。
+書誌情報を取得するため、PDF に書かれた DOI を [Crossref](https://www.crossref.org/)、arXiv ID を [arXiv](https://arxiv.org/) に送って書誌情報を受け取ります（タイトルや本文、ファイルは送りません。⚙ →「詳細」でオフにできます）。新しい版のお知らせを有効にした場合は、GitHub（api.github.com）に、最新の版の番号を 1 日に 1 回まで問い合わせます（ライブラリや設定、使っている版の番号は送りません。初回に尋ね、⚙ →「詳細」でオフにできます）。Spectra 自体は利用状況などのデータを一切送信しません。本文検索の索引は、このパソコンの中だけに置き（持ち主だけが読めるファイル）、送信も同期もしません。
 
 ライブラリの同期を有効にした場合は、PDF・訳文・書誌情報を、選んだフォルダに保存します。Spectra 自身は通信せず、そのフォルダを同期するサービス（Google Drive など）がアップロードします。同期は初期状態では無効です。
 </details>
@@ -240,7 +257,15 @@ Elsevier・A&A・AAS・AGU/Wiley・Springer・IEEE などの論文 20 本で、�
 <details>
 <summary>英語のまま残っている段落があります</summary>
 
-図・表・数式と重なっていて、置き換えると元の図表や数式を傷つけるおそれがある段落は、安全のために原文のまま残します。また、参考文献は既定では訳しません（右側のパネルの「参考文献」をオンにすると訳します）。
+次のものは、意図して原文のまま残します。
+
+- 図の中の文字（軸の数字・凡例・矢印つきのラベルなど）と、表の中身。表と図のキャプションは訳します。
+- 独立した数式、著者・所属、目次・索引、ページ上部の柱。
+- 図・表・数式と重なっていて、置き換えると元の図表や数式を傷つけるおそれがある段落。
+- 訳文が元の枠に収まらない、またはほかの段落の訳文と重なる段落（翻訳の終わりに警告として表示します）。
+- 翻訳エンジンが何度送り直しても英語のまま返した段落（ライブラリでは「◐ 一部」と表示します）。
+
+また、参考文献は既定では訳しません（右のパネルの「参考文献」をオンにすると訳します）。
 </details>
 
 <details>
@@ -300,5 +325,5 @@ Google および Gemini は Google LLC の商標です。Spectra は Google と�
 <details>
 <summary>English</summary>
 
-**Spectra** is a free, open-source desktop app (Windows, macOS, Linux) that translates academic PDFs from English into Japanese **while keeping the original layout intact**. Only the running text, headings, captions and footnotes are replaced; figures, tables, display equations, author information and references stay untouched. Inline math is kept with its original glyphs and placed naturally inside the Japanese text, which is typeset with proper Japanese line breaking in the bundled Noto Sans JP font. Translation uses the Google Gemini API free tier; translations are cached to save quota, and every result is checked automatically to make sure figures and untranslated text have not changed. Export as translation only, side-by-side, or interleaved. Papers are collected in a reference-manager style library: bibliographic details are read from the PDF and looked up on Crossref / arXiv by DOI or arXiv ID only (this can be turned off in the settings), and can be searched, sorted, starred, grouped into collections and copied as BibTeX; the library can optionally be kept in sync across your own computers through a sync folder you choose (Google Drive, Dropbox, OneDrive, iCloud Drive, Syncthing and so on; off by default, and Spectra itself does not upload anything); translated papers reopen instantly with the original and translation side by side, and several papers can be queued for background translation. Licensed under AGPL-3.0.
+**Spectra** is a free, open-source desktop app (Windows, macOS, Linux) that translates academic PDFs from English into Japanese **while keeping the original layout intact**. Only the running text, headings, captions and footnotes of papers and textbooks are replaced; figures, tables, display equations, author information and references stay untouched. Inline math is kept with its original glyphs and placed naturally inside the Japanese text, which is typeset with proper Japanese line breaking in the bundled Noto Sans JP font. Translation uses the Google Gemini API free tier; translations are cached to save quota, and every result is checked automatically to make sure figures and untranslated text have not changed. Export as translation only, side-by-side, or interleaved. Papers are collected in a reference-manager style library: bibliographic details are read from the PDF and looked up on Crossref / arXiv by DOI or arXiv ID only (this can be turned off in the settings), and can be searched (including the full text of originals and translations, notes and annotation comments, using a local index that never leaves your computer), sorted, starred, grouped into collections and copied as BibTeX; the library can optionally be kept in sync across your own computers through a sync folder you choose (Google Drive, Dropbox, OneDrive, iCloud Drive, Syncthing and so on; off by default, and Spectra itself does not upload anything); translated papers reopen instantly with the original and translation side by side, and several papers can be queued for background translation. The reader shows the current page (n / N), supports page jumps, zoom from 50 to 400 %, search inside the PDF, a page thumbnail and outline pane, and per-paper notes. You can add highlights (five colours), underlines, comments and sticky notes to the original text, list them in the side panel, and optionally include them as standard PDF annotations when exporting. Several Gemini API keys can be registered, and Spectra switches to the next key when one reaches its daily free-tier limit. An optional notice (asked on first launch, checked at most once a day against api.github.com) tells you when a new version is released; nothing is installed automatically. Text inside figures and the contents of tables, as well as tables of contents, indexes and running headers in books, are intentionally left in English. Licensed under AGPL-3.0.
 </details>

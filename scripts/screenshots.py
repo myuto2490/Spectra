@@ -9,6 +9,7 @@
 - 撮るのはウィンドウの中だけ（QWidget.grab）。通知・ほかのアプリ・メニューバーは写らない。
 - 撮る前に画面の文字を調べ、個人情報らしいもの（/Users/ などの実際のパス、example.com 以外のメールアドレス）があれば止める。
 - 保存した PNG にはメタデータを付けない。
+- README で軽く読み込めるよう、幅を MAX_WIDTH まで縮め、256 色に減らして保存する（Pillow。開発用の依存に入っている）。
 """
 
 from __future__ import annotations
@@ -23,9 +24,10 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-SCENES = ("library", "reader", "export", "trash", "sync")
+SCENES = ("library", "reader", "export", "trash", "sync", "settings")
 _CHILD = "SPECTRA_SCREENSHOT_CHILD"
 SIZE = (1440, 900)
+MAX_WIDTH = 1920  # README では幅 960 で表示するので、高解像度の画面でも 2 倍あれば足りる
 
 # 架空の論文（タイトル, 著者 [(姓, 名)], 年, 雑誌, DOI）。DOI は例示用の 10.5555
 PAPERS = [
@@ -35,6 +37,15 @@ PAPERS = [
     ("Measuring Readability of Machine-Translated Papers", [("Lindqvist", "Maja")], 2022, "Proceedings of the Demo Workshop", ""),
     ("Figures, Tables and Equations as Fixed Regions", [("Haddad", "Omar"), ("Chen", "Wei")], 2021, "Example Letters", "10.5555/demo.2021.008"),
 ]
+# 架空の論文の本文（本文の検索の場面で、抜粋が出るように。SEARCH の語を含む）
+BODIES = {
+    1: "Earlier systems ignored punctuation when they split a page into regions, so headings were often merged with the paragraphs below them.",
+    2: "本研究では、数式の領域を検出したあと、punctuation と記号の並びから行内の数式を区別する。",
+    3: "Readers rated each page for fluency; errors in punctuation and line breaks lowered the scores the most.",
+    4: "Captions keep their original punctuation, and equation numbers stay aligned with the right margin.",
+}
+SEARCH = "punctuation"  # ライブラリの場面で検索欄に入れる語（タイトルにはなく、本文にだけある）
+NOTE = "レイアウトを保ったまま訳す方法。図表と数式の位置を変えない点が、先行研究との違い。\n\n- 式 (1) の縮小率は下限を設けていない？\n- 3 章の比較を、自分の実験の評価にも使う"
 
 
 def main() -> int:
@@ -97,12 +108,15 @@ def _shoot(out: Path, scenes: list[str]) -> int:
     ids = [demo.id]
     for i, (title, authors, year, venue, doi) in enumerate(PAPERS):
         f = work / f"paper{i}.pdf"
-        _blank_pdf(f, title)
+        _blank_pdf(f, title, BODIES.get(i, ""))
         p, _ = lib.add(f, Metadata(title=title, authors=[Author(a, b) for a, b in authors], year=year, venue=venue, doi=doi))
         ids.append(p.id)
     for pid in ids:
         lib.set_meta_status(pid, "done")  # 照会済みの扱いにして「照会を有効にする」の案内を出さない
-    lib.set_favorite(ids[1], True)
+    for pid in (ids[0], ids[2]):  # 一覧に、塗りつぶしたスターと枠だけのスターが並ぶように
+        lib.set_favorite(pid, True)
+    _demo_annotations(lib, demo.id, demo_pdf)
+    lib.set_note(demo.id, NOTE)
     col = lib.create_collection("修士論文")
     lib.add_to_collection(col.id, ids[:3])
 
@@ -142,6 +156,7 @@ def _shoot(out: Path, scenes: list[str]) -> int:
         for key in image.textKeys():  # 念のため、テキストのメタデータを付けない
             image.setText(key, "")
         image.save(str(out / f"{name}.png"))
+        _shrink(out / f"{name}.png")
         print(out / f"{name}.png")
 
     def run() -> None:
@@ -149,17 +164,34 @@ def _shoot(out: Path, scenes: list[str]) -> int:
             win.translate_papers([demo.id])
             if not pump(60, until=lambda: lib.get(demo.id).has_translation_file and not win._busy()):
                 failures.append("デモ論文の翻訳が終わりませんでした")
+            # 本文の索引を作る（ふだんは起動の数秒後に裏で作る）
+            win.fulltext.schedule(0)
+            pump(1.0)
+            if not pump(60, until=lambda: not win.fulltext.indexing and (win.fulltext.stats() or None) is not None):
+                failures.append("本文の索引ができませんでした")
             for mode in ("light", "dark"):
                 set_theme(mode)
                 if "library" in scenes:
+                    # お気に入りのスター（塗り・枠）と、本文の検索の抜粋（「本文に一致」）
                     win.show_library()
-                    win.library_view.select_ids([demo.id])
+                    win.library_view.side_panel.set_current_tab("details")
+                    win.search.setText(SEARCH)
+                    view = win.library_view
+                    if not pump(10, until=lambda: any(win.library_view.proxy.matches(i) for i in ids)):
+                        failures.append("本文の検索の結果が出ませんでした")
+                    view.select_ids([demo.id])
                     snap(win, f"screenshot-library-{mode}")
+                    win.search.clear()
+                    pump()
                 if "reader" in scenes:
                     win.open_paper(demo.id)
                     pump(1.5)
                     win.view_mode.set_current("both")
+                    win.nav_btn.setChecked(True)  # 左のページの一覧
+                    win.side_panel.set_current_tab("note")
+                    pump(1.0)
                     snap(win, f"screenshot-reader-{mode}")
+                    win.nav_btn.setChecked(False)
                     win.show_library()
                 if "trash" in scenes:
                     lib.trash(ids[-1])
@@ -172,11 +204,14 @@ def _shoot(out: Path, scenes: list[str]) -> int:
                     win.library_view.sidebar.select_scope("all")
                 if "sync" in scenes:
                     _sync_shots(win, mode, snap)
+                if "settings" in scenes:
+                    _settings_shots(win, mode, snap)
                 if "export" in scenes and mode == "light":
                     from spectra.core.options import OutputMode
                     from spectra.ui.export_dialog import ExportDialog
 
-                    dlg = ExportDialog(OutputMode.SIDE_BY_SIDE, 1, win)
+                    count = len(lib.annotations(demo.id))  # 注釈があるときだけ「注釈を含める」が出る
+                    dlg = ExportDialog(OutputMode.SIDE_BY_SIDE, 1, win, annotation_count=count)
                     dlg.show()
                     snap(dlg, "screenshot-export")
                     dlg.close()
@@ -203,12 +238,60 @@ def _sync_shots(win, mode: str, snap) -> None:
     dlg.close()
 
 
-def _blank_pdf(path: Path, title: str) -> None:
+def _settings_shots(win, mode: str, snap) -> None:
+    """設定の「詳細」タブの本文検索の欄（索引の件数と大きさが出ている状態）。"""
+    from spectra.ui.settings_dialog import SettingsDialog
+
+    dlg = SettingsDialog(win.settings, win.secrets, win.cache, win, sync=win.sync, fulltext=win.fulltext)
+    dlg.show_tab("advanced")
+    dlg.show()
+    area = dlg.stack.currentWidget()
+    group = dlg.fulltext_search
+    while group.parentWidget() is not area.widget():  # 本文検索の欄（見出しから）を上端に
+        group = group.parentWidget()
+    area.verticalScrollBar().setValue(max(0, group.y() - 8))
+    snap(dlg, f"screenshot-settings-{mode}")
+    dlg.close()
+
+
+def _demo_annotations(lib, paper_id: int, pdf: Path) -> None:
+    """デモ論文に、マーカー 2 つと付箋 1 つを付ける（位置は原文の文字から求める）。"""
+    import pymupdf
+
+    with pymupdf.open(pdf) as doc:
+        page = doc[0]
+        for phrase, color, comment in (
+            ("replaces only the running text", "yellow", ""),
+            ("Blocks that belong to", "green", ""),
+            ("punctuation never starts a line.", "blue", "禁則処理。日本語の組版の規則に合わせている"),
+        ):
+            quads = [tuple(r) for r in page.search_for(phrase)]
+            lib.add_annotation(paper_id, "highlight", 0, quads, quote=phrase, color=color, comment=comment)
+    lib.add_annotation(paper_id, "note", 0, [(512, 250, 512, 250)], color="pink", comment="この図を発表のスライドに使う")
+
+
+def _shrink(path: Path) -> None:
+    """幅を MAX_WIDTH までに縮め、256 色にして最大の圧縮で保存し直す（メタデータは付けない）。
+
+    減色は MAXCOVERAGE で、画面の小さな色の部分（マーカーの色など）も元の色のまま残す（元との差は 1 チャンネル 12 以内）。
+    """
+    from PIL import Image
+
+    with Image.open(path) as src:
+        image = src.convert("RGB")
+    if image.width > MAX_WIDTH:
+        image = image.resize((MAX_WIDTH, round(image.height * MAX_WIDTH / image.width)), Image.Resampling.LANCZOS)
+    image.quantize(256, method=Image.Quantize.MAXCOVERAGE, dither=Image.Dither.NONE).save(path, optimize=True)
+
+
+def _blank_pdf(path: Path, title: str, body: str = "") -> None:
     import pymupdf
 
     doc = pymupdf.open()
     page = doc.new_page()
     page.insert_textbox(pymupdf.Rect(72, 72, 523, 140), title, fontsize=16, fontname="tiro")
+    if body:
+        page.insert_textbox(pymupdf.Rect(72, 160, 523, 400), body, fontsize=11, fontname="japan")
     doc.save(path)
 
 

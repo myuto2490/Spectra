@@ -1,6 +1,7 @@
 """訳文の描画に使うフォント一式。
 
-- 和文: 内蔵の Droid Sans Fallback（追加ファイル不要）または指定フォントファイル
+- 和文: 同梱の Noto Sans JP（既定）、または指定フォントファイル（ダウンロードした Noto Serif JP など）。
+  どちらも読めないときの最後の予備は、MuPDF 内蔵の Droid Sans Fallback
 - 欧文: 和文の書風に合わせて Times 系 / Helvetica 系（PDF 標準フォント、サブセット埋め込み）
 - 数式の斜体: Times Italic
 

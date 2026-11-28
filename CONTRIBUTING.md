@@ -60,18 +60,32 @@ docs: API キーの取得手順を更新
 バージョンは [セマンティック バージョニング](https://semver.org/lang/ja/) に従い、
 `src/spectra/__init__.py` の `__version__` だけで管理します（他の場所はすべてここから取得します）。
 
+### リリース前の文書の確認
+
+リリースのたびに、次の文書をそのリリースの内容に合わせて更新します（過去の版の説明のまま残さないため）。
+
+- [ ] `README.md`：特長・使い方・キーボードショートカット・よくある質問・English の要約に、新しい機能と変わった操作が入っていること。既知の制限（訳さないもの）が今の動きと合っていること
+- [ ] `SECURITY.md`：外部への通信（送り先・送る内容・オフにする方法）が今のコードと合っていること
+- [ ] `docs/DESIGN.md`：ディレクトリ構成・判定の規則・画面構成・ショートカットが今のコードと合っていること
+- [ ] スクリーンショット（`docs/images/`）：画面が変わったときは撮り直すこと
+- [ ] [Wiki](https://github.com/myuto2490/Spectra/wiki)：使い方・設定・制限・新しい機能のページを、README と食い違わないよう更新すること。Wiki は別のリポジトリ（`Spectra.wiki`）で、ページごとにコミットし、push はメンテナーの承認後に行う。変わりやすい内容（ショートカット・モデルの一覧など）は README へのリンクにし、固定のバージョン番号は書かない
+- [ ] `README.md`・`SECURITY.md`・`CONTRIBUTING.md` にバージョン番号を直接書かないこと（ダウンロードのファイル名は `x.y.z`、最新版はバッジとリンク `releases/latest` で示す。履歴の説明は CHANGELOG に書く）。
+  `pytest`（`tests/test_versioning.py`）と、タグの push で動く `scripts/check_version.py` が、数字 3 つを点でつないだ番号を見つけるとエラーにします（URL の中は除きます）
+
 リリース手順（メンテナー向け）:
 
 ```sh
 git checkout develop
+# 先に上の「リリース前の文書の確認」を済ませ、develop にマージしておく
 python scripts/bump_version.py minor        # major / minor / patch / X.Y.Z
+python scripts/check_version.py vX.Y.Z      # タグ・__version__・CHANGELOG の一致と、文書に固定の番号が無いことを確認
 git commit -am "chore(release): vX.Y.Z"
 git checkout main && git merge --no-ff develop
 git tag -a vX.Y.Z -m "Spectra vX.Y.Z"
 git push origin main develop vX.Y.Z
 ```
 
-タグを push すると GitHub Actions がタグ・`__version__`・CHANGELOG の一致を検査し、
+タグを push すると GitHub Actions がタグ・`__version__`・CHANGELOG の一致と、文書に固定のバージョン番号が無いことを検査し、
 Windows / macOS / Linux 向けのアプリをビルドして Release を作成します。
 コード署名の設定は [docs/CODE_SIGNING.md](docs/CODE_SIGNING.md) を参照してください。
 

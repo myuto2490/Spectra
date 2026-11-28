@@ -2,10 +2,20 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QItemSelectionModel, QModelIndex, QSize, Qt, Signal
+from PySide6.QtCore import (
+    QEvent,
+    QItemSelectionModel,
+    QModelIndex,
+    QObject,
+    QRect,
+    QSize,
+    Qt,
+    Signal,
+)
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QHBoxLayout,
     QHeaderView,
     QInputDialog,
@@ -16,6 +26,9 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QStackedWidget,
+    QStyle,
+    QStyledItemDelegate,
+    QStyleOptionViewItem,
     QTableView,
     QVBoxLayout,
     QWidget,
@@ -34,15 +47,74 @@ from .library_model import (
     TRASH,
     TRASH_DAYS,
     UNTRANSLATED,
+    FavoriteRole,
     PaperFilterProxy,
     PaperIdRole,
     PaperTableModel,
 )
+from .match_delegate import MATCH_ROW_HEIGHT, ROW_HEIGHT, MatchDelegate
 from .side_panel import SidePanel
 from .widgets import button, label, link_button, plain_box, set_prop
 
 ScopeRole = Qt.ItemDataRole.UserRole + 10
 CollectionRole = Qt.ItemDataRole.UserRole + 11
+
+
+STAR_SIZE = 16
+
+
+def star_colors(favorite: bool, selected: bool, hovered: bool) -> tuple[str, str]:
+    """スターの線と塗りの色。お気に入りなら塗りつぶし、そうでなければ枠だけ（押せることが分かるよう常に表示）。"""
+    t = theme.current()
+    if favorite:
+        return t.label, t.label
+    if hovered:
+        return t.label, ""
+    return (t.secondary if selected else t.tertiary), ""
+
+
+class FavoriteDelegate(QStyledItemDelegate):
+    """お気に入りの列：枠だけのスター（お気に入りでない）か、塗りつぶしたスター（お気に入り）を中央に描く。"""
+
+    def paint(self, painter, option, index) -> None:
+        opt = QStyleOptionViewItem(option)
+        self.initStyleOption(opt, index)
+        opt.text = ""
+        widget = opt.widget
+        style = widget.style() if widget is not None else QApplication.style()
+        style.drawControl(QStyle.ControlElement.CE_ItemViewItem, opt, painter, widget)  # 背景（選択・交互の色）
+        state = option.state
+        stroke, fill = star_colors(
+            bool(index.data(FavoriteRole)),
+            bool(state & QStyle.StateFlag.State_Selected),
+            bool(state & QStyle.StateFlag.State_MouseOver),
+        )
+        dpr = widget.devicePixelRatioF() if widget is not None else 2.0
+        pm = icons.pixmap("star", stroke, STAR_SIZE, max(dpr, 1.0), fill)
+        r = QRect(0, 0, STAR_SIZE, STAR_SIZE)
+        r.moveCenter(option.rect.center())
+        painter.drawPixmap(r, pm)
+
+
+class _StarCursor(QObject):
+    """スターの列の上では指の形のカーソルにして、押せることを示す。"""
+
+    def __init__(self, table: QTableView, column: int) -> None:
+        super().__init__(table)
+        self.table, self.column = table, column
+        table.setMouseTracking(True)
+        table.viewport().installEventFilter(self)
+
+    def eventFilter(self, obj, event) -> bool:  # noqa: N802
+        if event.type() == QEvent.Type.MouseMove:
+            index = self.table.indexAt(event.position().toPoint())
+            if index.isValid() and index.column() == self.column:
+                obj.setCursor(Qt.CursorShape.PointingHandCursor)
+            else:
+                obj.unsetCursor()
+        elif event.type() == QEvent.Type.Leave:
+            obj.unsetCursor()
+        return False
 
 SCOPES = [
     (ALL, "すべての論文", "books"),
@@ -189,6 +261,7 @@ class LibraryView(QWidget):
     syncSetupRequested = Signal()  # 同期の設定を開いてほしい
     syncStatusClicked = Signal()  # サイドバーの同期の状態の行が押された
     emptyTrashRequested = Signal()
+    indexCancelRequested = Signal()  # 本文の索引づくりを中止してほしい
     settingsRequested = Signal()  # 設定（API キー）を開いてほしい
 
     def __init__(self, library: Library, settings: Settings | None = None, parent: QWidget | None = None):
@@ -223,6 +296,20 @@ class LibraryView(QWidget):
         self.sync_status.hide()
         status_row.addWidget(self.sync_status, 1)
         sl.addLayout(status_row)
+        # 本文の索引づくりの進み具合（していなければ隠す）
+        self.index_status = QWidget()
+        ir = QHBoxLayout(self.index_status)
+        ir.setContentsMargins(14, 2, 12, 2)
+        ir.setSpacing(8)
+        self.index_status_text = label("", "caption")
+        self.index_status_text.setAccessibleName("本文の索引の状態")
+        self.index_cancel_btn = link_button("中止")
+        self.index_cancel_btn.setAccessibleName("本文の索引づくりを中止")
+        self.index_cancel_btn.clicked.connect(self.indexCancelRequested)
+        ir.addWidget(self.index_status_text, 1)
+        ir.addWidget(self.index_cancel_btn)
+        self.index_status.hide()
+        sl.addWidget(self.index_status)
         new_row = QHBoxLayout()
         new_row.setContentsMargins(12, 6, 12, 10)
         self.new_collection_btn = link_button("＋ 新しいコレクション")
@@ -246,7 +333,8 @@ class LibraryView(QWidget):
         self.table.setWordWrap(False)
         self.table.setTextElideMode(Qt.TextElideMode.ElideRight)
         self.table.verticalHeader().hide()
-        self.table.verticalHeader().setDefaultSectionSize(30)
+        self.table.verticalHeader().setDefaultSectionSize(ROW_HEIGHT)
+        self.table.setItemDelegateForColumn(COL["title"], MatchDelegate(self.table))
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setDragEnabled(True)
         self.table.setDragDropMode(QAbstractItemView.DragDropMode.DragOnly)
@@ -264,6 +352,10 @@ class LibraryView(QWidget):
                 hh.setSectionResizeMode(col, QHeaderView.ResizeMode.Interactive)
                 self.table.setColumnWidth(col, widths[key])
         hh.setSectionResizeMode(COL["favorite"], QHeaderView.ResizeMode.Fixed)
+        self.table.setItemDelegateForColumn(COL["favorite"], FavoriteDelegate(self.table))
+        self._star_cursor = _StarCursor(self.table, COL["favorite"])
+        # 検索中は関連度の順に並べ、見出しを押したらその列の順にする
+        hh.sectionClicked.connect(lambda _c: self._on_header_clicked())
         self.table.doubleClicked.connect(self._on_double_click)
         self.table.clicked.connect(self._on_click)
         self.table.selectionModel().selectionChanged.connect(lambda *_: self.selectionChanged.emit())
@@ -383,6 +475,7 @@ class LibraryView(QWidget):
         selected = self.selected_ids()
         trashed = self.library.trashed_papers()
         self.model.set_papers(self.library.papers() + trashed)
+        self.proxy.set_comments(self.library.annotation_comments())
         self.sidebar.rebuild([(c.id, c.name) for c in self.library.collections()])
         self.sidebar.set_trash_count(len(trashed))
         self.select_ids(selected)
@@ -473,7 +566,42 @@ class LibraryView(QWidget):
 
     def set_search(self, text: str) -> None:
         self.proxy.set_search(text)
+        self._update_search_look()
         self._update_empty()
+
+    def set_fulltext(self, text: str, found) -> None:
+        """本文の問い合わせの結果（FulltextController.resultsReady）。"""
+        self.proxy.set_fulltext(text, found)
+        self._update_search_look()
+        self._update_empty()
+
+    def refresh_comments(self) -> None:
+        """注釈が変わったとき、検索に使う注釈のコメントを読み直す。"""
+        self.proxy.set_comments(self.library.annotation_comments())
+        self._update_search_look()
+
+    def matches_for(self, paper_id: int) -> list[tuple[str, str, tuple]]:
+        """検索で書誌以外に一致した箇所（詳細パネルに出す）。"""
+        return self.proxy.matches(paper_id)
+
+    def _on_header_clicked(self) -> None:
+        if self.proxy.has_search():
+            self.proxy.set_user_sorted(True)
+            self._update_search_look()
+
+    def _update_search_look(self) -> None:
+        """本文・メモに一致した論文があれば行を高くして抜粋を出す。関連度の順の間は並べ替えの印を隠す。"""
+        height = MATCH_ROW_HEIGHT if self.proxy.has_extra_matches() else ROW_HEIGHT
+        if self.table.verticalHeader().defaultSectionSize() != height:
+            self.table.verticalHeader().setDefaultSectionSize(height)
+        self.table.horizontalHeader().setSortIndicatorShown(not self.proxy.relevance_order())
+
+    def set_index_status(self, text: str, cancellable: bool = False, warning: bool = False) -> None:
+        """サイドバーの下の、本文の索引の状態（空なら隠す）。"""
+        self.index_status_text.setText(text)
+        set_prop(self.index_status_text, "tone", "warning" if warning else None)
+        self.index_cancel_btn.setVisible(cancellable)
+        self.index_status.setVisible(bool(text))
 
     def _update_empty(self, *_args) -> None:
         trash = self.in_trash()

@@ -440,6 +440,18 @@ class Library:
         items = [_annotation(r) for r in rows]
         return sorted(items, key=lambda a: (a.page, a.rect[1], a.rect[0], a.created_at))
 
+    def annotation_comments(self) -> dict[int, str]:
+        """論文ごとの注釈のコメントを 1 つにつないだもの（ライブラリの検索に使う）。コメントのない論文は含めない。"""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT paper_id, comment FROM state.annotations WHERE comment != '' ORDER BY page, created_at"
+            ).fetchall()
+        out: dict[int, list[str]] = {}
+        for r in rows:
+            if str(r[1]).strip():
+                out.setdefault(int(r[0]), []).append(str(r[1]))
+        return {pid: "\n".join(parts) for pid, parts in out.items()}
+
     def get_annotation(self, annotation_id: str) -> Annotation | None:
         with self._lock:
             row = self._db.execute("SELECT * FROM state.annotations WHERE id = ?", (annotation_id,)).fetchone()

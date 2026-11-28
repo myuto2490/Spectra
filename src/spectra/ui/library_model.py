@@ -8,6 +8,7 @@ import unicodedata
 from datetime import datetime
 
 from PySide6.QtCore import QAbstractTableModel, QMimeData, QModelIndex, QSortFilterProxyModel, Qt
+from PySide6.QtGui import QKeySequence
 
 from ..library import Paper
 from . import icons, theme
@@ -30,6 +31,14 @@ _ROOT = QModelIndex()
 
 PaperIdRole = Qt.ItemDataRole.UserRole + 1
 SortRole = Qt.ItemDataRole.UserRole + 2
+FavoriteRole = Qt.ItemDataRole.UserRole + 3  # お気に入りかどうか（スターの列の描画に使う）
+
+FAVORITE_SHORTCUT = "Ctrl+D"  # 選んだ論文のお気に入りを切り替える（メニューの「ライブラリ」）
+
+
+def favorite_action_text(on: bool) -> str:
+    """お気に入りを切り替える操作の名前（ツールチップ・メニュー）。on は今お気に入りかどうか。"""
+    return "お気に入りから外す" if on else "お気に入りに追加"
 
 # 絞り込み（サイドバー）
 ALL, RECENT, FAVORITES, TRANSLATED, UNTRANSLATED = "all", "recent", "favorites", "translated", "untranslated"
@@ -268,9 +277,9 @@ class PaperTableModel(QAbstractTableModel):
         md = p.metadata
         if role == PaperIdRole:
             return p.id
+        if role == FavoriteRole:
+            return p.favorite
         if role == Qt.ItemDataRole.DisplayRole:
-            if key == "favorite":
-                return "★" if p.favorite else ""
             if key == "title":
                 return p.display_title
             if key == "authors":
@@ -315,7 +324,8 @@ class PaperTableModel(QAbstractTableModel):
             if key == "authors" and md.authors:
                 return plain_tooltip(", ".join(a.full() for a in md.authors))
             if key == "favorite":
-                return "お気に入り" if p.favorite else ""
+                shortcut = QKeySequence(FAVORITE_SHORTCUT).toString(QKeySequence.SequenceFormat.NativeText)
+                return f"{favorite_action_text(p.favorite)}（{shortcut}）"
         if role == Qt.ItemDataRole.AccessibleTextRole:
             if key == "title":
                 state = local_state(p, self._downloads.get(p.id))
@@ -324,6 +334,8 @@ class PaperTableModel(QAbstractTableModel):
                 return "お気に入り" if p.favorite else "お気に入りではない"
             if key == "status":
                 return translation_status(p, self._jobs.get(p.id), self._percent.get(p.id))[0].lstrip("✓◐⟳…⚠ ")
+        if role == Qt.ItemDataRole.AccessibleDescriptionRole and key == "favorite":
+            return f"クリックで{favorite_action_text(p.favorite)}"
         if role == Qt.ItemDataRole.TextAlignmentRole and key in ("favorite", "year"):
             return int(Qt.AlignmentFlag.AlignCenter)
         return None

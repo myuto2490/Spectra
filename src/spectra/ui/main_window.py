@@ -73,7 +73,7 @@ from .annotation_popover import AnnotationPopover, UndoBar
 from .export_dialog import ExportDialog, suffix_for
 from .inspector import Inspector
 from .jobs import LookupQueue, TranslationNotice, TranslationQueue, TranslationRequest
-from .library_model import TRASH_DAYS
+from .library_model import FAVORITE_SHORTCUT, TRASH_DAYS, favorite_action_text
 from .library_view import LibraryView
 from .paper_detail import MetadataDialog
 from .pdf_view import ANNOTATION_NAMES, ANNOTATION_RGB, ZOOM_PRESETS, FindBar, NavPane, PreviewPair
@@ -573,7 +573,7 @@ class MainWindow(QMainWindow):
         lib = mb.addMenu("ライブラリ")
         self.act_find = act("検索", self.focus_search, QKeySequence.StandardKey.Find)
         self.act_open_paper = act("開く", self._open_selected)
-        self.act_favorite = act("お気に入り", lambda: self.library_view.toggle_favorite(), f"{mod}+D")
+        self.act_favorite = act(favorite_action_text(False), lambda: self.library_view.toggle_favorite(), FAVORITE_SHORTCUT)
         self.act_edit = act("書誌情報を編集…", self._edit_selected, f"{mod}+I")
         self.act_lookup = act("書誌情報を取得し直す", lambda: self._lookup(self.library_view.selected_ids(), ask=True))
         self.act_bibtex = act("BibTeX をコピー", lambda: self.copy_bibtex(self.library_view.selected_ids()), f"{mod}+Shift+C")
@@ -688,6 +688,8 @@ class MainWindow(QMainWindow):
         for a in (self.act_open_paper, self.act_favorite, self.act_edit, self.act_lookup, self.act_bibtex, self.act_remove):
             a.setEnabled(bool(selected))
         self.act_open_paper.setEnabled(len(selected) == 1)
+        selected_papers = [p for p in (self.library_view.model.paper(i) for i in selected) if p is not None]
+        self.act_favorite.setText(favorite_action_text(bool(selected_papers) and all(p.favorite for p in selected_papers)))
         self.act_edit.setEnabled(len(selected) == 1)
         self.act_new_collection.setEnabled(not reader)
         for a in (*self._view_actions, *self._zoom_actions, *self._page_actions, *self._annotation_actions, self.act_inspector):
@@ -1281,8 +1283,7 @@ class MainWindow(QMainWindow):
         else:
             menu.addAction("翻訳キューに追加" if len(ids) > 1 else "翻訳する", lambda: self.translate_papers(ids))
         menu.addSeparator()
-        fav = all(p.favorite for p in papers)
-        menu.addAction("お気に入りから外す" if fav else "お気に入りに追加", lambda: view.toggle_favorite(ids))
+        menu.addAction(favorite_action_text(all(p.favorite for p in papers)), lambda: view.toggle_favorite(ids))
         menu.addMenu(view.collection_menu(ids))
         if view.proxy.scope()[0] == "collection":
             menu.addAction("このコレクションから外す", lambda: view.remove_from_current_collection(ids))

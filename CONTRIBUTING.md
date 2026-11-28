@@ -68,6 +68,7 @@ docs: API キーの取得手順を更新
 - [ ] `SECURITY.md`：外部への通信（送り先・送る内容・オフにする方法）が今のコードと合っていること
 - [ ] `docs/DESIGN.md`：ディレクトリ構成・判定の規則・画面構成・ショートカットが今のコードと合っていること
 - [ ] スクリーンショット（`docs/images/`）：画面が変わったときは撮り直すこと
+- [ ] [Wiki](https://github.com/myuto2490/Spectra/wiki)：使い方・設定・制限・新しい機能のページを、README と食い違わないよう更新すること。Wiki は別のリポジトリ（`Spectra.wiki`）で、ページごとにコミットし、push はメンテナーの承認後に行う。変わりやすい内容（ショートカット・モデルの一覧など）は README へのリンクにし、固定のバージョン番号は書かない
 - [ ] `README.md`・`SECURITY.md`・`CONTRIBUTING.md` にバージョン番号を直接書かないこと（ダウンロードのファイル名は `x.y.z`、最新版はバッジとリンク `releases/latest` で示す。履歴の説明は CHANGELOG に書く）。
   `pytest`（`tests/test_versioning.py`）と、タグの push で動く `scripts/check_version.py` が、数字 3 つを点でつないだ番号を見つけるとエラーにします（URL の中は除きます）
 

@@ -294,3 +294,89 @@ def test_snippet_marks_every_match_and_adds_ellipses():
     snip, spans = make_snippet(text, re.compile("target", re.IGNORECASE))
     assert snip.startswith("…") and snip.endswith("…")
     assert [snip[a:b] for a, b in spans] == ["Target", "target"]
+
+
+# -- レビューの指摘 ----------------------------------------------------------
+
+
+def test_control_characters_in_terms_do_not_break_or_match_everything(index, tmp_path):
+    index.index(_src(_pdf(tmp_path / "a.pdf", ["abcd text"])))
+    assert index.search(["ab\x00cd"]) == {} or "a" * 64 in index.search(["ab\x00cd"])  # 例外にならない
+    assert index.search(["\x00"]) == {}
+    assert index.search(["\x07\x1f"]) == {}
+    assert query_terms("ab\x00cd \x01") == ["ab", "cd"]
+
+
+def test_compound_hyphen_at_line_end_is_kept():
+    assert normalize("CO2-\nrich air") == "CO2-rich air"
+    assert normalize("radia-\ntive") == "radiative"
+
+
+def test_unstorable_text_marks_only_that_pdf_broken(index, tmp_path, monkeypatch):
+    a = _pdf(tmp_path / "a.pdf", ["alpha"])
+    b = _pdf(tmp_path / "b.pdf", ["beta words"])
+    real = fulltext.extract
+    monkeypatch.setattr(fulltext, "extract", lambda p, c=None: (OK, ["bad \ud800 text"]) if p == a else real(p, c))
+    assert index.index(_src(a)) == BROKEN
+    assert index.index(_src(b, sha="b" * 64)) == OK
+    assert "b" * 64 in index.search(["beta"])
+
+
+def test_lock_held_by_another_process_is_busy_and_does_not_delete_the_index(tmp_path, monkeypatch):
+    monkeypatch.setattr(fulltext, "BUSY_TIMEOUT", 0.1)
+    path = tmp_path / "f.sqlite3"
+    ix = FulltextIndex(path)
+    ix.index(_src(_pdf(tmp_path / "a.pdf", ["alpha words"])))
+    other = sqlite3.connect(path, isolation_level=None)
+    other.execute("BEGIN EXCLUSIVE")
+    try:
+        with pytest.raises(fulltext.FulltextBusy):
+            ix.index(_src(_pdf(tmp_path / "b.pdf", ["beta"]), sha="b" * 64))
+        ix.close()
+        reader = FulltextIndex(path)  # WAL なので、書き込み中でも読める
+        assert "a" * 64 in reader.search(["alpha"])
+        reader.close()
+    finally:
+        other.execute("ROLLBACK")
+        other.close()
+
+    def locked(self):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(FulltextIndex, "_connect", locked)
+    with pytest.raises(fulltext.FulltextBusy):
+        FulltextIndex(path)  # 開くときに使用中でも、壊れたとみなして消さない
+    monkeypatch.undo()
+    ix = FulltextIndex(path)
+    assert "a" * 64 in ix.search(["alpha"])
+    ix.close()
+
+
+def test_query_errors_are_busy_not_unavailable(index):
+    class Broken:
+        def execute(self, *a, **k):
+            raise sqlite3.OperationalError("fts5: syntax error near")
+
+    index._db = Broken()
+    with pytest.raises(fulltext.FulltextBusy):
+        index.search(["alpha"])
+    index._db = None
+
+
+@pytest.mark.skipif(__import__("os").name == "nt", reason="POSIX の権限")
+def test_index_files_are_private(tmp_path):
+    import os
+    import stat
+
+    path = tmp_path / "new-cache" / "fulltext.sqlite3"
+    ix = FulltextIndex(path)
+    ix.index(_src(_pdf(tmp_path / "a.pdf", ["alpha words"])))
+    assert stat.S_IMODE(os.stat(path.parent).st_mode) == 0o700
+    for suffix in ("", "-wal", "-shm"):
+        p = path.with_name(path.name + suffix)
+        if p.exists():
+            assert stat.S_IMODE(os.stat(p).st_mode) == 0o600, suffix
+    ix.close()
+    os.chmod(path, 0o644)  # 以前の版で作った索引も、開くときに直す
+    FulltextIndex(path).close()
+    assert stat.S_IMODE(os.stat(path).st_mode) == 0o600

@@ -296,3 +296,75 @@ def test_settings_without_controller_has_no_fulltext_group(app):
     d = _dialog(Settings(), None)
     assert not hasattr(d, "fulltext_search")
     d.close()
+
+
+# -- レビューの指摘 ----------------------------------------------------------
+
+
+def test_busy_query_falls_back_once_without_disabling(app, lib, tmp_path):
+    from spectra.library.fulltext import FulltextBusy
+
+    lib.add(_pdf(tmp_path / "a.pdf", "alpha beta"))
+    ctl = _controller(lib, tmp_path)
+    assert _wait(lambda: ctl.index is not None and not ctl.indexing and ctl.index.known())
+    real = ctl.index.search
+    ctl.index.search = lambda *a, **k: (_ for _ in ()).throw(FulltextBusy("database is locked"))
+    got = _results(ctl)
+    ctl.query("alpha")
+    assert _wait(lambda: got)
+    assert got[-1] == ("alpha", None) and ctl.available and not ctl.unavailable
+    ctl.index.search = real
+    ctl.query("alpha beta")
+    assert _wait(lambda: got[-1][0] == "alpha beta" and got[-1][1])
+    ctl.close()
+
+
+def test_busy_pass_retries_later_without_disabling(app, lib, tmp_path, monkeypatch):
+    from spectra.library.fulltext import FulltextBusy
+    from spectra.ui import fulltext_controller
+
+    lib.add(_pdf(tmp_path / "a.pdf", "alpha beta"))
+    calls = []
+
+    def busy(*a, **k):
+        calls.append(1)
+        if len(calls) == 1:
+            raise FulltextBusy("database is locked")
+        return 0
+
+    monkeypatch.setattr(fulltext_controller, "run_pass", busy)
+    monkeypatch.setattr(fulltext_controller, "BUSY_RETRY_MS", 50)
+    ctl = _controller(lib, tmp_path)
+    assert _wait(lambda: len(calls) >= 2)
+    assert ctl.available
+    ctl.close()
+
+
+def test_closed_or_disabled_controller_never_creates_the_index(app, lib, tmp_path):
+    settings = Settings()
+    settings.fulltext_search = False
+    ctl = _controller(lib, tmp_path, settings)
+    assert ctl.stats() is None
+    ctl.query("alpha")
+    _wait(lambda: False, timeout=0.2)
+    assert not (tmp_path / "cache").exists()
+    settings.fulltext_search = True
+    ctl.close()
+    assert ctl.stats() is None
+    assert not (tmp_path / "cache").exists()
+
+
+def test_one_bad_pdf_does_not_stop_the_pass(app, lib, tmp_path, monkeypatch):
+    from spectra.library import fulltext
+
+    a, _ = lib.add(_pdf(tmp_path / "a.pdf", "first paper text"))
+    b, _ = lib.add(_pdf(tmp_path / "b.pdf", "second paper text"))
+    real = fulltext.extract
+    monkeypatch.setattr(
+        fulltext, "extract", lambda p, c=None: ("ok", ["bad \ud800"]) if p == a.pdf_path else real(p, c)
+    )
+    ctl = _controller(lib, tmp_path)
+    assert _wait(lambda: ctl.index is not None and not ctl.indexing and len(ctl.index.known()) == 2)
+    assert ctl.index.known()[(a.sha256, ORIGINAL)][2] == "broken"
+    assert ctl.index.known()[(b.sha256, ORIGINAL)][2] == "ok"
+    ctl.close()

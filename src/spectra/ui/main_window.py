@@ -174,6 +174,9 @@ class MainWindow(QMainWindow):
         self.sync.synced.connect(self._on_synced)
         # 同期は合図を出さずにライブラリを変えるので、同期・取得の後にも本文の索引の差分を取る
         self.sync.synced.connect(lambda _r: self.fulltext.schedule())
+        self.fulltext.resultsReady.connect(self._on_fulltext_results)
+        self.fulltext.progressChanged.connect(self._refresh_index_status)
+        self.library_view.indexCancelRequested.connect(self.fulltext.cancel)
         self.sync.downloadFinished.connect(lambda _pid, _purpose: self.fulltext.schedule())
         self._sync_clock = QTimer(self, interval=30_000, timeout=self._refresh_sync_status)  # 「2 分前」を更新する
         self._sync_clock.start()
@@ -341,7 +344,7 @@ class MainWindow(QMainWindow):
         h.addWidget(self.sidebar_btn)
         self.search = QLineEdit()
         self.search.setObjectName("Search")
-        self.search.setPlaceholderText("タイトル・著者・雑誌・DOI で検索")
+        self.search.setPlaceholderText(self._search_placeholder())
         self.search.setAccessibleName("ライブラリを検索")
         self.search.setClearButtonEnabled(True)
         self.search.setMaximumWidth(440)
@@ -350,6 +353,7 @@ class MainWindow(QMainWindow):
             icons.icon("search", theme.current().secondary, 16), QLineEdit.ActionPosition.LeadingPosition
         )
         self.search.textChanged.connect(self.library_view.set_search)
+        self.search.textChanged.connect(lambda t: self.fulltext.query(t))
         # Esc（検索を消す）を押せるかは検索語の有無で決まるので、打つたびに状態を更新する
         self.search.textChanged.connect(lambda _t: self._update_state())
         h.addWidget(self.search, 1)
@@ -936,6 +940,31 @@ class MainWindow(QMainWindow):
         if self.paper is not None and self.paper.id == paper_id:
             self._reload_annotations()
         self.library_view.side_panel.refresh_annotations()
+        self.library_view.refresh_comments()
+
+    # ======================================================================
+    # 本文検索
+    # ======================================================================
+
+    def _search_placeholder(self) -> str:
+        if self.settings.fulltext_search:
+            return "タイトル・著者・DOI・本文・メモで検索"
+        return "タイトル・著者・雑誌・DOI・メモで検索"
+
+    def _on_fulltext_results(self, text: str, found) -> None:
+        self.library_view.set_fulltext(text, found)
+        self._refresh_detail()
+
+    def _refresh_index_status(self) -> None:
+        ft = self.fulltext
+        if ft.progress is not None:
+            done, total = ft.progress
+            self.library_view.set_index_status(f"本文の索引を作成中 {done}/{total}", cancellable=True)
+        elif ft.enabled and ft.unavailable:
+            self.library_view.set_index_status("本文を検索できません（タイトル・著者などで検索します）", warning=True)
+        else:
+            self.library_view.set_index_status("")
+        self.search.setPlaceholderText(self._search_placeholder())
 
     def _reload_annotations(self) -> None:
         """開いている論文の注釈を読み直して、PDF の印と右のパネルの一覧を更新する。"""
@@ -1148,6 +1177,8 @@ class MainWindow(QMainWindow):
             sync_on=self.sync.enabled(),
             sync_available=self.sync.available() or not self.sync.enabled(),
         )
+        if len(papers) == 1:
+            self.library_view.detail.set_matches(self.library_view.matches_for(papers[0].id))
         if self.screen_mode == LIBRARY:
             self._update_state()
 

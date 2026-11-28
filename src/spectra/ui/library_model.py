@@ -11,6 +11,8 @@ from PySide6.QtCore import QAbstractTableModel, QMimeData, QModelIndex, QSortFil
 from PySide6.QtGui import QKeySequence
 
 from ..library import Paper
+from ..library.fulltext import TRANSLATED as TRANSLATED_PDF
+from ..library.fulltext import make_snippet, query_terms
 from . import icons, theme
 from .widgets import plain_tooltip
 
@@ -32,6 +34,11 @@ _ROOT = QModelIndex()
 PaperIdRole = Qt.ItemDataRole.UserRole + 1
 SortRole = Qt.ItemDataRole.UserRole + 2
 FavoriteRole = Qt.ItemDataRole.UserRole + 3  # お気に入りかどうか（スターの列の描画に使う）
+MatchRole = Qt.ItemDataRole.UserRole + 4  # 検索で書誌以外に一致したときの (見出し, 抜粋, 一致した範囲)。なければ None
+
+# 検索で一致した場所（並べる順もこの順）
+META, NOTE, BODY = "meta", "note", "body"
+MAX_MATCHES = 3  # 詳細パネルに出す一致した箇所の数
 
 FAVORITE_SHORTCUT = "Ctrl+D"  # 選んだ論文のお気に入りを切り替える（メニューの「ライブラリ」）
 
@@ -39,6 +46,7 @@ FAVORITE_SHORTCUT = "Ctrl+D"  # 選んだ論文のお気に入りを切り替え
 def favorite_action_text(on: bool) -> str:
     """お気に入りを切り替える操作の名前（ツールチップ・メニュー）。on は今お気に入りかどうか。"""
     return "お気に入りから外す" if on else "お気に入りに追加"
+
 
 # 絞り込み（サイドバー）
 ALL, RECENT, FAVORITES, TRANSLATED, UNTRANSLATED = "all", "recent", "favorites", "translated", "untranslated"
@@ -371,6 +379,14 @@ class PaperFilterProxy(QSortFilterProxyModel):
         self._scope: str = ALL
         self._collection: int | None = None
         self._terms: list[str] = []
+        self._text = ""  # 今の検索の文字列
+        self._raw_terms: list[str] = []  # 書誌・メモと比べる前の語（NFKC）
+        self._body_terms: list[str] = []  # 本文の索引に問い合わせた語
+        self._fulltext: dict | None = None  # sha256 → fulltext.Match（今の検索の文字列に対するものだけ）
+        self._comments: dict[int, str] = {}  # paper_id → 注釈のコメント
+        self._hits: dict[int, tuple[str, int]] = {}  # paper_id → (一致した場所, 本文で一致したページ数)
+        self._match_cache: dict[int, list[tuple[str, str, tuple]]] = {}
+        self._user_sorted = False  # 検索中に、列の見出しで並べ替えを指定した
 
     def _refilter(self, change) -> None:
         # Qt 6.10 で invalidateFilter() が非推奨になり、変更の前後を begin/endFilterChange で囲む形になった
@@ -392,24 +408,78 @@ class PaperFilterProxy(QSortFilterProxyModel):
         return self._scope, self._collection
 
     def set_search(self, text: str) -> None:
-        terms = [search_key(_strip_doi_prefix(t)) for t in normalize_text(text).split() if t]
+        raw = [t for t in normalize_text(text).split() if t]
+        terms = [search_key(_strip_doi_prefix(t)) for t in raw]
+        body_terms = query_terms(text)
 
         def change():
+            if not terms:
+                self._user_sorted = False
+            if text != self._text:
+                self._fulltext = None  # 別の文字列の本文の結果は使わない（届くまでは書誌とメモだけ）
+            self._text = text
             self._terms = terms
+            self._raw_terms = raw
+            self._body_terms = body_terms if len(body_terms) == len(terms) else []
+            self._hits = {}
+            self._match_cache = {}
 
         self._refilter(change)
 
+    def set_fulltext(self, text: str, found: dict | None) -> None:
+        """本文の問い合わせの結果（今の検索の文字列に対するものだけを使う。None なら本文は探さない）。"""
+        if text != self._text:
+            return
+
+        def change():
+            self._fulltext = found
+            self._hits = {}
+            self._match_cache = {}
+
+        self._refilter(change)
+
+    def set_comments(self, comments: dict[int, str]) -> None:
+        """注釈のコメント（ノートと合わせて「メモ」として探す）。"""
+        if comments == self._comments:
+            return
+
+        def change():
+            self._comments = dict(comments)
+            self._hits = {}
+            self._match_cache = {}
+
+        if self._terms:
+            self._refilter(change)
+        else:
+            change()
+
     def has_search(self) -> bool:
         return bool(self._terms)
+
+    def has_extra_matches(self) -> bool:
+        """書誌以外（本文・メモ）だけで一致した論文が表示されているか。"""
+        return any(kind != META for kind, _ in self._hits.values())
+
+    def set_user_sorted(self, on: bool) -> None:
+        if on != self._user_sorted:
+            self._user_sorted = on
+            self.invalidate()
+
+    def relevance_order(self) -> bool:
+        """検索中で、列の並べ替えを指定していない（書誌の一致 → 本文の一致の多い順に並べる）。"""
+        return bool(self._terms) and not self._user_sorted
 
     def filterAcceptsRow(self, row: int, parent: QModelIndex) -> bool:
         model: PaperTableModel = self.sourceModel()
         p = model._papers[row]
         if not self._in_scope(p, model):
             return False
-        if self._terms:
-            md = p.metadata
-            hay = " ".join(
+        if not self._terms:
+            return True
+        self._match_cache.pop(p.id, None)
+        md = p.metadata
+        hay = search_key(
+            " ".join(
                 [
                     p.display_title,
                     p.file_name,
@@ -420,8 +490,72 @@ class PaperFilterProxy(QSortFilterProxyModel):
                     md.arxiv_id,
                 ]
             )
-            return all(t in search_key(hay) for t in self._terms)
+        )
+        in_meta = [t in hay for t in self._terms]
+        if all(in_meta):
+            self._hits[p.id] = (META, 0)
+            return True
+        memo = search_key(f"{p.note}\n{self._comments.get(p.id, '')}")
+        in_note = [t in memo for t in self._terms]
+        body = self._fulltext.get(p.sha256) if self._fulltext and self._body_terms else None
+        in_body = [body is not None and i in body.terms for i in range(len(self._terms))]
+        if not all(a or b or c for a, b, c in zip(in_meta, in_note, in_body)):
+            self._hits.pop(p.id, None)
+            return False
+        kind = NOTE if all(a or b for a, b in zip(in_meta, in_note)) else BODY
+        self._hits[p.id] = (kind, body.page_count if body is not None else 0)
         return True
+
+    def lessThan(self, left: QModelIndex, right: QModelIndex) -> bool:
+        if self.relevance_order():
+            a, b = self._rank(left.row()), self._rank(right.row())
+            if a != b:
+                # 降順の並べ替えでも、関連度の順はそのまま（降順では lessThan の答えが逆に使われる）
+                return a < b if self.sortOrder() == Qt.SortOrder.AscendingOrder else a > b
+        return super().lessThan(left, right)
+
+    def _rank(self, source_row: int) -> tuple[int, int]:
+        p = self.sourceModel()._papers[source_row]
+        kind, pages = self._hits.get(p.id, (META, 0))
+        return ((META, NOTE, BODY).index(kind), -pages)
+
+    def data(self, index: QModelIndex, role=Qt.ItemDataRole.DisplayRole):
+        if role == MatchRole:
+            if not index.isValid() or COLUMNS[index.column()][0] != "title":
+                return None
+            pid = super().data(index, PaperIdRole)
+            matches = self.matches(pid)
+            return matches[0] if matches else None
+        return super().data(index, role)
+
+    def matches(self, paper_id: int) -> list[tuple[str, str, tuple]]:
+        """書誌以外で一致した箇所の (見出し, 抜粋, 一致した範囲) の列（本文は最大 MAX_MATCHES 件）。"""
+        hit = self._hits.get(paper_id)
+        if hit is None or hit[0] == META:
+            return []
+        if paper_id in self._match_cache:
+            return self._match_cache[paper_id]
+        p = self.sourceModel().paper(paper_id)
+        out: list[tuple[str, str, tuple]] = []
+        if p is not None:
+            pattern = re.compile("|".join(re.escape(t) for t in sorted(self._raw_terms, key=len, reverse=True)), re.IGNORECASE)
+            if hit[0] == BODY and self._fulltext:
+                m = self._fulltext.get(p.sha256)
+                for snip in (m.snippets if m is not None else [])[:MAX_MATCHES]:
+                    where = "訳文" if snip.kind == TRANSLATED_PDF else "原文"
+                    out.append((f"本文に一致・{where} p.{snip.page + 1}", snip.text, snip.spans))
+                if not out:
+                    out.append(("本文に一致", "", ()))
+            for memo in (p.note, self._comments.get(p.id, "")):
+                if len(out) >= MAX_MATCHES:
+                    break
+                snip = make_snippet(" ".join(normalize_text(memo).split()), pattern) if memo else None
+                if snip is not None:
+                    out.append(("メモに一致", snip[0], snip[1]))
+            if not out:
+                out.append(("メモに一致", "", ()))
+        self._match_cache[paper_id] = out
+        return out
 
     def _in_scope(self, p: Paper, model: PaperTableModel) -> bool:
         s = self._scope

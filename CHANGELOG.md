@@ -7,6 +7,8 @@
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-28
+
 ### 追加
 
 - ライブラリの検索で、論文の本文（原文と訳文）、ノート、注釈のコメントも探せるようにしました（Issue #1）。書誌情報に一致した論文、メモに一致した論文、本文だけで一致した論文（一致したページの多い順）の順に並べ、タイトルの下に「本文に一致」「メモに一致」と抜粋を出します。右のパネルには、一致した箇所を原文か訳文か・ページつきで 3 件まで出します。本文の索引は、このパソコンの中にだけ、裏で少しずつ作ります（同期せず、外部にも送りません。ファイルは持ち主だけが読めます）。作っている間はサイドバーの下に進み具合を出し、中止できます。文字のない PDF・パスワードのかかった PDF・壊れた PDF は飛ばし、索引を使えないときはタイトル・著者などだけで探します。設定の「詳細」→「本文検索」で、オン・オフ、訳文を含めるか、索引の作り直し・削除ができます
@@ -244,7 +246,7 @@
 **コマンドラインツール**
 - `spectra translate` / `spectra estimate` / `spectra key`
 
-[Unreleased]: https://github.com/myuto2490/Spectra/compare/v0.4.7...HEAD
+[Unreleased]: https://github.com/myuto2490/Spectra/compare/v0.5.0...HEAD
 [0.1.0]: https://github.com/myuto2490/Spectra/releases/tag/v0.1.0
 [0.1.1]: https://github.com/myuto2490/Spectra/compare/v0.1.0...v0.1.1
 [0.1.2]: https://github.com/myuto2490/Spectra/compare/v0.1.1...v0.1.2
@@ -261,3 +263,4 @@
 [0.4.5]: https://github.com/myuto2490/Spectra/compare/v0.4.4...v0.4.5
 [0.4.6]: https://github.com/myuto2490/Spectra/compare/v0.4.5...v0.4.6
 [0.4.7]: https://github.com/myuto2490/Spectra/compare/v0.4.6...v0.4.7
+[0.5.0]: https://github.com/myuto2490/Spectra/compare/v0.4.7...v0.5.0

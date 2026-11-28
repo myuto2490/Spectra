@@ -657,7 +657,7 @@ class SettingsDialog(QDialog):
         updates = FormGroup(
             "アップデート",
             "オンにすると、起動時に 1 日 1 回まで、新しいバージョンがあるかを GitHub に問い合わせます。"
-            "送るのは Spectra のバージョンだけで、ライブラリや論文の情報は送りません。",
+            "調べるのは最新のバージョンの番号だけで、お使いのバージョン・ライブラリ・論文の情報は送りません。",
         )
         self.update_check = Switch(self.settings.update_check == "on")
         self.update_check.toggled.connect(self._on_update_check)

@@ -2,7 +2,7 @@
 
 > 論文 PDF を、図表・数式・レイアウトを崩さずに日本語へ翻訳し、ライブラリとして整理して読み返せるデスクトップアプリ
 
-- 対象 OS: Windows 10/11, macOS 12+, Linux (X11 / Wayland)
+- 対象 OS: Windows 10/11, macOS（Apple シリコン。配布版の最低バージョンは未確認。`LSMinimumSystemVersion` は 12.0）, Linux x86_64（glibc 2.35 以上。ubuntu-22.04 でビルド。X11 / Wayland）
 - ライセンス: AGPL-3.0（依存する PyMuPDF のライセンスに合わせる）
 - 翻訳エンジン: Gemini API（Google AI Studio の無料枠）
   - 当初は DeepL API Free / Google Cloud Translation を想定していたが、DeepL API Free の新規受付終了と、
@@ -69,9 +69,10 @@
 ┌──────────────────────── UI (PySide6) ─────────────────────────┐
 │ MainWindow ─ ライブラリ画面 ⇄ 読書画面                          │
 │   LibraryView ─ Sidebar / 論文の表 / PaperDetail               │
-│   読書画面   ─ PdfView×2 / Inspector                           │
+│   読書画面   ─ PdfView×2 / NavPane / SidePanel（4 タブ）       │
 │ TranslationQueue（直列）/ LookupQueue ── worker（QThreadPool）  │
-│ SettingsDialog ─ APIキー・フォント・キャッシュ・書誌情報の照会   │
+│ SyncController ─ 同期の実行・手元にない PDF の取得              │
+│ SettingsDialog ─ 翻訳エンジン・フォント・同期・詳細             │
 └───────────────┬───────────────────────────────────────────────┘
                 │ 呼び出し（UI 非依存の純 Python API）
 ┌───────────────▼──────────────── core ─────────────────────────┐
@@ -92,9 +93,13 @@
 │ Library (SQLite + PDF のコピー) ─ 論文・コレクション・訳文       │
 │ metadata / identifiers ─ PDF から書誌情報・DOI・arXiv ID を抽出 │
 │ lookup ─ Crossref / arXiv に識別子だけで照会（設定でオフ可）     │
+│ sync ─ 同期フォルダとの同期（docs/SYNC.md）                     │
+│ annotations ─ 注釈・ノートの値の検証（docs/ANNOTATIONS.md）     │
 └───────────────────────────────────────────────────────────────┘
 ┌────────────────────────── config ─────────────────────────────┐
 │ Settings (JSON) / SecretStore (keyring + フォールバック)        │
+│ quota ─ キーごとの 1 日の上限の記録（キーの中身は書かない）      │
+│ update ─ 新しい版の確認（api.github.com。設定でオフ可）          │
 └───────────────────────────────────────────────────────────────┘
 ```
 
@@ -106,16 +111,26 @@
 src/spectra/
   __main__.py          エントリポイント（引数なし→GUI、サブコマンド→CLI）
   cli.py
+  update.py            新しい版の確認（通知だけ。自動では入れ替えない）
+  errors.py            利用者向けメッセージを持つ例外の基底
   core/
     models.py          データ構造（Span, Line, TextBlock, Segment, Style …）
-    fonts.py           フォント判定（数式・等幅・セリフ）と日本語フォント解決
+    fonts.py           フォント判定（数式・等幅・セリフ）
+    fontbook.py        訳文の描画に使うフォント一式
     extract.py         ページ解析
+    scan.py            スキャン PDF（画像の上の透明な OCR テキスト）の扱い
     classify.py        翻訳対象判定
     segment.py         段落結合・数式マークアップ化
+    analysis.py        文書全体の解析（抽出 → 判定 → セグメント化）
     markup.py          プレースホルダのエンコード/デコード
+    textnorm.py        訳文の表記の整え
     layout.py          日本語組版エンジン
-    render.py          除去と描画
+    redact.py          原文テキストの消去（消す前の内容ストリームの書き換えを含む）
+    render.py          描画（訳文・段落内の数式と線の移動・消えた記号の復元）
+    annotate.py        注釈を出力の PDF に標準の PDF 注釈として書き込む
     export.py          出力形式
+    qa.py              レイアウト保持の自動検査
+    options.py         翻訳ジョブの設定値
     pipeline.py        全体制御・進捗・キャンセル
   translate/
     base.py  gemini.py  dummy.py  cache.py  service.py  errors.py  registry.py
@@ -124,14 +139,18 @@ src/spectra/
     store.py           Library（SQLite・PDF と訳文の保存・マイグレーション）
     metadata.py        PDF からの書誌情報の抽出（埋め込み情報・識別子・最大フォントのタイトル）
     identifiers.py     DOI / arXiv ID の抽出と正規化
-    crossref.py  arxiv.py  lookup.py   識別子による照会
+    crossref.py  arxiv.py  lookup.py  _http.py   識別子による照会
     bibtex.py          BibTeX の書き出し
+    annotations.py     注釈の値の検証
+    sync/              同期（engine・storage・files・state・notes・annotations・device・hlc）
   config/
-    settings.py  secrets.py  paths.py
+    settings.py  secrets.py  paths.py  fonts.py  quota.py
   ui/
-    app.py  theme.py  icons.py  strings.py  widgets.py
-    main_window.py  pdf_view.py  inspector.py  settings_dialog.py  worker.py
+    app.py  theme.py  icons.py  widgets.py  app_icon.py  about.py  privacy.py
+    main_window.py  pdf_view.py  inspector.py  side_panel.py  settings_dialog.py  export_dialog.py  worker.py
     library_view.py  library_model.py  paper_detail.py  jobs.py
+    note_editor.py  annotation_list.py  annotation_popover.py
+    sync_controller.py  sync_settings.py  sync_popover.py  update_prompt.py
 tests/
 packaging/             PyInstaller 設定・アイコン生成
 .github/workflows/     CI（3 OS テスト）・Release（3 OS ビルド）
@@ -158,6 +177,14 @@ packaging/             PyInstaller 設定・アイコン生成
 7. 等幅フォント比率が高い（コード、メールアドレス、URL）
 8. 既に日本語が主体
 9. 参考文献セクション（`References` 見出し以降、次の太字見出しまで。設定で変更可）
+10. 著者・所属の行
+11. ページ上部・下部の柱（ランニングヘッダ。"Page 5 of 41" や書籍の "116 An Atmospheric …" など、ページをまたいだ繰り返しから見つける）
+12. 目次・索引（書籍の章を含む）。記号表（Nomenclature）は訳さないのではなく、項目ごとに分けて訳す
+13. 図の中の文字（矢印でつながったラベルなど）と、罫線の少ない表の複数の列をつないだ行
+14. 置き換えると、重なっている翻訳対象外の文字まで消えてしまうブロック（`OVERLAP`）
+
+独立した数式は、数式フォントの比率に加えて、分子・式番号だけの断片や、式のすぐ後に続く小さな添字・斜体の微分なども数式の一部として扱う。
+式番号（"(6.80)" など）は式から切り離して扱う。
 
 判定結果は `SkipReason` として保持し、デバッグ用レポートで確認できるようにする。
 
@@ -178,6 +205,9 @@ packaging/             PyInstaller 設定・アイコン生成
 - 事前見積もり: 翻訳前に「対象段落数」「文字数」「キャッシュ済み文字数」を表示する。
 - 文体（である調 / です・ます調）は指示文で指定する。思考レベルはモデルごとの最小（3.8 Flash: `low`、3.5 Flash-Lite: `minimal`）にし、温度は Gemini 3 の推奨どおり既定値のままにする。
 - 無料枠の回数制限: 1 分あたりの上限（429 + RetryInfo）は指定時間だけ待って再試行し、1 日あたりの上限は「無料枠超過」として扱い、翻訳できた分だけで PDF を作れるようにする。
+- 複数の API キー: 1 日の上限に達したキーは、上限が戻る時刻（太平洋時間の 0 時）まで `quota.json` に記録して試さず、一覧の次のキーに切り替える（設定でオフにできる）。すべてのキーが上限に達したら、別のモデルに切り替える。
+- 英語のまま返った段落は訳し直す（1 回のまとめ送りあたり 3 段落まで）。訳すところがない段落（DOI・所属・数式の切れ端など）と参考文献の項目は、訳せなかった段落に数えない。
+- 使える応答（空・壊れていない応答）が 8 回続けて得られなければ、打ち切って失敗として知らせる。
 
 ### 4.5 日本語組版 (layout)
 
@@ -191,13 +221,16 @@ packaging/             PyInstaller 設定・アイコン生成
 - **行送り**: 元の行送り（ベースライン間隔の中央値）を基準にする。
 - **自動縮小**: 収まらない場合は文字サイズと行送りを同率で二分探索により縮小。矩形からはみ出すことはしない。
 - **領域の拡張**: 見出しなど 1 行の短いブロックは、右側（中央揃えなら両側）に他の要素が無い範囲でのみ横に広げてから組む。
-- **書体**: 和文は内蔵フォント（Droid Sans Fallback）または Noto Serif JP / Noto Sans JP（アプリからワンクリックでダウンロード、OFL）/ 任意のフォントファイル。欧文は和文書体に合わせて Times / Helvetica 系、数式の斜体は Times Italic。太字は擬似ボールドで表現。
+- **書体**: 和文は同梱の Noto Sans JP（OFL）、Noto Serif JP（アプリからワンクリックでダウンロード。特定のコミットに固定し、大きさと SHA-256 を照合）、任意のフォントファイルから選ぶ。最後の予備は MuPDF 内蔵の Droid Sans Fallback。欧文は和文書体に合わせて Times / Helvetica 系、数式の斜体は Times Italic。太字は擬似ボールドで表現。
 
 ### 4.6 描画 (render)
 
+0. 消す前に、行送りの演算子（`T*`・`'`・`"`）を同じ意味の明示的な位置指定に書き換える（PyMuPDF が内容の書き直しで行送りを落とし、後ろの文字がずれるため。書き換えられない形のときは元のまま）。
 1. 翻訳対象ブロックの **各行の矩形**（上下を僅かに縮めたもの）に塗りなしの redaction 注釈を追加。
 2. `apply_redactions(images=NONE, graphics=NONE, text=REMOVE)` で **文字だけ** を除去（背景色・画像・線は残る）。
 3. 組版結果を `TextWriter` で書き込み（色・太字ごとにまとめる）。和文フォントはドキュメント内で 1 つの xref を共有。
+   段落の中の数式は、原文のページから切り出して（`show_pdf_page`）訳文の中の位置へ移す。数式の線で描いた記号や、文字より長い分数の横線も一緒に移す。
+   大きな記号（Σ・積分記号・括弧）の枠が消す範囲にかかったときは、消えた部分を原文から切り出して戻す。戻せないときは、その段落を原文のまま残す。
 4. 保存時に `subset_fonts()` と `garbage=3, deflate=True` でサイズを最小化。
 
 ### 4.7 品質検査（自動）
@@ -282,7 +315,7 @@ library/
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│ [開く]   attention.pdf · 15ページ        [原文|対訳|翻訳] [翻訳] ⚙ ▥│ ← ツールバー
+│ ‹  タイトル · 著者 · 15 ページ   🖍  [原文|対訳|翻訳] [翻訳] ⚙ ▥  │ ← ツールバー
 ├───────────────────────────────────────────────┬─────────────────┤
 │                                               │ 翻訳エンジン      │
 │      原文              │        翻訳           │  Gemini 3.8 Flash▾│
@@ -299,12 +332,15 @@ library/
 └─────────────────────────────────────────────────────────────────┘
 ```
 
+- 上の図は v0.2 の構成。v0.4 からは、右のパネルが「論文の詳細」「AI翻訳の詳細」「ノート」「注釈」のタブになり（翻訳の設定は「AI翻訳の詳細」）、
+  左にページの一覧と目次（`NavPane`）を開閉できる。下の帯には「n / N ページ」・ページの指定・倍率のメニュー・幅とページ全体に合わせるボタンを置く。
+  ツールバーにマーカーの道具、読書画面に PDF 内の検索の帯を出す。
 - **空の状態**（ライブラリに論文が無いとき）: 画面の構成はそのまま（サイドバー・検索欄・「論文を追加」・詳細パネル）で、一覧の中央に「ライブラリに論文がありません」と、ドロップまたは「論文を追加…」で追加できることを案内する。API キー未設定時は「API キーを設定…」への導線も表示。PDF をウィンドウの上にドラッグしている間は、一覧を破線の枠で強調する。
 - **ツールバー**: 主ボタンは状態で変化（翻訳 → 翻訳中は無効 → 完了後「PDF出力」）。PDF出力のときに形式をカードで選ぶ。
 - **文字の大きさ**: 利用者には設定させず、元の論文の組版（原文の文字サイズ・行送り）から自動で決める。
 - **プレビュー**: 原文・訳文を左右に並べ、スクロールとズームを同期。表示切替（原文 / 対訳 / 翻訳）はセグメントコントロール。
 - **インスペクタ**: macOS のシステム設定風のグループ化フォーム。トグルは HIG のスイッチ。
-- **設定ウィンドウ**: 「翻訳エンジン」「フォント」「詳細」の 3 タブ。API キーは伏字入力 + 表示切替 + 「接続を確認」ボタン（成功時は使用量も表示）+ キー取得ページへのリンク。変更は即時保存（HIG の環境設定の慣習）。
+- **設定ウィンドウ**: 「翻訳エンジン」「フォント」「同期」「詳細」の 4 タブ。API キーは一覧（名前・順番・削除。上限での自動切り替えのオン・オフ）+ 伏字入力 + 「接続を確認」ボタン + キー取得ページへのリンク。「詳細」には外観（テーマ）・翻訳キャッシュ・書誌情報の取得・アップデートの確認・レイアウトの検査・フォルダを置く。変更は即時保存（HIG の環境設定の慣習）。
 
 ### 5.2 デザイントークン
 
@@ -335,18 +371,20 @@ library/
 | お気に入り | ⌘D | Ctrl+D |
 | 書誌情報を編集 | ⌘I | Ctrl+I |
 | BibTeX をコピー | ⇧⌘C | Ctrl+Shift+C |
-| ライブラリから削除（一覧にフォーカスがあるとき） | ⌘⌫ | Delete |
+| 新しいコレクション | ⇧⌘N | Ctrl+Shift+N |
+| ライブラリから削除（一覧にフォーカスがあるとき） | ⌘⌫ | Ctrl+Backspace / Delete |
 | サイドバー表示切替 | ⌥⌘S | Ctrl+Alt+S |
 | 翻訳開始 | ⌘↩ | Ctrl+Enter |
 | PDF出力 | ⌘S | Ctrl+S |
 | 設定 | ⌘, | Ctrl+, |
-| ズーム | ⌘+ / ⌘− / ⌘0 | Ctrl+ / Ctrl− / Ctrl+0 |
+| ズーム（拡大 / 縮小 / 幅に合わせる / ページ全体） | ⌘+ / ⌘− / ⌘0 / ⌘9 | Ctrl++ / Ctrl+− / Ctrl+0 / Ctrl+9 |
+| 次のページ / 前のページ | ⌘↓ / ⌘↑ | Ctrl+↓ / Ctrl+↑ |
 | PDF 内を検索（読書画面。ライブラリでは一覧の検索） | ⌘F | Ctrl+F |
 | 次の一致 / 前の一致 | ⌘G / ⇧⌘G | Ctrl+G / Ctrl+Shift+G |
 | ページを指定して移動 | ⌘J | Ctrl+J |
 | ページの一覧と目次の表示切替 | ⌥⌘T | Ctrl+Alt+T |
 | マーカー / コメント付き / 下線（文字を選んで） | ⌃⌘H / ⌃⌘N / ⌃⌘U | Ctrl+Alt+H / N / U |
-| インスペクタ表示切替 | ⌥⌘I | Ctrl+Alt+I |
+| 右のパネルの表示切替 | ⌥⌘I | Ctrl+Alt+I |
 | キャンセル | Esc | Esc |
 
 ---
@@ -356,9 +394,12 @@ library/
 - API キーは OS の資格情報ストアに保存し、設定ファイルには書かない。利用できない環境（一部 Linux）では権限 600 のファイルに保存し、UI で明示する。
 - 送信先は選択した翻訳 API のみ。テレメトリは一切送らない。
 - 例外として、書誌情報の照会（初期状態は有効。設定の「詳細」で無効にできる）では、DOI を Crossref、arXiv ID を arXiv に送る。タイトル・本文・ファイルは送らない。
-- ライブラリの同期を有効にした場合（初期状態は無効）に限り、ライブラリの PDF（原文・訳文）・書誌情報・コレクションを、利用者が選んだフォルダへ保存する。
+- ライブラリの同期を有効にした場合（初期状態は無効）に限り、ライブラリの PDF（原文・訳文）・書誌情報・コレクション・ノート・注釈を、利用者が選んだフォルダへ保存する。
   Spectra 自身は通信せず、そのフォルダを同期するサービス（Google Drive など）のアプリがアップロードする。
   Gemini の API キー、その他の設定、翻訳キャッシュは同期しない。詳細は docs/SYNC.md §8。
+- 新しい版の通知（初回に確認してから有効。設定の「詳細」でオフにできる）では、`api.github.com` の最新リリースだけを 1 日 1 回まで問い合わせる。版の番号・端末の ID・ライブラリは送らない。
+- 明朝体のダウンロード（利用者が押したときだけ）では、GitHub の `notofonts/noto-cjk` から固定のコミットのファイルを取得し、大きさと SHA-256 を照合する。
+- 外部への通信の一覧は SECURITY.md の「外部への通信」を正とする。
 - ログや例外メッセージに API キーを含めない（マスク処理）。
 
 ---
@@ -369,7 +410,7 @@ library/
 
 - `main`: リリース可能な状態のみ。タグ `vX.Y.Z` でリリースビルド。
 - `develop`: 統合ブランチ。
-- `feature/*` / `docs/*` / `ci/*`: 作業ブランチ。`develop` から切り、完了後 `--no-ff` でマージ。
+- `feature/*` / `fix/*` / `docs/*` / `test/*` / `ci/*` / `chore/*`: 作業ブランチ。`develop` から切り、完了後 `--no-ff` でマージ。
 
 ### 7.2 バージョン管理
 
@@ -381,9 +422,10 @@ library/
   ビルド成果物のファイル名、macOS の `CFBundleShortVersionString`、Windows のファイルバージョンはすべてここから取得する。
 - **CHANGELOG.md**（Keep a Changelog 形式）に変更を `Unreleased` 節へ随時追記する。
 - **リリース手順**
+  0. README・SECURITY.md・本設計書を、そのリリースの機能に合わせて更新する（CONTRIBUTING.md の「リリース前の文書の確認」）
   1. `python scripts/bump_version.py {major|minor|patch|X.Y.Z}` — `__version__` を更新し、`Unreleased` を新バージョンの節に確定
   2. `develop` でコミット → `main` へ `--no-ff` マージ → 注釈付きタグ `vX.Y.Z` を作成して push
-  3. GitHub Actions がタグを検知し、`scripts/check_version.py` でタグ・`__version__`・CHANGELOG の一致を検査してから 3 OS 向けにビルドし、CHANGELOG の該当節を本文にした Release を作成する
+  3. GitHub Actions がタグを検知し、`scripts/check_version.py` でタグ・`__version__`・CHANGELOG の一致と、README・SECURITY・CONTRIBUTING に固定のバージョン番号が無いことを検査してから 3 OS 向けにビルドし、CHANGELOG の該当節を本文にした Release を作成する
 - 初回リリースは `python scripts/bump_version.py 0.1.0`（現在値と同じ番号を明示して確定）
 
 ### 7.3 実装マイルストーン

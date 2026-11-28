@@ -23,10 +23,12 @@ from ..library import Library
 from ..library.fulltext import (
     ORIGINAL,
     TRANSLATED,
+    FulltextBusy,
     FulltextIndex,
     FulltextUnavailable,
     Source,
     Stats,
+    delete_index_files,
     query_terms,
 )
 from . import worker
@@ -37,6 +39,7 @@ STARTUP_DELAY_MS = 5_000  # 起動の直後は待ってから索引づくりを�
 CHANGE_DELAY_MS = 2_000  # ライブラリの変更から差分を取るまでの待ち
 QUERY_DELAY_MS = 250  # 入力から問い合わせまでの待ち
 YIELD_SECONDS = 0.05  # 1 本ごとに譲る時間
+BUSY_RETRY_MS = 30_000  # ほかの Spectra が索引を使っていたとき、索引づくりをやり直すまでの待ち
 
 
 def sources_for(library: Library, *, translations: bool = True) -> list[Source]:
@@ -117,7 +120,9 @@ class FulltextController(QObject):
         return self._pass is not None
 
     def _open(self) -> FulltextIndex:
-        """索引を開く（GUI のスレッドでも裏のスレッドでも呼ばれる）。"""
+        """索引を開く（GUI のスレッドでも裏のスレッドでも呼ばれる）。オフ・終了の後は開かない（ファイルを作らない）。"""
+        if self._closed or not self.enabled:
+            raise FulltextUnavailable("fulltext search is off")
         if self.index is None:
             self.index = FulltextIndex(self.index_path)
         return self.index
@@ -133,8 +138,11 @@ class FulltextController(QObject):
             return None
         try:
             return self._open().stats()
+        except FulltextBusy:
+            return None
         except FulltextUnavailable as e:
-            self._fail(e)
+            if self.enabled and not self._closed:
+                self._fail(e)
             return None
 
     # -- 索引づくり ----------------------------------------------------------
@@ -198,8 +206,13 @@ class FulltextController(QObject):
     def _pass_failed(self, e) -> None:
         self._pass = None
         self.progress = None
-        if isinstance(e, FulltextUnavailable):
-            self._fail(e)
+        if isinstance(e, FulltextBusy):
+            log.info("fulltext index is busy, retrying later: %s", e)
+            self.progressChanged.emit()
+            self.schedule(BUSY_RETRY_MS)
+        elif isinstance(e, FulltextUnavailable):
+            if self.enabled and not self._closed:
+                self._fail(e)
         else:
             log.warning("fulltext indexing failed: %r", e)
             self.progressChanged.emit()
@@ -240,13 +253,16 @@ class FulltextController(QObject):
     def _reset(self, *, delete: bool) -> None:
         self._stop_pass()
         try:
-            index = self.index or FulltextIndex(self.index_path)
-            self.index = None
             if delete:
-                index.delete_files()
+                self._close_index()
+                delete_index_files(self.index_path)  # 開かずに消す（空の索引を作らない）
             else:
+                index = self.index or FulltextIndex(self.index_path)
+                self.index = None
                 index.clear()
                 self.index = index
+        except FulltextBusy as e:
+            log.warning("fulltext index is busy: %s", e)
         except FulltextUnavailable as e:
             self._fail(e)
 
@@ -300,8 +316,11 @@ class FulltextController(QObject):
         def failed(e):
             if gen == self._query_gen:
                 self._query_task = None
-                if isinstance(e, FulltextUnavailable):
-                    self._fail(e)
+                if isinstance(e, FulltextBusy):
+                    log.info("fulltext query skipped: %s", e)  # その回だけ書誌の検索に退く
+                elif isinstance(e, FulltextUnavailable):
+                    if self.enabled and not self._closed:
+                        self._fail(e)
                 else:
                     log.warning("fulltext query failed: %r", e)
                 self.resultsReady.emit(text, None)

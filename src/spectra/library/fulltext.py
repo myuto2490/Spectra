@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import os
 import re
 import sqlite3
 import threading
@@ -44,6 +45,8 @@ MIN_TEXT_CHARS = 20  # これより少なければ「文字がない」とみな
 MAX_INDEX_BYTES = 2 * 1024**3  # 索引のファイルの大きさの上限（trigram は本文の数倍になる）
 WARN_INDEX_BYTES = int(MAX_INDEX_BYTES * 0.8)
 
+BUSY_TIMEOUT = 3.0  # ほかの接続（2 つ目の Spectra など）の書き込みを待つ秒数。過ぎたら FulltextBusy
+
 SNIPPET_BEFORE = 30
 SNIPPET_AFTER = 70
 MAX_SNIPPETS = 3  # 論文ごとに返す抜粋の数
@@ -51,6 +54,8 @@ MAX_SNIPPET_PAPERS = 300  # 抜粋を作る論文の数（一致したページ�
 
 _CJK = "　-〿぀-ヿ㐀-䶿一-鿿豈-﫿＀-￯"
 _HYPHEN_BREAK = re.compile(r"(?<=[a-z])-\n(?=[a-z])")
+_COMPOUND_BREAK = re.compile(r"(?<=[A-Z0-9])-\n(?=[A-Za-z])")  # "CO2-\nrich" → "CO2-rich"（ハイフンは残す）
+_CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\ud800-\udfff]")  # 制御文字と、対になっていないサロゲート
 _CJK_BREAK = re.compile(rf"(?<=[{_CJK}])\n(?=[{_CJK}])")
 _SPACES = re.compile(r"\s+")
 # 索引の行の rowid は「PDF の番号 << PAGE_BITS | ページ」。FTS5 の列には索引がないので、PDF ごとの削除や
@@ -60,6 +65,10 @@ PAGE_BITS = 20
 
 class FulltextUnavailable(Exception):
     """索引を使えない（壊れた・版が違う・ディスクがいっぱい・この SQLite に FTS5 がない）。"""
+
+
+class FulltextBusy(Exception):
+    """その回だけ使えない（ほかの Spectra が索引を使っている・問い合わせの誤り）。本文検索は止めない。"""
 
 
 @dataclass(frozen=True)
@@ -105,8 +114,9 @@ class Stats:
 
 def normalize(text: str) -> str:
     """索引・検索で使う形：NFKC、行末のハイフンで切れた語をつなぐ、改行を空白に（和文どうしはつなぐ）。"""
-    text = unicodedata.normalize("NFKC", text)
+    text = _CONTROL.sub(" ", unicodedata.normalize("NFKC", text))
     text = _HYPHEN_BREAK.sub("", text)
+    text = _COMPOUND_BREAK.sub("-", text)
     text = _CJK_BREAK.sub("", text)
     return _SPACES.sub(" ", text).strip()
 
@@ -172,6 +182,21 @@ def _is_full(e: sqlite3.Error) -> bool:
     return isinstance(e, sqlite3.OperationalError) and "full" in str(e).lower()
 
 
+def _is_busy(e: sqlite3.Error) -> bool:
+    """ほかの接続（2 つ目の Spectra など）が書き込み中。待てば使える。"""
+    text = str(e).lower()
+    return isinstance(e, sqlite3.OperationalError) and ("locked" in text or "busy" in text)
+
+
+def _private_file(path: Path) -> None:
+    """索引のファイルを、持ち主だけが読み書きできるようにする（本文を含むため）。"""
+    for suffix in ("", "-wal", "-shm"):
+        p = path.with_name(path.name + suffix)
+        with contextlib.suppress(OSError):
+            if p.exists() and (p.stat().st_mode & 0o077):
+                os.chmod(p, 0o600)
+
+
 class FulltextIndex:
     """本文の索引。スレッドをまたいで使える（中で 1 本の接続を錠で守る）。"""
 
@@ -186,11 +211,18 @@ class FulltextIndex:
 
     def _open(self) -> None:
         try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
+            if not self.path.parent.exists():
+                self.path.parent.mkdir(parents=True, mode=0o700)
+            if not self.path.exists():
+                # 先に 0600 で作る（-wal・-shm は SQLite が本体と同じ権限で作る）
+                os.close(os.open(self.path, os.O_CREAT | os.O_RDWR, 0o600))
+            _private_file(self.path)
             self._db = self._connect()
         except FulltextUnavailable:
             raise
         except sqlite3.DatabaseError as e:
+            if _is_busy(e):
+                raise FulltextBusy(str(e)) from e  # ほかの Spectra が使っている。消さない
             if _is_full(e):
                 raise FulltextUnavailable("disk is full") from e
             # 壊れている・版が違う：派生データなので消して作り直す
@@ -204,7 +236,7 @@ class FulltextIndex:
             raise FulltextUnavailable(str(e)) from e
 
     def _connect(self) -> sqlite3.Connection:
-        db = sqlite3.connect(str(self.path), check_same_thread=False, isolation_level=None, timeout=10)
+        db = sqlite3.connect(str(self.path), check_same_thread=False, isolation_level=None, timeout=BUSY_TIMEOUT)
         try:
             db.execute("PRAGMA journal_mode=WAL")
             db.execute("PRAGMA synchronous=NORMAL")
@@ -238,14 +270,7 @@ class FulltextIndex:
         db.execute(f"PRAGMA user_version={INDEX_VERSION}")
 
     def _discard_files(self) -> None:
-        for suffix in ("", "-wal", "-shm"):
-            p = self.path.with_name(self.path.name + suffix)
-            try:
-                p.unlink()
-            except FileNotFoundError:
-                pass
-            except OSError as e:
-                raise FulltextUnavailable(str(e)) from e
+        delete_index_files(self.path)
 
     def _conn(self) -> sqlite3.Connection:
         if self._db is None:
@@ -279,9 +304,11 @@ class FulltextIndex:
         with self._lock:
             try:
                 return fn(self._conn())
-            except FulltextUnavailable:
+            except (FulltextUnavailable, FulltextBusy):
                 raise
             except sqlite3.Error as e:
+                if _is_busy(e):
+                    raise FulltextBusy(str(e)) from e
                 raise FulltextUnavailable(str(e)) from e
 
     def known(self) -> dict[tuple[str, str], tuple[int, int, str]]:
@@ -375,7 +402,14 @@ class FulltextIndex:
                 db.execute("ROLLBACK")
                 raise
 
-        self._call(run)
+        try:
+            self._call(run)
+        except (FulltextUnavailable, FulltextBusy):
+            raise
+        except Exception:  # noqa: BLE001 - 書き込めない文字など。この 1 本だけ「読めない」として、後ろの PDF を続ける
+            log.warning("fulltext: cannot store the text of one PDF", exc_info=True)
+            status, pages = BROKEN, []
+            self._call(run)
         return status
 
     def optimize(self) -> None:
@@ -389,11 +423,20 @@ class FulltextIndex:
 
         語ごとに見つかった論文を返す（AND は呼び出し側で、書誌情報・メモと合わせて決める）。
         """
-        terms = [t for t in terms if t]
+        terms = [t for t in (_CONTROL.sub("", t) for t in terms) if t]
         if not terms:
             return {}
 
         def run(db: sqlite3.Connection) -> dict[str, Match]:
+            try:
+                return lookup(db)
+            except sqlite3.OperationalError as e:
+                if _is_full(e) or "malformed" in str(e).lower():
+                    raise
+                # 問い合わせの誤り・ほかの接続が使用中：その回だけ本文を探さない（本文検索は止めない）
+                raise FulltextBusy(str(e)) from e
+
+        def lookup(db: sqlite3.Connection) -> dict[str, Match]:
             docs = {int(r[0]): (r[1], r[2]) for r in db.execute("SELECT id, sha256, kind FROM docs")}
             found: dict[str, Match] = {}
             for i, term in enumerate(terms):
@@ -460,6 +503,17 @@ class FulltextIndex:
             return Stats(docs, indexed, int(pages), self.size_bytes(), by_status)
 
         return self._call(run)
+
+
+def delete_index_files(path: Path) -> None:
+    """索引のファイル（-wal・-shm を含む）を消す。開かずに消すので、新しく作ることはない。"""
+    for suffix in ("", "-wal", "-shm"):
+        try:
+            path.with_name(path.name + suffix).unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            raise FulltextUnavailable(str(e)) from e
 
 
 def _delete_pages(db: sqlite3.Connection, doc_id: int) -> None:

@@ -2,7 +2,7 @@
 
 > 論文 PDF を、図表・数式・レイアウトを崩さずに日本語へ翻訳し、ライブラリとして整理して読み返せるデスクトップアプリ
 
-- 対象 OS: Windows 10/11, macOS 12+, Linux (X11 / Wayland)
+- 対象 OS: Windows 10/11, macOS（Apple シリコン。配布版の最低バージョンは未確認。`LSMinimumSystemVersion` は 12.0）, Linux x86_64（glibc 2.35 以上。ubuntu-22.04 でビルド。X11 / Wayland）
 - ライセンス: AGPL-3.0（依存する PyMuPDF のライセンスに合わせる）
 - 翻訳エンジン: Gemini API（Google AI Studio の無料枠）
   - 当初は DeepL API Free / Google Cloud Translation を想定していたが、DeepL API Free の新規受付終了と、

@@ -55,7 +55,7 @@ Spectra は、英語の論文や教科書の PDF を **PDF のまま** 日本語
 | --- | --- | --- |
 | macOS（Apple シリコン） | `Spectra-x.y.z-macOS-arm64.dmg` | 開いて `Spectra` を「アプリケーション」へドラッグ |
 | Windows 10 / 11 | `Spectra-x.y.z-Windows-x64.zip` | 展開して `Spectra.exe` を実行 |
-| Linux（x86_64） | `Spectra-x.y.z-Linux-x86_64.tar.gz` | 展開して `Spectra/Spectra` を実行 |
+| Linux（x86_64、glibc 2.35 以上。Ubuntu 22.04 以降など） | `Spectra-x.y.z-Linux-x86_64.tar.gz` | 展開して `Spectra/Spectra` を実行 |
 
 Intel 搭載の Mac では、[ソースから実行](#開発)してください。
 
@@ -184,7 +184,7 @@ Spectra は PDF を作り直すのではなく、**元の PDF の本文の文字
 5. **置き換え** — 原文の文字だけを消し（画像・図形・背景はそのまま）、訳文と、元の見た目のままの数式を配置します。フォントは使った文字だけを埋め込むので、ファイルサイズは元とほぼ同じです。
 6. **検査** — 翻訳の前後を比べ、図形・画像・翻訳対象外の文字が失われていないこと、図表の見た目が変わっていないことを確かめます。
 
-Elsevier・A&A・AAS・AGU/Wiley・Springer・IEEE などの論文 20 本で、レイアウトの検査に合格することを確認しています。設計の詳細は [docs/DESIGN.md](docs/DESIGN.md) を参照してください。
+翻訳のたびに、図表や翻訳対象外の文字が変わっていないことを自動で検査します（⚙ →「詳細」の「レイアウトを検査する」。既定でオン）。設計の詳細は [docs/DESIGN.md](docs/DESIGN.md) を参照してください。
 
 ## よくある質問
 

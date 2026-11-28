@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..library import Author, Metadata, Paper
+from . import theme
 from .annotation_list import AnnotationList
 from .library_model import days_left, format_date, local_short, local_state, translation_status
 from .note_editor import NoteEditor
@@ -260,6 +261,21 @@ class PaperDetail(QWidget):
         head.addWidget(self.source)
         head.addWidget(self.title)
         lay.addLayout(head)
+
+        # 検索で本文・メモに一致した箇所（検索していなければ隠す）
+        self.matches_box = QWidget()
+        ml = QVBoxLayout(self.matches_box)
+        ml.setContentsMargins(0, 0, 0, 0)
+        ml.setSpacing(6)
+        ml.addWidget(label("検索に一致した箇所", "section"))
+        self.match_labels: list[QLabel] = []
+        for _ in range(3):
+            lb = label("", "secondary", wrap=True)
+            lb.setTextFormat(Qt.TextFormat.RichText)  # 中身は set_matches でエスケープする
+            ml.addWidget(lb)
+            self.match_labels.append(lb)
+        self.matches_box.hide()
+        lay.addWidget(self.matches_box)
 
         read_row = QHBoxLayout()
         self.read_btn = button("読む", primary=True)
@@ -507,6 +523,28 @@ class PaperDetail(QWidget):
 
     # -- 表示 ------------------------------------------------------------
 
+    def set_matches(self, matches: list[tuple[str, str, tuple]]) -> None:
+        """検索で一致した箇所 (見出し, 抜粋, 一致した範囲) を出す（空なら隠す）。"""
+        accent = theme.current().accent
+        for lb, m in zip(self.match_labels, [*matches, *([None] * len(self.match_labels))]):
+            if m is None:
+                lb.hide()
+                continue
+            heading, text, spans = m
+            parts, pos = [], 0
+            for a, b in sorted(spans):
+                if a < pos:
+                    continue
+                parts.append(html.escape(text[pos:a]))
+                parts.append(f"<b>{html.escape(text[a:b])}</b>")
+                pos = b
+            parts.append(html.escape(text[pos:]))
+            body = "".join(parts)
+            lb.setText(f'<span style="color:{accent}">{html.escape(heading)}</span>' + (f"<br>{body}" if body else ""))
+            lb.setAccessibleName(f"{heading} {text}")
+            lb.show()
+        self.matches_box.setVisible(bool(matches))
+
     def show_papers(
         self,
         papers: list[Paper],
@@ -519,6 +557,7 @@ class PaperDetail(QWidget):
     ) -> None:
         self._ids = [p.id for p in papers]
         self._paper = papers[0] if len(papers) == 1 else None
+        self.set_matches([])
         self._job = job
         self._download = download
         self._sync_on = sync_on

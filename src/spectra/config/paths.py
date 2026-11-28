@@ -45,6 +45,11 @@ def translation_cache_file() -> Path:
     return cache_dir() / "translations.sqlite3"
 
 
+def fulltext_index_file() -> Path:
+    """論文の本文の索引（全文検索）。ライブラリの外に置く派生データで、同期・バックアップしない。"""
+    return cache_dir() / "fulltext.sqlite3"
+
+
 def fonts_dir() -> Path:
     return data_dir() / "fonts"
 

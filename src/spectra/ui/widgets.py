@@ -269,8 +269,9 @@ class FormGroup(QWidget):
         return row
 
     def add_widget(self, widget: QWidget) -> None:
-        self._separator()
+        separator = self._separator()
         wrap = QWidget()
+        wrap.separator = separator  # 隠すときは区切り線も一緒に隠す
         lay = QVBoxLayout(wrap)
         lay.setContentsMargins(0, 8, 0, 8)
         lay.addWidget(widget)

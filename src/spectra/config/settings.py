@@ -47,6 +47,8 @@ class Settings:
     verify_layout: bool = True
     use_cache: bool = True
     appearance: str = "auto"  # auto / light / dark
+    fulltext_search: bool = True  # 論文の本文も検索する（索引はこのパソコンの中だけ。同期しない）
+    fulltext_translations: bool = True  # 訳文も本文の索引にする
     metadata_lookup: bool = True  # 書誌情報を Crossref / arXiv に照会する（DOI・arXiv ID だけを送る）
     sync_enabled: bool = False  # クラウド同期（同期フォルダ方式）。既定はオフ
     sync_folder: str = ""  # 同期フォルダ（この中に「Spectra Sync」を作る）

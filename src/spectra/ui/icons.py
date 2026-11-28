@@ -79,14 +79,18 @@ _PATHS: dict[str, str] = {
 }
 
 
-def svg(name: str, color: str) -> str:
+def svg(name: str, color: str, fill: str = "") -> str:
+    """fill に色を渡すと、線の内側をその色で塗る（お気に入りの塗りつぶしたスターなど）。"""
     body = _PATHS[name]
-    return f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><g {_STROKE.format(c=color)}>{body}</g></svg>'
+    attrs = _STROKE.format(c=color)
+    if fill:
+        attrs = attrs.replace('fill="none"', f'fill="{fill}"')
+    return f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><g {attrs}>{body}</g></svg>'
 
 
 @lru_cache(maxsize=512)
-def pixmap(name: str, color: str, size: int = 18, dpr: float = 2.0) -> QPixmap:
-    renderer = QSvgRenderer(QByteArray(svg(name, color).encode()))
+def pixmap(name: str, color: str, size: int = 18, dpr: float = 2.0, fill: str = "") -> QPixmap:
+    renderer = QSvgRenderer(QByteArray(svg(name, color, fill).encode()))
     pm = QPixmap(QSize(int(size * dpr), int(size * dpr)))
     pm.fill(Qt.GlobalColor.transparent)
     painter = QPainter(pm)

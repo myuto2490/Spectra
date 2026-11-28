@@ -2,10 +2,20 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QItemSelectionModel, QModelIndex, QSize, Qt, Signal
+from PySide6.QtCore import (
+    QEvent,
+    QItemSelectionModel,
+    QModelIndex,
+    QObject,
+    QRect,
+    QSize,
+    Qt,
+    Signal,
+)
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QHBoxLayout,
     QHeaderView,
     QInputDialog,
@@ -16,6 +26,9 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QStackedWidget,
+    QStyle,
+    QStyledItemDelegate,
+    QStyleOptionViewItem,
     QTableView,
     QVBoxLayout,
     QWidget,
@@ -34,6 +47,7 @@ from .library_model import (
     TRASH,
     TRASH_DAYS,
     UNTRANSLATED,
+    FavoriteRole,
     PaperFilterProxy,
     PaperIdRole,
     PaperTableModel,
@@ -43,6 +57,63 @@ from .widgets import button, label, link_button, plain_box, set_prop
 
 ScopeRole = Qt.ItemDataRole.UserRole + 10
 CollectionRole = Qt.ItemDataRole.UserRole + 11
+
+
+STAR_SIZE = 16
+
+
+def star_colors(favorite: bool, selected: bool, hovered: bool) -> tuple[str, str]:
+    """スターの線と塗りの色。お気に入りなら塗りつぶし、そうでなければ枠だけ（押せることが分かるよう常に表示）。"""
+    t = theme.current()
+    if favorite:
+        return t.label, t.label
+    if hovered:
+        return t.label, ""
+    return (t.secondary if selected else t.tertiary), ""
+
+
+class FavoriteDelegate(QStyledItemDelegate):
+    """お気に入りの列：枠だけのスター（お気に入りでない）か、塗りつぶしたスター（お気に入り）を中央に描く。"""
+
+    def paint(self, painter, option, index) -> None:
+        opt = QStyleOptionViewItem(option)
+        self.initStyleOption(opt, index)
+        opt.text = ""
+        widget = opt.widget
+        style = widget.style() if widget is not None else QApplication.style()
+        style.drawControl(QStyle.ControlElement.CE_ItemViewItem, opt, painter, widget)  # 背景（選択・交互の色）
+        state = option.state
+        stroke, fill = star_colors(
+            bool(index.data(FavoriteRole)),
+            bool(state & QStyle.StateFlag.State_Selected),
+            bool(state & QStyle.StateFlag.State_MouseOver),
+        )
+        dpr = widget.devicePixelRatioF() if widget is not None else 2.0
+        pm = icons.pixmap("star", stroke, STAR_SIZE, max(dpr, 1.0), fill)
+        r = QRect(0, 0, STAR_SIZE, STAR_SIZE)
+        r.moveCenter(option.rect.center())
+        painter.drawPixmap(r, pm)
+
+
+class _StarCursor(QObject):
+    """スターの列の上では指の形のカーソルにして、押せることを示す。"""
+
+    def __init__(self, table: QTableView, column: int) -> None:
+        super().__init__(table)
+        self.table, self.column = table, column
+        table.setMouseTracking(True)
+        table.viewport().installEventFilter(self)
+
+    def eventFilter(self, obj, event) -> bool:  # noqa: N802
+        if event.type() == QEvent.Type.MouseMove:
+            index = self.table.indexAt(event.position().toPoint())
+            if index.isValid() and index.column() == self.column:
+                obj.setCursor(Qt.CursorShape.PointingHandCursor)
+            else:
+                obj.unsetCursor()
+        elif event.type() == QEvent.Type.Leave:
+            obj.unsetCursor()
+        return False
 
 SCOPES = [
     (ALL, "すべての論文", "books"),
@@ -264,6 +335,8 @@ class LibraryView(QWidget):
                 hh.setSectionResizeMode(col, QHeaderView.ResizeMode.Interactive)
                 self.table.setColumnWidth(col, widths[key])
         hh.setSectionResizeMode(COL["favorite"], QHeaderView.ResizeMode.Fixed)
+        self.table.setItemDelegateForColumn(COL["favorite"], FavoriteDelegate(self.table))
+        self._star_cursor = _StarCursor(self.table, COL["favorite"])
         self.table.doubleClicked.connect(self._on_double_click)
         self.table.clicked.connect(self._on_click)
         self.table.selectionModel().selectionChanged.connect(lambda *_: self.selectionChanged.emit())

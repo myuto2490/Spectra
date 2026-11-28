@@ -425,7 +425,7 @@ library/
   0. README・SECURITY.md・本設計書を、そのリリースの機能に合わせて更新する（CONTRIBUTING.md の「リリース前の文書の確認」）
   1. `python scripts/bump_version.py {major|minor|patch|X.Y.Z}` — `__version__` を更新し、`Unreleased` を新バージョンの節に確定
   2. `develop` でコミット → `main` へ `--no-ff` マージ → 注釈付きタグ `vX.Y.Z` を作成して push
-  3. GitHub Actions がタグを検知し、`scripts/check_version.py` でタグ・`__version__`・CHANGELOG の一致を検査してから 3 OS 向けにビルドし、CHANGELOG の該当節を本文にした Release を作成する
+  3. GitHub Actions がタグを検知し、`scripts/check_version.py` でタグ・`__version__`・CHANGELOG の一致と、README・SECURITY・CONTRIBUTING に固定のバージョン番号が無いことを検査してから 3 OS 向けにビルドし、CHANGELOG の該当節を本文にした Release を作成する
 - 初回リリースは `python scripts/bump_version.py 0.1.0`（現在値と同じ番号を明示して確定）
 
 ### 7.3 実装マイルストーン

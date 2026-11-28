@@ -220,3 +220,79 @@ def test_index_is_kept_outside_the_library_folder():
 
     assert paths.library_dir() not in paths.fulltext_index_file().parents
     FulltextIndex  # noqa: B018 - 公開の名前
+
+
+# -- 設定の画面 --------------------------------------------------------------
+
+
+def _dialog(settings, ctl):
+    from spectra.config.secrets import SecretStore
+    from spectra.ui.settings_dialog import SettingsDialog
+
+    return SettingsDialog(settings, SecretStore(use_keyring=False), None, fulltext=ctl)
+
+
+def test_settings_show_index_counts_and_rebuild(app, lib, tmp_path):
+    lib.add(_pdf(tmp_path / "a.pdf", "alpha beta"))
+    (tmp_path / "scan.pdf").write_bytes(b"%PDF-1.4 broken")
+    settings = Settings()
+    ctl = _controller(lib, tmp_path, settings)
+    assert _wait(lambda: ctl.index is not None and not ctl.indexing and ctl.index.known())
+    d = _dialog(settings, ctl)
+    assert d.index_info.text().startswith("1 本・1 ページ")
+    ctl.rebuild()
+    assert _wait(lambda: not ctl.indexing and ctl.index.known())
+    d._refresh_index_info()
+    assert d.index_info.text().startswith("1 本")
+    d.close()
+    ctl.close()
+
+
+def test_settings_warn_about_skipped_and_large_index(app, lib, tmp_path, monkeypatch):
+    from spectra.library.fulltext import Stats
+    from spectra.ui import settings_dialog
+
+    settings = Settings()
+    ctl = _controller(lib, tmp_path, settings, startup_delay_ms=60_000)
+    big = settings_dialog.WARN_INDEX_BYTES + 1
+    monkeypatch.setattr(ctl, "stats", lambda: Stats(5, 3, 30, big, {"ok": 3, "no_text": 1, "encrypted": 1}))
+    d = _dialog(settings, ctl)
+    note = d.index_note.text()
+    assert "2 本" in note and "上限" in note
+    assert d.index_note.property("tone") == "warning"
+    d.close()
+    ctl.close()
+
+
+def test_settings_toggle_off_and_delete(app, lib, tmp_path, monkeypatch):
+    from spectra.ui import settings_dialog
+
+    lib.add(_pdf(tmp_path / "a.pdf", "alpha beta"))
+    settings = Settings()
+    ctl = _controller(lib, tmp_path, settings)
+    assert _wait(lambda: ctl.index is not None and not ctl.indexing and ctl.index.known())
+    d = _dialog(settings, ctl)
+    d.fulltext_search.setChecked(False)
+    assert settings.fulltext_search is False and d.index_info.text() == "オフ"
+    assert not d.fulltext_translations.isEnabled()
+    d.fulltext_search.setChecked(True)
+    assert settings.fulltext_search
+    assert _wait(lambda: ctl.index is not None and not ctl.indexing)
+
+    def confirm(box):
+        delete = next(b for b in box.buttons() if b.text() == "削除")
+        return type("P", (), {"exec": lambda self: box.clickedButton() or delete.click()})()
+
+    monkeypatch.setattr(settings_dialog, "plain_box", confirm)
+    d._delete_index()
+    assert settings.fulltext_search is False
+    assert not (tmp_path / "cache" / "fulltext.sqlite3").exists()
+    assert Settings.load().fulltext_search is False  # 保存された
+    d.close()
+    ctl.close()
+
+
+def test_settings_without_controller_has_no_fulltext_group(app):
+    d = _dialog(Settings(), None)
+    assert not hasattr(d, "fulltext_search")
+    d.close()

@@ -1870,7 +1870,7 @@ class MainWindow(QMainWindow):
     # ======================================================================
 
     def show_settings(self, tab: str = "engines", focus: str = "") -> None:
-        dlg = SettingsDialog(self.settings, self.secrets, self.cache, self, sync=self.sync)
+        dlg = SettingsDialog(self.settings, self.secrets, self.cache, self, sync=self.sync, fulltext=self.fulltext)
         dlg.syncChanged.connect(self._on_sync_setting)
         dlg.restoreBackupRequested.connect(self.restore_backup)
         dlg.keysChanged.connect(self.refresh_engine_status)

@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QProgressBar,
     QRadioButton,
     QScrollArea,
@@ -34,6 +35,15 @@ from ..config.quota import QuotaBook
 from ..config.secrets import SecretStore, default_label, slot
 from ..config.settings import MAX_KEYS, Settings
 from ..errors import SpectraError
+from ..library.fulltext import (
+    BROKEN,
+    ENCRYPTED,
+    FULL,
+    MAX_INDEX_BYTES,
+    NO_TEXT,
+    TOO_LARGE,
+    WARN_INDEX_BYTES,
+)
 from ..translate import registry
 from ..translate.cache import TranslationCache
 from ..translate.errors import TranslatorError
@@ -47,6 +57,7 @@ from .widgets import (
     button,
     label,
     link_button,
+    plain_box,
     plain_tooltip,
     refresh_icon,
     set_prop,
@@ -327,10 +338,12 @@ class SettingsDialog(QDialog):
         cache: TranslationCache | None,
         parent: QWidget | None = None,
         sync=None,
+        fulltext=None,
     ):
         super().__init__(parent)
         self.settings = settings
         self.sync = sync
+        self.fulltext = fulltext  # FulltextController（本文検索の索引）
         self.secrets = secrets
         self.cache = cache
         self.setWindowTitle("設定")
@@ -644,6 +657,9 @@ class SettingsDialog(QDialog):
         lay.addWidget(cache)
         self._refresh_cache_info()
 
+        if self.fulltext is not None:
+            lay.addWidget(self._fulltext_group())
+
         lookup = FormGroup(
             "書誌情報",
             "オンにすると、PDF に書かれた DOI や arXiv ID だけを Crossref・arXiv に送り、"
@@ -696,6 +712,106 @@ class SettingsDialog(QDialog):
         lay.addStretch(1)
         # 項目が多くダイアログの高さに収まらないので、行を潰さずにスクロールさせる
         return _scrollable(page)
+
+    # -- 本文検索 --------------------------------------------------------------
+
+    def _fulltext_group(self) -> QWidget:
+        group = FormGroup(
+            "本文検索",
+            "論文の PDF から文字を取り出し、このパソコンの中に本文の索引を作ります。"
+            "索引は同期せず、外部にも送りません。文字のない PDF（スキャン）は検索できません。",
+        )
+        self.fulltext_search = Switch(self.settings.fulltext_search)
+        self.fulltext_search.toggled.connect(self._on_fulltext_toggle)
+        group.add_row("本文も検索する", self.fulltext_search)
+        self.fulltext_translations = Switch(self.settings.fulltext_translations)
+        self.fulltext_translations.toggled.connect(self._on_fulltext_translations)
+        group.add_row("訳文も索引にする", self.fulltext_translations)
+        self.index_info = label("", "secondary")
+        self.rebuild_index_btn = button("作り直す")
+        self.rebuild_index_btn.clicked.connect(self._rebuild_index)
+        self.delete_index_btn = button("削除…", destructive=True)
+        self.delete_index_btn.clicked.connect(self._delete_index)
+        row = QWidget()
+        rl = QHBoxLayout(row)
+        rl.setContentsMargins(0, 0, 0, 0)
+        rl.addWidget(self.index_info)
+        rl.addWidget(self.rebuild_index_btn)
+        rl.addWidget(self.delete_index_btn)
+        group.add_row("索引", row)
+        self.index_note = label("", "caption", wrap=True)
+        group.add_widget(self.index_note)
+        self.fulltext.progressChanged.connect(self._refresh_index_info)
+        self._refresh_index_info()
+        return group
+
+    def _refresh_index_info(self) -> None:
+        ft = self.fulltext
+        on = self.settings.fulltext_search
+        self.fulltext_translations.setEnabled(on)
+        self.rebuild_index_btn.setEnabled(on)
+        notes: list[tuple[str, bool]] = []
+        stats = ft.stats() if on else None
+        if not on:
+            self.index_info.setText("オフ")
+        elif stats is None:
+            self.index_info.setText("—")
+        else:
+            size = stats.bytes / 1024 / 1024
+            self.index_info.setText(f"{stats.indexed:,} 本・{stats.pages:,} ページ（{size:,.1f} MB）")
+            skipped = sum(n for k, n in stats.by_status.items() if k in (NO_TEXT, ENCRYPTED, BROKEN))
+            if skipped:
+                notes.append((f"文字がない・暗号化された・読めない PDF が {skipped:,} 本あり、本文を検索できません。", False))
+            if stats.by_status.get(TOO_LARGE):
+                notes.append((f"大きすぎる PDF {stats.by_status[TOO_LARGE]:,} 本は、途中までを索引にしています。", False))
+            if stats.by_status.get(FULL) or stats.bytes >= WARN_INDEX_BYTES:
+                limit = MAX_INDEX_BYTES / 1024**3
+                notes.append((f"索引が大きくなっています（上限 {limit:.0f} GB）。上限を超える論文は本文を検索できません。", True))
+        if on and ft.progress is not None:
+            done, total = ft.progress
+            notes.append((f"索引を作成中です（{done}/{total}）。", False))
+        if on and ft.unavailable:
+            notes.append(("索引を使えません。「作り直す」を試してください。タイトル・著者などでは検索できます。", True))
+        self.index_note.setText("\n".join(t for t, _ in notes))
+        set_prop(self.index_note, "tone", "warning" if any(w for _, w in notes) else None)
+        wrap = self.index_note.parentWidget()
+        wrap.setVisible(bool(notes))
+        if wrap.separator is not None:
+            wrap.separator.setVisible(bool(notes))
+
+    def _on_fulltext_toggle(self, on: bool) -> None:
+        self.settings.fulltext_search = on
+        self.settings.save()
+        self.fulltext.apply_settings()
+        self._refresh_index_info()
+        self.settingsChanged.emit()
+
+    def _on_fulltext_translations(self, on: bool) -> None:
+        self.settings.fulltext_translations = on
+        self.settings.save()
+        self.fulltext.schedule(0)
+        self.settingsChanged.emit()
+
+    def _rebuild_index(self) -> None:
+        self.fulltext.rebuild()
+        self._refresh_index_info()
+
+    def _delete_index(self) -> None:
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setText("本文の索引を削除しますか？")
+        box.setInformativeText("本文検索はオフになります。オンに戻すと、索引をもう一度作ります。論文やメモは消えません。")
+        delete = box.addButton("削除", QMessageBox.ButtonRole.DestructiveRole)
+        box.addButton("キャンセル", QMessageBox.ButtonRole.RejectRole)
+        plain_box(box).exec()
+        if box.clickedButton() is not delete:
+            return
+        # 先にオフにする（オンのまま消すと、表示の更新で索引を開き直して、空の索引ができてしまう）
+        self.fulltext_search.setChecked(False)  # _on_fulltext_toggle で設定を保存して止める
+        if self.settings.fulltext_search:
+            self._on_fulltext_toggle(False)
+        self.fulltext.delete_index()
+        self._refresh_index_info()
 
     def _refresh_cache_info(self) -> None:
         if self.cache is None:

@@ -18,7 +18,7 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/screenshot-library-dark.png">
-    <img src="docs/images/screenshot-library-light.png" width="960" alt="Spectra のライブラリ画面。左にコレクション、中央に論文の一覧（タイトル・著者・年・翻訳の状態）、右に選んだ論文の書誌情報が並んでいる">
+    <img src="docs/images/screenshot-library-light.png" width="960" alt="Spectra のライブラリ画面。左にコレクション、中央に論文の一覧（お気に入りのスター・タイトル・著者・年・翻訳の状態）、右に選んだ論文の書誌情報が並んでいる。検索欄に語を入れ、本文に一致した箇所の抜粋がタイトルの下に出ている">
   </picture>
 </p>
 
@@ -73,13 +73,13 @@ Intel 搭載の Mac では、[ソースから実行](#開発)してください�
 4. **読み返す・PDF出力** — 翻訳した論文はライブラリに保存され、ダブルクリックするとすぐに原文と訳文を読めます。「PDF出力」を押すと、形式を選んで PDF を保存できます。
 
 <p align="center">
-  <img src="docs/images/screenshot-export.png" width="560" alt="PDF出力の形式を 3 枚のカードから選ぶ画面">
+  <img src="docs/images/screenshot-export.png" width="560" alt="PDF出力の形式を 3 枚のカードから選ぶ画面。下に「注釈を含める」のスイッチがある">
 </p>
 
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/screenshot-reader-dark.png">
-    <img src="docs/images/screenshot-reader-light.png" width="960" alt="読書画面。原文と訳文のページが左右に並び、右のパネルでモデル・文体・ページ・翻訳する内容を選べる">
+    <img src="docs/images/screenshot-reader-light.png" width="960" alt="読書画面。左にページの一覧、中央に原文と訳文のページが並び、原文にマーカーと付箋、訳文の余白に同じ色の帯がある。右のパネルはノートのタブ">
   </picture>
 </p>
 
@@ -101,6 +101,14 @@ Intel 搭載の Mac では、[ソースから実行](#開発)してください�
 - 左のサイドバーで「すべての論文 / 最近追加した論文 / お気に入り / 翻訳済み / 未翻訳」とコレクションを切り替えられます（「翻訳済み」には、一部だけ訳した論文も含みます）。論文の行をコレクションへドラッグすると、そのコレクションに加わります。
 - 上の検索欄で、タイトル・著者・雑誌名・年・DOI に加えて、論文の本文（原文と訳文）、ノート、注釈のコメントからも探せます。空白で区切った語は、すべてを含む論文を探します。書誌情報に一致した論文が先に並び、本文やメモだけで一致した論文は、タイトルの下に「本文に一致」「メモに一致」と一致した箇所の抜粋が出ます（右のパネルには、原文か訳文か・ページも出ます）。列の見出しを押すと、その列で並べ替えられます。
 - 本文の検索には、PDF から文字を取り出して作る索引を使います。索引はこのパソコンの中にだけ作り（論文を追加・翻訳したあと、裏で少しずつ作ります）、同期せず、外部にも送りません。文字のない PDF（スキャン）や、パスワードのかかった PDF は、本文では探せません。⚙ →「詳細」→「本文検索」で、オン・オフ、訳文を含めるか、索引の作り直し・削除ができます。
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/screenshot-settings-dark.png">
+    <img src="docs/images/screenshot-settings-light.png" width="560" alt="設定の「詳細」タブの本文検索の欄。「本文も検索する」「訳文も索引にする」のスイッチと、索引の件数・大きさ、「作り直す」「削除…」のボタンがある">
+  </picture>
+</p>
+
 - 一覧の「翻訳」の列には、状態を「✓ 翻訳済み」「◐ 一部」「⟳ 翻訳中 42%」「… 待機中」「⚠ 失敗」のように記号と文字で表示します。「◐ 一部」は、ページの範囲を絞って訳したとき、または訳せなかった段落が残ったときの表示です。もう一度翻訳すると、残りの段落だけを送ります（訳し終えた段落はキャッシュから使います）。
 - 右の詳細パネルで書誌情報と翻訳の状態を確認できます。「情報を編集…」で直した項目は、書誌情報を取得し直しても上書きされません。
 - 書誌情報は、PDF に書かれた DOI・arXiv ID から Crossref / arXiv に照会して自動で取得します。送るのは DOI・arXiv ID だけで、本文やファイルは送りません。取得しない場合は ⚙ →「詳細」でオフにできます（PDF から読み取れた情報だけで整理します）。

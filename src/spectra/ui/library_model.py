@@ -74,6 +74,19 @@ def _strip_doi_prefix(term: str) -> str:
     return _DOI_PREFIX.sub("", term)
 
 
+def _term_map(current: list[str], fetched: list[str]) -> list[set[int]]:
+    """今の語ごとに、本文の結果のどの語で代わりに判定するか。
+
+    同じ語ならその語。打鍵の途中（"aeroso" の結果で "aerosol" を探す、またはその逆）では、
+    一方がもう一方を含む語を使う（届くまでの近似。次の結果で正しくなる）。
+    """
+    out = []
+    for t in current:
+        tk = t.casefold()
+        out.append({j for j, f in enumerate(fetched) if f.casefold() in tk or tk in f.casefold()})
+    return out
+
+
 def translation_status(paper: Paper, job: str | None = None, percent: int | None = None) -> tuple[str, str]:
     """(記号つきの表示文字列, 状態の種類)。状態は色だけでなく記号と文字でも示す。"""
     if job == "running":
@@ -382,7 +395,11 @@ class PaperFilterProxy(QSortFilterProxyModel):
         self._text = ""  # 今の検索の文字列
         self._raw_terms: list[str] = []  # 書誌・メモと比べる前の語（NFKC）
         self._body_terms: list[str] = []  # 本文の索引に問い合わせた語
-        self._fulltext: dict | None = None  # sha256 → fulltext.Match（今の検索の文字列に対するものだけ）
+        self._fulltext: dict | None = None  # sha256 → fulltext.Match（最後に届いた本文の結果）
+        self._fulltext_terms: list[str] = []  # その結果を問い合わせた語
+        # 今の語 i → 本文の結果の語の番号。結果が今の語のものなら {i}。打鍵の途中では、前の語の結果を
+        # 今の語の近似として使う（次の結果が届くまで、本文で一致した行が消えて行の高さが揺れないように）
+        self._term_map: list[set[int]] = []
         self._comments: dict[int, str] = {}  # paper_id → 注釈のコメント
         self._hits: dict[int, tuple[str, int]] = {}  # paper_id → (一致した場所, 本文で一致したページ数)
         self._match_cache: dict[int, list[tuple[str, str, tuple]]] = {}
@@ -415,12 +432,11 @@ class PaperFilterProxy(QSortFilterProxyModel):
         def change():
             if not terms:
                 self._user_sorted = False
-            if text != self._text:
-                self._fulltext = None  # 別の文字列の本文の結果は使わない（届くまでは書誌とメモだけ）
             self._text = text
             self._terms = terms
             self._raw_terms = raw
             self._body_terms = body_terms if len(body_terms) == len(terms) else []
+            self._term_map = _term_map(self._body_terms, self._fulltext_terms)
             self._hits = {}
             self._match_cache = {}
 
@@ -433,10 +449,18 @@ class PaperFilterProxy(QSortFilterProxyModel):
 
         def change():
             self._fulltext = found
+            self._fulltext_terms = list(self._body_terms) if found is not None else []
+            self._term_map = _term_map(self._body_terms, self._fulltext_terms)
             self._hits = {}
             self._match_cache = {}
 
         self._refilter(change)
+        self._resort()
+
+    def _resort(self) -> None:
+        """関連度が変わったので並べ直す（絞り込みのやり直しだけでは、残った行の順が古いままになる）。"""
+        if self.relevance_order() and self.sortColumn() >= 0:
+            self.invalidate()
 
     def set_comments(self, comments: dict[int, str]) -> None:
         """注釈のコメント（ノートと合わせて「メモ」として探す）。"""
@@ -450,6 +474,7 @@ class PaperFilterProxy(QSortFilterProxyModel):
 
         if self._terms:
             self._refilter(change)
+            self._resort()
         else:
             change()
 
@@ -498,7 +523,8 @@ class PaperFilterProxy(QSortFilterProxyModel):
         memo = search_key(f"{p.note}\n{self._comments.get(p.id, '')}")
         in_note = [t in memo for t in self._terms]
         body = self._fulltext.get(p.sha256) if self._fulltext and self._body_terms else None
-        in_body = [body is not None and i in body.terms for i in range(len(self._terms))]
+        in_body = [body is not None and bool(body.terms & self._term_map[i]) if i < len(self._term_map) else False
+                   for i in range(len(self._terms))]
         if not all(a or b or c for a, b, c in zip(in_meta, in_note, in_body)):
             self._hits.pop(p.id, None)
             return False

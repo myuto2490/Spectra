@@ -218,3 +218,61 @@ def test_list_snippet_starts_near_the_first_hit():
     assert cut.startswith("…") and len(cut) < len(text)
     assert cut[spans[0][0] : spans[0][1]] == "aerosol"
     assert _near_first_hit("short aerosol", ((6, 13),)) == ("short aerosol", ((6, 13),))
+
+
+# -- レビューの指摘 ----------------------------------------------------------
+
+
+def test_typing_keeps_body_rows_until_the_new_results_arrive(app, lib, tmp_path):
+    """打鍵のたびに本文だけで一致した行が消え、行の高さが 48→30→48 と揺れない。"""
+    a = _add(lib, tmp_path, "a", "Unrelated title")
+    view = LibraryView(lib, Settings())
+    view.reload()
+    view.set_search("aeroso")
+    view.set_fulltext("aeroso", {a.sha256: _match(a.sha256, {0}, {(ORIGINAL, 0)})})
+    assert _rows(view) == [a.id]
+    heights = []
+    view.table.verticalHeader().sectionResized.connect(lambda *_: heights.append(1))
+    for text in ("aerosol", "aerosol m"):  # 次の結果が届くまで
+        view.set_search(text)
+        if text == "aerosol":
+            assert _rows(view) == [a.id]
+            assert view.table.verticalHeader().defaultSectionSize() == MATCH_ROW_HEIGHT
+    # "aerosol m" の "m" は前の結果に無い語なので、届くまでは一致しない（書誌・メモにも無い）
+    assert _rows(view) == []
+    view.set_search("aerosol")
+    assert _rows(view) == [a.id]
+    view.set_fulltext("aerosol", {})  # 正しい結果が届いたら、それに従う
+    assert _rows(view) == []
+    assert view.table.verticalHeader().defaultSectionSize() == ROW_HEIGHT
+
+
+def test_deleting_characters_uses_the_previous_results(app, lib, tmp_path):
+    a = _add(lib, tmp_path, "a", "Unrelated title")
+    view = LibraryView(lib, Settings())
+    view.reload()
+    view.set_search("aerosol")
+    view.set_fulltext("aerosol", {a.sha256: _match(a.sha256, {0}, {(ORIGINAL, 0)})})
+    view.set_search("aeroso")  # "aerosol" を含む本文は "aeroso" も含む
+    assert _rows(view) == [a.id]
+    view.set_search("ocean")  # 関係のない語には使わない
+    assert _rows(view) == []
+
+
+def test_new_results_for_the_same_query_reorder_rows(app, lib, tmp_path):
+    a = _add(lib, tmp_path, "a", "First")
+    b = _add(lib, tmp_path, "b", "Second")
+    view = LibraryView(lib, Settings())
+    view.reload()
+    view.set_search("term")
+    view.set_fulltext("term", {
+        a.sha256: _match(a.sha256, {0}, {(ORIGINAL, 0)}),
+        b.sha256: _match(b.sha256, {0}, {(ORIGINAL, 0), (ORIGINAL, 1), (ORIGINAL, 2)}),
+    })
+    assert _rows(view) == [b.id, a.id]
+    # 索引づくりが進んで、同じ検索の文字列に新しい結果が届いた
+    view.set_fulltext("term", {
+        a.sha256: _match(a.sha256, {0}, {(ORIGINAL, i) for i in range(5)}),
+        b.sha256: _match(b.sha256, {0}, {(ORIGINAL, 0), (ORIGINAL, 1), (ORIGINAL, 2)}),
+    })
+    assert _rows(view) == [a.id, b.id]

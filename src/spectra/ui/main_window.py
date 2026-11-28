@@ -71,6 +71,7 @@ from . import icons, theme, worker
 from .about import AboutDialog
 from .annotation_popover import AnnotationPopover, UndoBar
 from .export_dialog import ExportDialog, suffix_for
+from .fulltext_controller import FulltextController
 from .inspector import Inspector
 from .jobs import LookupQueue, TranslationNotice, TranslationQueue, TranslationRequest
 from .library_model import FAVORITE_SHORTCUT, TRASH_DAYS, favorite_action_text
@@ -123,6 +124,7 @@ class MainWindow(QMainWindow):
         self.queue = TranslationQueue(self._run_translation, self)
         self.lookups = LookupQueue(self.library, self)
         self.sync = SyncController(self.settings, self.library, sync_engine_factory, self)
+        self.fulltext = FulltextController(self.settings, self.library, self)
         self.setWindowTitle(APP_NAME)
         self.setMinimumSize(QSize(980, 640))
         self.setAcceptDrops(True)
@@ -170,6 +172,9 @@ class MainWindow(QMainWindow):
         self.sync.downloadFinished.connect(self._on_download_finished)
         self.sync.downloadFailed.connect(self._on_download_failed)
         self.sync.synced.connect(self._on_synced)
+        # 同期は合図を出さずにライブラリを変えるので、同期・取得の後にも本文の索引の差分を取る
+        self.sync.synced.connect(lambda _r: self.fulltext.schedule())
+        self.sync.downloadFinished.connect(lambda _pid, _purpose: self.fulltext.schedule())
         self._sync_clock = QTimer(self, interval=30_000, timeout=self._refresh_sync_status)  # 「2 分前」を更新する
         self._sync_clock.start()
         # アプリが前面に来たときにも同期する（ほかのパソコンで変えた内容をすぐ反映するため）
@@ -2258,6 +2263,7 @@ class MainWindow(QMainWindow):
         self.library_view.side_panel.flush_note()
         self._unlisten()
         self.sync.close()
+        self.fulltext.close()
         self.settings.window = {
             "geometry": bytes(self.saveGeometry().toBase64()).decode(),
             "inspector": self.inspector_btn.isChecked(),
